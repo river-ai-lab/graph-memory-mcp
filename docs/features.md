@@ -295,14 +295,14 @@ Cache statistics are available in `health_check`:
 **Response:** `{"success": true, "relation_type": str}`
 **Errors:** `memory_validation_error`, `memory_service_error`
 
-#### unlink_facts
+#### delete_relation
 **Required:**
 - `from_id: str`
 - `to_id: str`
-- `relation_type: str`
 
 **Optional:**
 - `owner_id: str = "default"`
+- `relation_type: str | None = None` (if specified, only removes relations of this type)
 
 **Response:** `{"success": true}`
 **Errors:** `memory_service_error`

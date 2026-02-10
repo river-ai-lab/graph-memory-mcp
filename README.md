@@ -53,7 +53,7 @@ Graph Memory MCP is built for systems that require:
 
 ---
 
-## What it provides
+## What it provides (currently - limited functionality)
 
 - **Fact storage** with embeddings (semantic search)
 - **Entity & triplet graph** (subject–predicate–object)
@@ -83,13 +83,6 @@ pip install -e ".[dev,embeddings]"
 > Check the [examples](examples) directory for code snippets demonstrating various usage patterns (embedded, HTTP, and MCP configuration).
 
 ## Run (Development)
-
-### Native MCP Launch (stdio)
-For local development or when using as an MCP server with tools like Claude Desktop or Cursor, run the server natively:
-
-```bash
-python -m graph_memory_mcp.server
-```
 
 ### HTTP Server (Debug/Control)
 To run with a persistent HTTP endpoint for manual debugging via `curl`:

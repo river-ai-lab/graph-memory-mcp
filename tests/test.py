@@ -24,7 +24,7 @@ This test covers ALL 18 MCP tools from server.py:
 **Graph Tools (6):**
 13. create_relation
 14. get_trace
-15. unlink_facts
+15. delete_relation
 16. get_context
 17. find_similar
 18. create_summary_fact
@@ -452,9 +452,9 @@ async def test_all_mcp_tools_comprehensive():
                     len(data.get("edges", [])) >= 2
                 )  # Should link to both source facts
 
-                # 15. unlink_facts
+                # 15. delete_relation
                 result = await session.call_tool(
-                    "unlink_facts",
+                    "delete_relation",
                     {
                         "from_id": fact2_id,
                         "to_id": fact1_id,
