@@ -42,6 +42,9 @@ class MCPServerConfig(BaseSettings):
     # Embeddings
     embedding_model: str = "intfloat/multilingual-e5-base"
 
+    # Vector indexes (auto-creation)
+    auto_create_indexes: bool = False  # opt-in: create indexes on startup
+
     # Search/graph defaults
     default_search_limit: int = 10
     semantic_similarity_threshold: float = 0.55
