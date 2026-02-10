@@ -13,6 +13,30 @@ It provides **long-term, shared memory** where agents can store facts, entities,
 
 ---
 
+## Why MCP-first?
+
+This system treats memory as an agent-accessible capability rather than an application API.
+MCP provides a stable contract for tool discovery, invocation, and evolution across agents,
+while HTTP remains a low-level transport detail.
+
+### Minimal MCP Flow
+
+```text
+LLM / Agent
+   │
+   │ MCP tool call (e.g., create_node, search)
+   ▼
+Graph Memory MCP
+   │
+   ├─ Semantic Search (Embeddings)
+   ├─ Graph Traversal (Triplets)
+   └─ Memory Governance (Dedup, Archival)
+```
+
+---
+
+---
+
 ## Why Graph Memory MCP?
 
 Modern agents need more than ephemeral context windows.
@@ -55,7 +79,20 @@ Backed by **FalkorDB** (pluggable storage layer).
 pip install -e ".[dev,embeddings]"
 ```
 
-## Run (HTTP)
+> [!TIP]
+> Check the [examples](examples) directory for code snippets demonstrating various usage patterns (embedded, HTTP, and MCP configuration).
+
+## Run (Development)
+
+### Native MCP Launch (stdio)
+For local development or when using as an MCP server with tools like Claude Desktop or Cursor, run the server natively:
+
+```bash
+python -m graph_memory_mcp.server
+```
+
+### HTTP Server (Debug/Control)
+To run with a persistent HTTP endpoint for manual debugging via `curl`:
 
 ```bash
 graph-memory-mcp --host 127.0.0.1 --port 8000
@@ -146,7 +183,7 @@ pytest
 
 ## Smoke Test (Quick Verification)
 
-Quick test without heavy ML dependencies to verify basic functionality:
+Quick test via the HTTP interface to verify basic functionality:
 
 ### Prerequisites
 
