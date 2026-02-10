@@ -1,6 +1,6 @@
 # Graph Memory MCP
 
-[![Tests](https://github.com/YOUR_USERNAME/graph-memory-mcp/workflows/Tests/badge.svg)](https://github.com/YOUR_USERNAME/graph-memory-mcp/actions)
+[![Status](https://img.shields.io/badge/status-active%20development-informational)]()
 [![PyPI version](https://badge.fury.io/py/graph-memory-mcp.svg)](https://badge.fury.io/py/graph-memory-mcp)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
