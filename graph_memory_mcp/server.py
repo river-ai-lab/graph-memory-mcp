@@ -66,32 +66,26 @@ class GraphMemoryMCP:
         except Exception as exc:  # noqa: BLE001
             logger.error("Failed to load embeddings model: %s", exc)
             self.embedding_service = _UnavailableEmbeddingService()
-        # share embedding_service with db_client to avoid duplication
+
+        # Share embedding_service with db_client to avoid duplication
         self.db_client.set_embedding_service(self.embedding_service)
-        # Auto-create vector indexes if missing (only when DB is reachable and embeddings are available).
-        try:
-            if self._db_connected:
-                dim = int(getattr(self.embedding_service, "dimension", 0) or 0)
-                if dim > 0:
-                    status = self.db_client.get_vector_index_status()
-                    fact_ok = bool(status.get("Fact"))
-                    ent_ok = bool(status.get("Entity"))
-                    if not fact_ok:
-                        self.db_client.create_vector_index(
-                            dimension=dim, similarity_function="cosine"
-                        )
-                    if not ent_ok:
-                        self.db_client.create_entity_vector_index(
-                            dimension=dim, similarity_function="cosine"
-                        )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Failed to auto-create vector indexes: %s", exc)
+
         self.mcp = FastMCP(
             name=self.server_config.description or self.server_config.name,
             stateless_http=True,
             json_response=True,
         )
         self._register_tools()
+
+        # Auto-create vector indices if enabled (opt-in)
+        if self.server_config.auto_create_indexes and self._db_connected:
+            logger.info(
+                "AUTO-CREATE: Creating vector indexes (config.auto_create_indexes=true)"
+            )
+            try:
+                self._ensure_indexes_if_needed()
+            except Exception as exc:  # noqa: BLE001
+                logger.error("Failed to auto-create vector indexes: %s", exc)
 
     def get_mcp_app(self):
         app = self.mcp.streamable_http_app()
@@ -124,6 +118,28 @@ class GraphMemoryMCP:
 
             app.router.lifespan_context = _lifespan  # type: ignore[attr-defined]
         return app
+
+    def _ensure_indexes_if_needed(self) -> None:
+        """Create vector indexes if they don't exist (with dimension validation)."""
+        dim = int(getattr(self.embedding_service, "dimension", 0) or 0)
+        if dim <= 0:
+            logger.warning("Cannot create indexes: embedding dimension is %s", dim)
+            return
+
+        status = self.db_client.get_vector_index_status()
+        fact_ok = bool(status.get("Fact"))
+        ent_ok = bool(status.get("Entity"))
+
+        if not fact_ok:
+            logger.info("Creating Fact vector index (dimension=%s)", dim)
+            self.db_client.create_vector_index(
+                dimension=dim, similarity_function="cosine"
+            )
+        if not ent_ok:
+            logger.info("Creating Entity vector index (dimension=%s)", dim)
+            self.db_client.create_entity_vector_index(
+                dimension=dim, similarity_function="cosine"
+            )
 
     def _register_tools(self) -> None:
         exposed: Dict[str, Any] = {}
@@ -166,9 +182,31 @@ class GraphMemoryMCP:
         def health_check() -> dict:
             return mcp_handlers_admin.health_check(db, self.embedding_service)
 
+        @mcp.tool(
+            title="Ensure vector indexes",
+            description=(
+                "Create or verify vector indexes for semantic search. "
+                "Idempotent - safe to call multiple times. "
+                "Validates embedding dimension compatibility. "
+                "Required before using search or auto_link features."
+            ),
+        )
+        def ensure_vector_indexes() -> dict:
+            try:
+                self._ensure_indexes_if_needed()
+                status = db.get_vector_index_status()
+                return {
+                    "success": True,
+                    "indexes": status,
+                    "dimension": getattr(self.embedding_service, "dimension", 0),
+                }
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+
         exposed["test_connection"] = test_connection
         exposed["get_stats"] = get_stats
         exposed["health_check"] = health_check
+        exposed["ensure_vector_indexes"] = ensure_vector_indexes
         return exposed
 
     def _register_fact_tools(self) -> Dict[str, Any]:
@@ -185,7 +223,9 @@ class GraphMemoryMCP:
                 "Required: `text`, "
                 "Optional: `node_type` ('Fact' default, or 'Entity'), `owner_id`, "
                 "`metadata`, `auto_link` (Facts only), `ttl_days` (Facts only), "
-                "`links` (create relations immediately after creation)."
+                "`links` (create relations immediately after creation). "
+                "Note: auto_link=true by default creates semantic MENTIONS_ENTITY relations to existing entities (Facts only). "
+                "Set ttl_days for automatic archival."
             ),
         )
         def create_node(
@@ -218,8 +258,10 @@ class GraphMemoryMCP:
         @mcp.tool(
             title="Search",
             description=(
-                "Semantic search for Facts and/or Entities. "
-                "Returns nodes ranked by similarity to the query text."
+                "Semantic search using embedding similarity (cosine distance). "
+                "Returns active nodes by default (use include_outdated=true for archived content). "
+                "Results ranked by similarity to query text. "
+                "Supports multi-tenant isolation via owner_id."
             ),
             annotations=ToolAnnotations(readOnlyHint=True),
         )
@@ -284,8 +326,9 @@ class GraphMemoryMCP:
         @mcp.tool(
             title="Delete node",
             description=(
-                "Physically delete a node (Fact or Entity) by its ID. "
-                "Also deletes all connected edges."
+                "PERMANENT: Irreversibly delete a node (Fact or Entity) and all its relations. "
+                "This operation cannot be undone. "
+                "For reversible removal of Facts, use mark_outdated instead."
             ),
         )
         def delete_node(node_id: str, owner_id: str = "default") -> dict:
@@ -296,9 +339,10 @@ class GraphMemoryMCP:
         @mcp.tool(
             title="Mark fact as outdated",
             description=(
-                "Soft-delete a fact by marking its status as 'outdated' and "
-                "optionally storing a human-readable reason in metadata. "
-                "The fact remains in the graph but is excluded from default searches."
+                "Soft-delete a Fact by setting status='outdated'. "
+                "Fact remains in graph but excluded from default searches. "
+                "Optionally stores reason in metadata. "
+                "Note: Only Facts support soft-delete. For Entities, use delete_node."
             ),
         )
         def mark_outdated(
@@ -312,9 +356,10 @@ class GraphMemoryMCP:
             title="Get node change history",
             description=(
                 "Retrieve version history for a node. "
-                "Returns a list of previous versions with timestamps and change reasons. "
+                "Returns a list of previous versions with timestamps"
                 "Currently only supported for Fact nodes."
             ),
+            annotations=ToolAnnotations(readOnlyHint=True),
         )
         def get_node_change_history(node_id: str, owner_id: str = "default") -> dict:
             return mcp_handlers_nodes.get_node_change_history(
@@ -401,7 +446,10 @@ class GraphMemoryMCP:
         @mcp.tool(
             title="Create relation",
             description=(
-                "Create a direct relation between two nodes. " "Both nodes must exist."
+                "Create a direct relation between two nodes. "
+                "Both nodes must exist. "
+                "Use this for explicit graph structure. "
+                "For semantic auto-linking, see create_node with auto_link=true."
             ),
         )
         def create_relation(
@@ -439,13 +487,14 @@ class GraphMemoryMCP:
             )
 
         @mcp.tool(
-            title="Unlink facts",
+            title="Delete relation",
             description=(
                 "Remove relations between two nodes. "
-                "Optionally specify relation_type to remove only specific relations."
+                "Optionally specify relation_type to remove only specific relations. "
+                "Works for any node types (Fact, Entity)."
             ),
         )
-        def unlink_facts(
+        def delete_relation(
             from_id: str,
             to_id: str,
             relation_type: str | None = None,
@@ -463,7 +512,9 @@ class GraphMemoryMCP:
             title="Get context",
             description=(
                 "Get subgraph context around a node. "
-                "Returns nodes and edges within specified depth."
+                "Returns nodes and edges within specified depth. "
+                "Useful for building agent context from related facts and entities. "
+                "Depth defaults to 2 hops."
             ),
             annotations=ToolAnnotations(readOnlyHint=True),
         )
@@ -485,8 +536,9 @@ class GraphMemoryMCP:
         @mcp.tool(
             title="Find similar",
             description=(
-                "Find facts similar to a given fact. "
-                "Returns facts ranked by semantic similarity."
+                "Find facts similar to a given fact using embedding similarity. "
+                "Returns facts ranked by semantic similarity (excludes the query fact itself). "
+                "Useful for discovering related knowledge or identifying potential duplicates."
             ),
             annotations=ToolAnnotations(readOnlyHint=True),
         )
@@ -513,7 +565,7 @@ class GraphMemoryMCP:
             ),
         )
         def create_summary_fact(
-            fact_ids: list,
+            fact_ids: list[str],
             summary_text: str,
             owner_id: str = "default",
             metadata: dict | None = None,
@@ -528,8 +580,8 @@ class GraphMemoryMCP:
             )
 
         exposed["create_relation"] = create_relation
+        exposed["delete_relation"] = delete_relation
         exposed["get_trace"] = get_trace
-        exposed["unlink_facts"] = unlink_facts
         exposed["get_context"] = get_context
         exposed["find_similar"] = find_similar
         exposed["create_summary_fact"] = create_summary_fact
