@@ -1,0 +1,70 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "graph-memory-mcp"
+version = "0.1.0"
+description = "Standalone MCP server for graph-based long-term memory (FalkorDB)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "graph-memory-mcp contributors" }]
+dependencies = [
+  "mcp>=1.3.0",
+  "redis>=5.2.1",
+  "falkordb>=1.0.9",
+  "sentence-transformers>=3.3.1",
+  "pydantic>=2",
+  "pydantic-settings>=2",
+  "apscheduler",
+  "uvicorn",
+  "python-dotenv>=1.0.1",
+  "cachetools>=5.5.0",
+]
+
+[project.optional-dependencies]
+embeddings = [
+  "numpy",
+  "sentence-transformers",
+]
+dev = [
+  "pytest",
+  "pytest-asyncio",
+  "httpx",
+]
+
+[project.scripts]
+graph-memory-mcp = "graph_memory_mcp.cli:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["graph_memory_mcp", "graph_memory_mcp.*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+markers = [
+  "integration: requires running FalkorDB and RUN_INTEGRATION_TESTS=1",
+]
+
+[tool.basedpyright]
+# This repo root is the `graph_memory_mcp` package directory. For absolute imports
+# like `graph_memory_mcp.*` to resolve in the editor/typechecker, we need the
+# parent directory on the import path.
+extraPaths = [".."]
+
+[tool.isort]
+profile = "black"
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.5.1",
+    "pytest",
+    "pytest-asyncio",
+    "httpx",
+]

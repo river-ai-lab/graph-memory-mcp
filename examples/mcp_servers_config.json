@@ -1,0 +1,34 @@
+{
+    "mcpServers": {
+        "graph-memory-mcp": {
+            "command": "uv",
+            "args": [
+                "run",
+                "graph-memory-mcp",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "8000"
+            ],
+            "env": {
+                "FALKORDB_HOST": "localhost",
+                "FALKORDB_PORT": "6379",
+                "EMBEDDING_MODEL": "intfloat/multilingual-e5-small"
+            }
+        },
+        "graph-memory-docker": {
+            "command": "docker",
+            "args": [
+                "run",
+                "-i",
+                "--rm",
+                "--network",
+                "host",
+                "ghcr.io/your-username/graph-memory-mcp:latest"
+            ],
+            "env": {
+                "FALKORDB_HOST": "localhost"
+            }
+        }
+    }
+}
