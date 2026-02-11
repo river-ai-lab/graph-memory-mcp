@@ -10,12 +10,11 @@ Layers:
 from __future__ import annotations
 
 import logging
-from contextlib import asynccontextmanager
 from typing import Any, Dict
 
-from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
+from graph_memory_mcp.base_server import BaseGraphMemoryMCP
 from graph_memory_mcp.config import MCPServerConfig
 from graph_memory_mcp.graph_memory import (
     mcp_handlers_admin,
@@ -24,58 +23,15 @@ from graph_memory_mcp.graph_memory import (
     mcp_handlers_relations,
     mcp_handlers_search,
 )
-from graph_memory_mcp.graph_memory.database import FalkorDBClient
-from graph_memory_mcp.graph_memory.embedding_service import EmbeddingService
-from graph_memory_mcp.jobs.scheduler import shutdown_scheduler, start_scheduler
 
 logger = logging.getLogger(__name__)
 
 
-class _UnavailableEmbeddingService:
-    """Fallback embedding service used when model cannot be loaded."""
-
-    dimension = 0
-
-    def get_embedding(self, text: str):  # type: ignore[no-untyped-def]
-        raise RuntimeError("Embeddings model is not available")
-
-    def get_embeddings_batch(self, texts):  # type: ignore[no-untyped-def]
-        raise RuntimeError("Embeddings model is not available")
-
-
-class GraphMemoryMCP:
+class GraphMemoryMCP(BaseGraphMemoryMCP):
     """Graph Memory MCP Server: builds FastMCP app and registers tools."""
 
     def __init__(self, server_config: MCPServerConfig):
-        self.server_config = server_config
-        self.config = server_config
-        self.db_client = FalkorDBClient(server_config)
-        self._db_connected = self.db_client.connect()
-        if not self._db_connected:
-            logger.warning(
-                "Failed to connect to FalkorDB (host=%s, port=%s, graph=%s). "
-                "Memory tools will operate in degraded mode.",
-                server_config.falkordb_host,
-                server_config.falkordb_port,
-                server_config.falkordb_graph,
-            )
-        try:
-            self.embedding_service = EmbeddingService(
-                model_name=server_config.embedding_model
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.error("Failed to load embeddings model: %s", exc)
-            self.embedding_service = _UnavailableEmbeddingService()
-
-        # Share embedding_service with db_client to avoid duplication
-        self.db_client.set_embedding_service(self.embedding_service)
-
-        self.mcp = FastMCP(
-            name=self.server_config.description or self.server_config.name,
-            stateless_http=True,
-            json_response=True,
-        )
-        self._register_tools()
+        super().__init__(server_config)
 
         # Auto-create vector indices if enabled (opt-in)
         if self.server_config.auto_create_indexes and self._db_connected:
@@ -86,38 +42,6 @@ class GraphMemoryMCP:
                 self._ensure_indexes_if_needed()
             except Exception as exc:  # noqa: BLE001
                 logger.error("Failed to auto-create vector indexes: %s", exc)
-
-    def get_mcp_app(self):
-        app = self.mcp.streamable_http_app()
-        # Wire background scheduler into Starlette lifespan (config-driven).
-        cfg = self.server_config.config or {}
-        jobs_enabled = bool(cfg.get("jobs_enabled", False))
-        if jobs_enabled:
-            # Preserve original lifespan context only once (avoid wrapping twice if get_mcp_app is called again).
-            if getattr(app.state, "_memory_jobs_wrapped", False):
-                return app
-            setattr(app.state, "_memory_jobs_wrapped", True)
-
-            orig = getattr(app.router, "lifespan_context", None)
-
-            @asynccontextmanager
-            async def _lifespan(app_obj):  # type: ignore[no-untyped-def]
-                if orig is not None:
-                    async with orig(app_obj):
-                        start_scheduler()
-                        try:
-                            yield
-                        finally:
-                            shutdown_scheduler()
-                else:
-                    start_scheduler()
-                    try:
-                        yield
-                    finally:
-                        shutdown_scheduler()
-
-            app.router.lifespan_context = _lifespan  # type: ignore[attr-defined]
-        return app
 
     def _ensure_indexes_if_needed(self) -> None:
         """Create vector indexes if they don't exist (with dimension validation)."""
@@ -154,7 +78,6 @@ class GraphMemoryMCP:
     def _register_information_tools(self) -> Dict[str, Any]:
         exposed: Dict[str, Any] = {}
         db = self.db_client
-        config = self.config
         mcp = self.mcp
         assert mcp is not None
 
