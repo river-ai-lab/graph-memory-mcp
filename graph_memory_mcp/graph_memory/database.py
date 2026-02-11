@@ -10,22 +10,12 @@ This is a thin wrapper that provides:
 
 import logging
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
-import redis
 from falkordb import FalkorDB
 from sentence_transformers import SentenceTransformer
 
 from graph_memory_mcp.graph_memory.cache import CacheManager
-from graph_memory_mcp.graph_memory.utils import (
-    dump_json,
-    ensure_text,
-    escape_value,
-    format_vecf32,
-    load_json,
-    normalize_owner_id,
-    parse_embedding_value,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -52,14 +42,6 @@ class FalkorDBClient:
             self.config.falkordb_port,
             self.config.falkordb_graph,
         )
-
-    def get_embedding(self, text: str) -> List[float]:
-        """Get embedding for text with caching."""
-        if cached := self.cache.get_embedding(text):
-            return cached
-        embedding = self.embedder.encode(text).tolist()
-        self.cache.set_embedding(text, embedding)
-        return embedding
 
     def set_embedding_service(self, service: Any) -> None:
         """Attach embedding service instance."""
@@ -96,10 +78,6 @@ class FalkorDBClient:
                 "falkordb_connected": False,
                 "error": str(e),
             }
-
-    # ====================
-    # Utility Methods
-    # ====================
 
     def get_embedding(self, text: str) -> List[float]:
         """Get embedding from service."""

@@ -149,13 +149,12 @@ def test_lru_cache_eviction(cache_manager):
 async def test_cache_integration(anyio_backend):
     """Test cache integration with actual server."""
     import anyio
-    import httpx
 
     from graph_memory_mcp.config import load_mcp_server_config
     from graph_memory_mcp.server import GraphMemoryMCP
 
     cfg = load_mcp_server_config()
-    async with anyio.create_task_group() as tg:
+    async with anyio.create_task_group() as _tg:
         server = GraphMemoryMCP(cfg)
 
         # Create a node
