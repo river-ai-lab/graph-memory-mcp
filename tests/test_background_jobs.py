@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from graph_memory_mcp.config import MCPServerConfig, load_mcp_server_config
+from graph_memory_mcp.config import load_mcp_server_config
 from graph_memory_mcp.graph_memory import mcp_handlers_nodes, mcp_handlers_relations
 from graph_memory_mcp.graph_memory.database import FalkorDBClient
 from graph_memory_mcp.graph_memory.embedding_service import EmbeddingService
@@ -24,7 +24,6 @@ from graph_memory_mcp.jobs.deduplicate_facts import (
     _find_duplicate_entity_groups,
     _find_duplicate_fact_groups,
     _merge_duplicate_entities,
-    _merge_duplicate_facts,
     deduplicate_facts,
 )
 from graph_memory_mcp.jobs.scheduler import (

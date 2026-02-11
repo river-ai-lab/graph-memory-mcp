@@ -16,3 +16,10 @@ repos:
     rev: 7.0.0
     hooks:
       - id: isort
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.4
+    hooks:
+      - id: ruff
+        args: [--fix]
+        # Check for unused imports (F401), unused variables (F841), etc.

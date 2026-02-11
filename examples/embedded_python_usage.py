@@ -16,7 +16,6 @@ Prerequisites:
 import asyncio
 import logging
 import uuid
-from pprint import pprint
 
 from graph_memory_mcp.config import load_mcp_server_config
 

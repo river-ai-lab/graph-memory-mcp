@@ -15,7 +15,6 @@ import json
 import os
 import time
 import uuid
-from typing import Any, Dict
 
 import pytest
 import redis
@@ -85,7 +84,6 @@ async def test_auto_link_functionality(server_instance):
 
     When auto_link=True, new facts should automatically link to semantically similar facts.
     """
-    cfg = server_instance.config
     server = server_instance
     owner_id = f"pytest_autolink_{uuid.uuid4().hex[:8]}"
 
@@ -101,7 +99,6 @@ async def test_auto_link_functionality(server_instance):
     )
     data = _extract_tool_json(result)
     assert data.get("success") is True
-    fact1_id = data["node"]["node_id"]
 
     # Create second fact WITH auto_link (should link to first)
     result = await server.mcp.call_tool(
@@ -146,7 +143,6 @@ async def test_ttl_and_expiration(server_instance):
 
     Facts created with ttl_days should have expires_at timestamp set correctly.
     """
-    cfg = server_instance.config
     server = server_instance
     owner_id = f"pytest_ttl_{uuid.uuid4().hex[:8]}"
 
@@ -226,7 +222,6 @@ async def test_links_parameter(server_instance):
 
     The links parameter allows creating a node and its relations in one call.
     """
-    cfg = server_instance.config
     server = server_instance
     owner_id = f"pytest_links_{uuid.uuid4().hex[:8]}"
 
@@ -314,7 +309,6 @@ async def test_error_handling_invalid_inputs(server_instance):
     """
     Test error handling for invalid inputs.
     """
-    cfg = server_instance.config
     server = server_instance
     owner_id = f"pytest_errors_{uuid.uuid4().hex[:8]}"
 
@@ -409,7 +403,6 @@ async def test_boundary_conditions(server_instance):
     """
     Test boundary conditions and limits.
     """
-    cfg = server_instance.config
     server = server_instance
     owner_id = f"pytest_boundary_{uuid.uuid4().hex[:8]}"
 
@@ -523,7 +516,6 @@ async def test_concurrent_operations(server_instance):
     """
     Test that concurrent operations on same data are handled correctly.
     """
-    cfg = server_instance.config
     server = server_instance
     owner_id = f"pytest_concurrent_{uuid.uuid4().hex[:8]}"
 

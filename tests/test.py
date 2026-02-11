@@ -44,7 +44,7 @@ import redis
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
-from graph_memory_mcp.config import MCPServerConfig, load_mcp_server_config
+from graph_memory_mcp.config import load_mcp_server_config
 from graph_memory_mcp.server import GraphMemoryMCP
 
 
@@ -308,8 +308,6 @@ async def test_all_mcp_tools_comprehensive():
                 )
                 data = _extract_tool_json(result)
                 assert data.get("success") is True
-                alice_id = data["subject_id"]
-                k8s_entity_id = data["object_id"]
 
                 # Create another triplet
                 result = await session.call_tool(
@@ -534,7 +532,7 @@ async def test_multi_tenant_isolation():
     owner1 = f"pytest_tenant1_{uuid.uuid4().hex[:8]}"
     owner2 = f"pytest_tenant2_{uuid.uuid4().hex[:8]}"
 
-    server = MemoryMCPServer(cfg)
+    server = GraphMemoryMCP(cfg)
     app = server.get_mcp_app()
 
     async with anyio.create_task_group() as tg:
