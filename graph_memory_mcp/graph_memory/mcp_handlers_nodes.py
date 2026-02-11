@@ -29,8 +29,11 @@ def create_node(
     config: Any,
     *,
     text: str,
+    description: Optional[str] = None,
     node_type: Literal["Fact", "Entity"] = "Fact",
     owner_id: str = "default",
+    shared_with_ids: Optional[List[str]] = None,
+    collection_id: Optional[str] = None,
     metadata: Optional[Dict] = None,
     status: Optional[Literal["active", "outdated", "archived"]] = None,
     ttl_days: Optional[float] = None,
@@ -52,7 +55,7 @@ def create_node(
         expires_at = int(time.time() * 1000) + int(ttl_days * 24 * 3600 * 1000)
 
     # Create node
-    metadata_str = dump_json(metadata or {})
+    metadata_str = dump_json(metadata or {})  # Maps must be JSON strings in FalkorDB
 
     # Add entity_type for Entity nodes
     type_prop = ""
@@ -63,10 +66,13 @@ def create_node(
     CREATE (n:{node_type} {{
         owner_id: $owner_id,
         text: $text,
+        description: $description,
         embedding: {format_vecf32(embedding)},
         status: $status,
         created_at: timestamp(),
+        updated_at: timestamp(),
         metadata_str: $metadata_str,
+        shared_with_ids: $shared_with_ids,
         ttl_days: $ttl_days,
         expires_at: $expires_at,
         last_dedup_at: NULL{type_prop}
@@ -77,8 +83,10 @@ def create_node(
     params = {
         "owner_id": owner_id,
         "text": text,
+        "description": description,
         "status": status or "active",
         "metadata_str": metadata_str,
+        "shared_with_ids": shared_with_ids or [],
         "ttl_days": ttl_days,
         "expires_at": expires_at,
     }
@@ -91,6 +99,18 @@ def create_node(
         return error_response("Failed to create node", code="memory_service_error")
 
     node_id = str(result.result_set[0][0])
+
+    # Add to collection if specified (extended)
+    if collection_id:
+        try:
+            _add_to_collection(db, node_id, collection_id, owner_id)
+        except Exception as exc:
+            logger.warning(
+                "Failed to add node %s to collection %s: %s",
+                node_id,
+                collection_id,
+                exc,
+            )
 
     # Auto-link Facts to Entities
     if node_type == "Fact" and auto_link:
@@ -144,9 +164,12 @@ def get_node(db: FalkorDBClient, *, node_id: str, owner_id: str = "default") -> 
         id(n) as node_id,
         labels(n)[0] as node_type,
         n.text as text,
+        n.description as description,
         n.status as status,
         n.created_at as created_at,
+        n.updated_at as updated_at,
         n.metadata_str as metadata_str,
+        n.shared_with_ids as shared_with_ids,
         n.ttl_days as ttl_days,
         n.expires_at as expires_at,
         n.type as entity_type,
@@ -162,18 +185,26 @@ def get_node(db: FalkorDBClient, *, node_id: str, owner_id: str = "default") -> 
         "node_id": str(row[0]),
         "node_type": row[1],
         "text": ensure_text(row[2]),
-        "status": ensure_text(row[3]),
-        "created_at": row[4],
-        "metadata": load_json(row[5], {}),
-        "ttl_days": row[6],
-        "expires_at": row[7],
+        "status": ensure_text(row[4]),
+        "created_at": row[5],
+        "metadata": load_json(row[7], {}),
+        "ttl_days": row[9],
+        "expires_at": row[10],
+        "type": ensure_text(row[11]) if row[11] else None,
     }
 
-    # Add entity_type for Entity nodes
-    if row[1] == "Entity" and row[8]:
-        node["type"] = ensure_text(row[8])
+    node.update(
+        {
+            k: v
+            for k, v in [
+                ("description", ensure_text(row[3]) if row[3] else None),
+                ("updated_at", row[6]),
+                ("shared_with_ids", row[8]),
+            ]
+            if v is not None and v != []
+        }
+    )
 
-    # Remove embedding from response
     return success_response(node=node)
 
 
@@ -184,6 +215,8 @@ def update_node(
     node_id: str,
     owner_id: str = "default",
     text: Optional[str] = None,
+    description: Optional[str] = None,
+    shared_with_ids: Optional[List[str]] = None,
     metadata: Optional[Dict] = None,
     status: Optional[Literal["active", "outdated", "archived"]] = None,
     ttl_days: Optional[float] = None,
@@ -213,7 +246,9 @@ def update_node(
             fact_id: id(n),
             owner_id: n.owner_id,
             text: n.text,
+            description: n.description,
             metadata_str: n.metadata_str,
+            shared_with_ids: n.shared_with_ids,
             status: n.status,
             ttl_days: n.ttl_days,
             expires_at: n.expires_at,
@@ -227,7 +262,7 @@ def update_node(
         )
 
     # Build SET clauses
-    set_clauses = []
+    set_clauses = ["n.updated_at = timestamp()"]
     params = {"node_id": int(node_id), "owner_id": owner_id}
 
     if text is not None:
@@ -236,6 +271,14 @@ def update_node(
         # Update embedding
         embedding = db.get_embedding(text)
         set_clauses.append(f"n.embedding = {format_vecf32(embedding)}")
+
+    if description is not None:
+        set_clauses.append("n.description = $description")
+        params["description"] = description
+
+    if shared_with_ids is not None:
+        set_clauses.append("n.shared_with_ids = $shared_with_ids")
+        params["shared_with_ids"] = shared_with_ids
 
     if metadata is not None:
         base_meta = node.get("metadata", {})
@@ -259,7 +302,7 @@ def update_node(
         set_clauses.append("n.type = $entity_type")
         params["entity_type"] = entity_type
 
-    if not set_clauses:
+    if len(set_clauses) == 1:  # Only updated_at
         return get_node(db, node_id=node_id, owner_id=owner_id)
 
     query = f"""
@@ -403,3 +446,30 @@ def _create_auto_links(
         db.graph.query(query)
     except Exception as e:
         logger.warning("Auto-link failed: %s", e)
+
+
+def _add_to_collection(
+    db: FalkorDBClient, node_id: str, collection_id: str, owner_id: str
+) -> None:
+    """Add a node to a collection (extended functionality).
+
+    Creates a CONTAINS relationship from Collection to Node.
+    """
+    query = """
+    MATCH (c:Collection), (n)
+    WHERE id(c) = $collection_id AND id(n) = $node_id
+      AND c.owner_id = $owner_id AND n.owner_id = $owner_id
+    MERGE (c)-[r:CONTAINS]->(n)
+    ON CREATE SET r.created_at = timestamp()
+    RETURN count(r) as created
+    """
+
+    params = {
+        "collection_id": int(collection_id),
+        "node_id": int(node_id),
+        "owner_id": owner_id,
+    }
+
+    result = db.graph.query(query, params=params)
+    if not result or not result.result_set:
+        raise ValueError(f"Failed to add node {node_id} to collection {collection_id}")

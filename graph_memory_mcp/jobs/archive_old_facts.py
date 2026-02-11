@@ -5,7 +5,7 @@ from typing import Any, Dict, List
 from graph_memory_mcp.config import MCPServerConfig
 from graph_memory_mcp.graph_memory import mcp_handlers_nodes
 from graph_memory_mcp.graph_memory.database import FalkorDBClient
-from graph_memory_mcp.graph_memory.utils import escape_value, normalize_owner_id
+from graph_memory_mcp.graph_memory.utils import normalize_owner_id
 from graph_memory_mcp.jobs.lock import job_lock
 from graph_memory_mcp.jobs.retry import retry_async
 
