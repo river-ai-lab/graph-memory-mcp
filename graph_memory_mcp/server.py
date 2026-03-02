@@ -10,7 +10,7 @@ Layers:
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Literal
 
 from mcp.types import ToolAnnotations
 
@@ -152,11 +152,11 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
             ),
         )
         def create_node(
-            text: str | None = None,
-            node_type: str = "Fact",
+            text: str,
+            node_type: Literal["Fact", "Entity"] = "Fact",
             owner_id: str = "default",
             metadata: dict | None = None,
-            status: str | None = None,
+            status: Literal["active", "outdated", "archived"] | None = None,
             ttl_days: float | None = None,
             entity_type: str | None = None,
             auto_link: bool = True,
@@ -229,7 +229,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
             owner_id: str = "default",
             text: str | None = None,
             metadata: dict | None = None,
-            status: str | None = None,
+            status: Literal["active", "outdated", "archived"] | None = None,
             ttl_days: float | None = None,
             entity_type: str | None = None,
             versioning: bool = False,
