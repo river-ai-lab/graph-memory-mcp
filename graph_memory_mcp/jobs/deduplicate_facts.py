@@ -4,11 +4,18 @@ from typing import Any, Dict, List
 
 from graph_memory_mcp.config import MCPServerConfig
 from graph_memory_mcp.graph_memory.database import FalkorDBClient
-from graph_memory_mcp.graph_memory.utils import format_vecf32, normalize_owner_id
+from graph_memory_mcp.graph_memory.utils import (
+    escape_value,
+    format_vecf32,
+    normalize_owner_id,
+    parse_embedding_value,
+)
 from graph_memory_mcp.jobs.lock import job_lock
 from graph_memory_mcp.jobs.retry import retry_async
 
 logger = logging.getLogger(__name__)
+
+_DEDUP_CANDIDATE_LIMIT = 1000
 
 
 def _parse_owner_ids(config: MCPServerConfig) -> List[str]:
@@ -18,88 +25,300 @@ def _parse_owner_ids(config: MCPServerConfig) -> List[str]:
     return owners or ["default"]
 
 
-async def _find_duplicate_fact_groups(
-    db: FalkorDBClient,
-    threshold: float,
-    max_group_size: int,
-    owner_id: str,
-    hours_threshold: int = 24,
-) -> List[Dict[str, Any]]:
-    """Find duplicate fact groups using vector similarity.
+def _resolve_owner_ids(db: FalkorDBClient, config: MCPServerConfig) -> List[str]:
+    """Resolve owner IDs either from config or by discovering them from the graph."""
+    if not config.jobs_process_all_owners:
+        return _parse_owner_ids(config)
 
-    Returns list of groups: [{"primary_id": "123", "duplicate_ids": ["456", "789"]}, ...]
+    query = """
+    MATCH (n)
+    WHERE n.owner_id IS NOT NULL AND n.owner_id <> ''
+    RETURN DISTINCT n.owner_id as owner_id
+    ORDER BY owner_id
     """
-    owner_id = normalize_owner_id(owner_id)
 
-    # Calculate time threshold (only check recent facts for incremental dedup)
-    time_threshold_ms = int((time.time() - hours_threshold * 3600) * 1000)
+    try:
+        result = db.graph.query(query)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Dedup job: failed to discover owners, falling back to jobs_owner_ids: %s",
+            exc,
+        )
+        return _parse_owner_ids(config)
 
-    # Find facts created within time window
+    if not result or not hasattr(result, "result_set") or not result.result_set:
+        return _parse_owner_ids(config)
+
+    owners = []
+    for row in result.result_set:
+        if not row or row[0] is None:
+            continue
+        raw_owner = row[0]
+        if isinstance(raw_owner, bytes):
+            raw_owner = raw_owner.decode("utf-8", errors="replace")
+        owner_text = str(raw_owner).strip()
+        if not owner_text:
+            continue
+        owners.append(normalize_owner_id(owner_text))
+
+    resolved_owners = sorted(set(owners))
+    return resolved_owners or _parse_owner_ids(config)
+
+
+def _parse_candidate_rows(rows: List[List[Any]]) -> List[Dict[str, Any]]:
+    """Convert raw query rows into candidate dictionaries."""
+    candidates: List[Dict[str, Any]] = []
+    for row in rows:
+        embedding = parse_embedding_value(row[4])
+        if not embedding:
+            continue
+
+        candidates.append(
+            {
+                "node_id": str(row[0]),
+                "text": row[1],
+                "created_at": row[2] or 0,
+                "touched_at": row[3] or 0,
+                "embedding": embedding,
+            }
+        )
+
+    return candidates
+
+
+def _query_candidate_batch(
+    db: FalkorDBClient,
+    *,
+    label: str,
+    owner_id: str,
+    limit: int,
+    touched_filter: str = "",
+) -> List[Dict[str, Any]]:
+    """Load one deterministic batch of pending dedup candidates."""
+    if limit <= 0:
+        return []
+
     query = f"""
-    MATCH (f:Fact)
-    WHERE f.owner_id = '{owner_id}'
-      AND f.created_at >= {time_threshold_ms}
-      AND (f.status IS NULL OR f.status = 'active')
-      AND (f.last_dedup_at IS NULL OR f.last_dedup_at < {time_threshold_ms})
-    RETURN id(f) as fact_id, f.embedding as embedding
-    LIMIT 1000
+    MATCH (n:{label})
+    WHERE n.owner_id = '{escape_value(owner_id)}'
+      AND (n.status IS NULL OR n.status = 'active')
+      AND n.embedding IS NOT NULL
+      AND (
+        n.last_dedup_at IS NULL
+        OR n.last_dedup_at < coalesce(n.updated_at, n.created_at)
+      )
+      {touched_filter}
+    RETURN
+      id(n) as node_id,
+      n.text as text,
+      n.created_at as created_at,
+      coalesce(n.updated_at, n.created_at) as touched_at,
+      n.embedding as embedding
+    ORDER BY touched_at ASC, created_at ASC, node_id ASC
+    LIMIT {limit}
     """
 
     result = db.graph.query(query)
     if not result or not hasattr(result, "result_set") or not result.result_set:
         return []
 
-    # For each fact, find similar facts
-    groups = []
+    return _parse_candidate_rows(result.result_set)
+
+
+def _load_dedup_candidates(
+    db: FalkorDBClient,
+    *,
+    label: str,
+    owner_id: str,
+    hours_threshold: int,
+) -> List[Dict[str, Any]]:
+    """Load pending same-owner nodes, prioritizing recent work and backfilling older backlog."""
+    owner_id = normalize_owner_id(owner_id)
+    time_threshold_ms = int((time.time() - hours_threshold * 3600) * 1000)
+
+    recent_candidates = _query_candidate_batch(
+        db,
+        label=label,
+        owner_id=owner_id,
+        limit=_DEDUP_CANDIDATE_LIMIT,
+        touched_filter=f"AND coalesce(n.updated_at, n.created_at) >= {time_threshold_ms}",
+    )
+    remaining = _DEDUP_CANDIDATE_LIMIT - len(recent_candidates)
+    if remaining <= 0:
+        return recent_candidates
+
+    backlog_candidates = _query_candidate_batch(
+        db,
+        label=label,
+        owner_id=owner_id,
+        limit=remaining,
+        touched_filter=f"AND coalesce(n.updated_at, n.created_at) < {time_threshold_ms}",
+    )
+    return recent_candidates + backlog_candidates
+
+
+def _query_similar_nodes(
+    db: FalkorDBClient,
+    *,
+    label: str,
+    node_id: str,
+    embedding: List[float],
+    owner_id: str,
+    threshold: float,
+    top_k: int,
+) -> List[Dict[str, Any]]:
+    """Query same-owner similar nodes across the full active corpus."""
     max_distance = 1.0 - threshold
+    query = f"""
+    CALL db.idx.vector.queryNodes('{label}', 'embedding', {top_k + 1}, {format_vecf32(embedding)})
+    YIELD node, score
+    WHERE score <= {max_distance}
+      AND node.owner_id = '{escape_value(owner_id)}'
+      AND id(node) <> {int(node_id)}
+      AND (node.status IS NULL OR node.status = 'active')
+    RETURN
+      id(node) as node_id,
+      node.created_at as created_at,
+      score
+    ORDER BY score ASC, created_at ASC, node_id ASC
+    LIMIT {top_k}
+    """
 
-    for row in result.result_set:
-        fact_id = str(row[0])
-        embedding = row[1]
+    result = db.graph.query(query)
+    if not result or not hasattr(result, "result_set") or not result.result_set:
+        return []
 
-        # Skip if no embedding
-        if not embedding:
+    return [
+        {
+            "node_id": str(row[0]),
+            "created_at": row[1] or 0,
+            "score": float(row[2]),
+        }
+        for row in result.result_set
+    ]
+
+
+def _find_duplicate_groups(
+    db: FalkorDBClient,
+    *,
+    label: str,
+    threshold: float,
+    max_group_size: int,
+    owner_id: str,
+    hours_threshold: int,
+    candidates: List[Dict[str, Any]] | None = None,
+) -> List[Dict[str, Any]]:
+    """Find duplicate groups for one label using incremental candidates vs owner corpus."""
+    owner_id = normalize_owner_id(owner_id)
+    candidates = candidates or _load_dedup_candidates(
+        db,
+        label=label,
+        owner_id=owner_id,
+        hours_threshold=hours_threshold,
+    )
+    if not candidates:
+        return []
+
+    groups: List[Dict[str, Any]] = []
+    top_k = max(max_group_size, getattr(db.config, "duplicate_top_k", 100))
+
+    for candidate in candidates:
+        matches = _query_similar_nodes(
+            db,
+            label=label,
+            node_id=candidate["node_id"],
+            embedding=candidate["embedding"],
+            owner_id=owner_id,
+            threshold=threshold,
+            top_k=top_k,
+        )
+        if not matches:
             continue
 
-        # Convert embedding to vecf32 format
-        if isinstance(embedding, (list, tuple)):
-            embedding_vec = format_vecf32(list(embedding))
-        else:
-            # Already in vecf32 format or need parsing
+        members = [
+            {"node_id": candidate["node_id"], "created_at": candidate["created_at"]},
+            *matches,
+        ]
+
+        deduped_members: dict[str, Dict[str, Any]] = {}
+        for member in members:
+            member_id = str(member["node_id"])
+            created_at = member.get("created_at") or 0
+            existing = deduped_members.get(member_id)
+            if existing is None or created_at < (existing.get("created_at") or 0):
+                deduped_members[member_id] = {
+                    "node_id": member_id,
+                    "created_at": created_at,
+                }
+
+        sorted_members = sorted(
+            deduped_members.values(),
+            key=lambda member: (member["created_at"], int(member["node_id"])),
+        )
+        if len(sorted_members) < 2:
             continue
 
-        # Find similar facts
-        similar_query = f"""
-        CALL db.idx.vector.queryNodes('Fact', 'embedding', 10, {embedding_vec})
-        YIELD node, score
-        WHERE score <= {max_distance}
-          AND node.owner_id = '{owner_id}'
-          AND id(node) <> {int(fact_id)}
-          AND (node.status IS NULL OR node.status = 'active')
-        RETURN id(node) as similar_id, score
-        ORDER BY score ASC
-        LIMIT {max_group_size - 1}
-        """
-
-        similar_result = db.graph.query(similar_query)
-        if (
-            not similar_result
-            or not hasattr(similar_result, "result_set")
-            or not similar_result.result_set
-        ):
-            continue
-
-        duplicate_ids = [str(r[0]) for r in similar_result.result_set]
-
+        primary_id = sorted_members[0]["node_id"]
+        duplicate_ids = [
+            member["node_id"]
+            for member in sorted_members[1 : max(2, max_group_size)]
+            if member["node_id"] != primary_id
+        ]
         if duplicate_ids:
             groups.append(
                 {
-                    "primary_id": fact_id,
+                    "primary_id": primary_id,
                     "duplicate_ids": duplicate_ids,
                 }
             )
 
     return groups
+
+
+def _mark_nodes_deduped(
+    db: FalkorDBClient,
+    *,
+    label: str,
+    owner_id: str,
+    node_ids: List[str],
+) -> None:
+    """Mark candidate nodes as checked so only new or updated nodes are reprocessed."""
+    if not node_ids:
+        return
+
+    query = f"""
+    MATCH (n:{label})
+    WHERE id(n) IN $node_ids AND n.owner_id = $owner_id
+    SET n.last_dedup_at = timestamp()
+    RETURN count(n) as updated
+    """
+    db.graph.query(
+        query,
+        params={
+            "node_ids": [int(node_id) for node_id in node_ids],
+            "owner_id": normalize_owner_id(owner_id),
+        },
+    )
+
+
+async def _find_duplicate_fact_groups(
+    db: FalkorDBClient,
+    threshold: float,
+    max_group_size: int,
+    owner_id: str,
+    hours_threshold: int = 24,
+    candidates: List[Dict[str, Any]] | None = None,
+) -> List[Dict[str, Any]]:
+    """Find duplicate fact groups across the same owner's active lifespan."""
+    return _find_duplicate_groups(
+        db,
+        label="Fact",
+        threshold=threshold,
+        max_group_size=max_group_size,
+        owner_id=owner_id,
+        hours_threshold=hours_threshold,
+        candidates=candidates,
+    )
 
 
 async def _merge_duplicate_facts(
@@ -115,14 +334,10 @@ async def _merge_duplicate_facts(
         return None
 
     owner_id = normalize_owner_id(owner_id)
-
-    # Primary is the first one (oldest)
     primary_id = fact_ids[0]
     duplicate_ids = fact_ids[1:]
 
-    # For each duplicate, redirect its relations to primary and mark as outdated
     for dup_id in duplicate_ids:
-        # 1) Redirect outgoing relations
         try:
             get_out_rels_query = f"""
             MATCH (dup:Fact)-[r]->(target)
@@ -142,14 +357,12 @@ async def _merge_duplicate_facts(
                     """
                     db.graph.query(merge_query, {"props": props})
 
-            # Delete old outgoing relations
             db.graph.query(
                 f"MATCH (dup:Fact)-[r]->() WHERE id(dup) = {int(dup_id)} DELETE r"
             )
         except Exception as e:
             logger.warning(f"Failed to redirect outgoing relations for {dup_id}: {e}")
 
-        # 2) Redirect incoming relations
         try:
             get_in_rels_query = f"""
             MATCH (source)-[r]->(dup:Fact)
@@ -169,14 +382,12 @@ async def _merge_duplicate_facts(
                     """
                     db.graph.query(merge_query, {"props": props})
 
-            # Delete old incoming relations
             db.graph.query(
                 f"MATCH ()-[r]->(dup:Fact) WHERE id(dup) = {int(dup_id)} DELETE r"
             )
         except Exception as e:
             logger.warning(f"Failed to redirect incoming relations for {dup_id}: {e}")
 
-        # Mark duplicate as outdated
         mark_outdated_query = f"""
         MATCH (f:Fact)
         WHERE id(f) = {int(dup_id)}
@@ -190,7 +401,6 @@ async def _merge_duplicate_facts(
         except Exception as e:
             logger.warning(f"Failed to mark {dup_id} as outdated: {e}")
 
-    # Update primary's last_dedup_at
     update_primary_query = f"""
     MATCH (f:Fact)
     WHERE id(f) = {int(primary_id)}
@@ -212,72 +422,18 @@ async def _find_duplicate_entity_groups(
     max_group_size: int,
     owner_id: str,
     hours_threshold: int = 24,
+    candidates: List[Dict[str, Any]] | None = None,
 ) -> List[Dict[str, Any]]:
-    """Find duplicate entity groups using vector similarity."""
-    owner_id = normalize_owner_id(owner_id)
-
-    time_threshold_ms = int((time.time() - hours_threshold * 3600) * 1000)
-
-    query = f"""
-    MATCH (e:Entity)
-    WHERE e.owner_id = '{owner_id}'
-      AND e.created_at >= {time_threshold_ms}
-      AND (e.status IS NULL OR e.status = 'active')
-      AND (e.last_dedup_at IS NULL OR e.last_dedup_at < {time_threshold_ms})
-    RETURN id(e) as entity_id, e.embedding as embedding
-    LIMIT 1000
-    """
-
-    result = db.graph.query(query)
-    if not result or not hasattr(result, "result_set") or not result.result_set:
-        return []
-
-    groups = []
-    max_distance = 1.0 - threshold
-
-    for row in result.result_set:
-        entity_id = str(row[0])
-        embedding = row[1]
-
-        if not embedding:
-            continue
-
-        if isinstance(embedding, (list, tuple)):
-            embedding_vec = format_vecf32(list(embedding))
-        else:
-            continue
-
-        similar_query = f"""
-        CALL db.idx.vector.queryNodes('Entity', 'embedding', 10, {embedding_vec})
-        YIELD node, score
-        WHERE score <= {max_distance}
-          AND node.owner_id = '{owner_id}'
-          AND id(node) <> {int(entity_id)}
-          AND (node.status IS NULL OR node.status = 'active')
-        RETURN id(node) as similar_id, score
-        ORDER BY score ASC
-        LIMIT {max_group_size - 1}
-        """
-
-        similar_result = db.graph.query(similar_query)
-        if (
-            not similar_result
-            or not hasattr(similar_result, "result_set")
-            or not similar_result.result_set
-        ):
-            continue
-
-        duplicate_ids = [str(r[0]) for r in similar_result.result_set]
-
-        if duplicate_ids:
-            groups.append(
-                {
-                    "primary_id": entity_id,
-                    "duplicate_ids": duplicate_ids,
-                }
-            )
-
-    return groups
+    """Find duplicate entity groups across the same owner's active lifespan."""
+    return _find_duplicate_groups(
+        db,
+        label="Entity",
+        threshold=threshold,
+        max_group_size=max_group_size,
+        owner_id=owner_id,
+        hours_threshold=hours_threshold,
+        candidates=candidates,
+    )
 
 
 async def _merge_duplicate_entities(
@@ -290,12 +446,10 @@ async def _merge_duplicate_entities(
         return None
 
     owner_id = normalize_owner_id(owner_id)
-
     primary_id = entity_ids[0]
     duplicate_ids = entity_ids[1:]
 
     for dup_id in duplicate_ids:
-        # 1) Redirect outgoing relations
         try:
             get_out_rels_query = f"""
             MATCH (dup:Entity)-[r]->(target)
@@ -315,7 +469,6 @@ async def _merge_duplicate_entities(
                     """
                     db.graph.query(merge_query, {"props": props})
 
-            # Delete old outgoing relations
             db.graph.query(
                 f"MATCH (dup:Entity)-[r]->() WHERE id(dup) = {int(dup_id)} DELETE r"
             )
@@ -324,7 +477,6 @@ async def _merge_duplicate_entities(
                 f"Failed to redirect outgoing relations for entity {dup_id}: {e}"
             )
 
-        # 2) Redirect incoming relations
         try:
             get_in_rels_query = f"""
             MATCH (source)-[r]->(dup:Entity)
@@ -344,7 +496,6 @@ async def _merge_duplicate_entities(
                     """
                     db.graph.query(merge_query, {"props": props})
 
-            # Delete old incoming relations
             db.graph.query(
                 f"MATCH ()-[r]->(dup:Entity) WHERE id(dup) = {int(dup_id)} DELETE r"
             )
@@ -381,9 +532,7 @@ async def _merge_duplicate_entities(
 
 
 async def deduplicate_facts(db: FalkorDBClient, config: MCPServerConfig) -> None:
-    """
-    Background job: periodic search and merge of duplicate facts.
-    """
+    """Background job: periodic same-owner deduplication for facts and entities."""
     if not config.enabled:
         logger.info("Dedup job: memory server is disabled in config, skipping")
         return
@@ -420,7 +569,6 @@ async def deduplicate_facts(db: FalkorDBClient, config: MCPServerConfig) -> None
         backoff_max=retry_backoff_max,
     )(_merge_duplicate_entities)
 
-    # Ensure vector indices exist
     try:
         db.create_vector_index()
     except Exception as exc:  # noqa: BLE001
@@ -432,16 +580,15 @@ async def deduplicate_facts(db: FalkorDBClient, config: MCPServerConfig) -> None
         logger.warning("Dedup job: failed to ensure Entity vector index: %s", exc)
 
     threshold = config.job_deduplicate_similarity_threshold
-    max_group_size = 2  # Pairwise deduplication
+    max_group_size = max(2, config.duplicate_max_group_size)
     hours_threshold = config.job_deduplicate_hours_threshold
 
     lock_ttl = config.jobs_lock_ttl_seconds
-    owners = _parse_owner_ids(config)
+    owners = _resolve_owner_ids(db, config)
 
     for owner_id in owners:
         lock_key = f"graph_memory_mcp:job:deduplicate_facts:{owner_id}"
 
-        # Handle Redis lock availability
         if not hasattr(db, "redis_client") or db.redis_client is None:
             logger.warning("Dedup job: Redis not available, running without lock")
             acquired = True
@@ -456,22 +603,32 @@ async def deduplicate_facts(db: FalkorDBClient, config: MCPServerConfig) -> None
                 continue
 
             logger.info(
-                "Dedup job: searching for duplicate fact groups "
-                "(threshold=%.3f, max_group_size=%s, hours_threshold=%s, owner_id=%s)",
+                "Dedup job: scanning owner_id=%s (threshold=%.3f, max_group_size=%s, hours_threshold=%s)",
+                owner_id,
                 threshold,
                 max_group_size,
                 hours_threshold,
-                owner_id,
             )
 
+            fact_candidates = _load_dedup_candidates(
+                db,
+                label="Fact",
+                owner_id=owner_id,
+                hours_threshold=hours_threshold,
+            )
             start_time = time.time()
             try:
-                groups = await find_duplicates_with_retry(
-                    db,
-                    threshold,
-                    max_group_size,
-                    owner_id=owner_id,
-                    hours_threshold=hours_threshold,
+                fact_groups = (
+                    await find_duplicates_with_retry(
+                        db,
+                        threshold,
+                        max_group_size,
+                        owner_id=owner_id,
+                        hours_threshold=hours_threshold,
+                        candidates=fact_candidates,
+                    )
+                    if fact_candidates
+                    else []
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.error(
@@ -481,37 +638,36 @@ async def deduplicate_facts(db: FalkorDBClient, config: MCPServerConfig) -> None
                 )
                 continue
 
-            if not groups:
+            if not fact_groups:
                 logger.info(
-                    "Dedup job: no duplicate fact groups found (owner_id=%s)", owner_id
+                    "Dedup job: no duplicate fact groups found (owner_id=%s, candidates=%d)",
+                    owner_id,
+                    len(fact_candidates),
                 )
             else:
                 logger.info(
-                    "Dedup job: found %d duplicate groups (owner_id=%s)",
-                    len(groups),
+                    "Dedup job: found %d duplicate fact groups (owner_id=%s, candidates=%d)",
+                    len(fact_groups),
                     owner_id,
+                    len(fact_candidates),
                 )
 
                 merged_groups = 0
                 merged_facts = 0
                 failed_groups = 0
-                seen_ids = set()
+                seen_ids: set[str] = set()
 
-                for group in groups:
+                for group in fact_groups:
                     primary_id = group.get("primary_id")
                     duplicate_ids = group.get("duplicate_ids") or []
 
-                    if not primary_id or not duplicate_ids:
-                        continue
-
-                    # Avoid processing nodes already seen as primary or duplicate
-                    if primary_id in seen_ids:
+                    if not primary_id or not duplicate_ids or primary_id in seen_ids:
                         continue
 
                     filtered_dupes = [
-                        d
-                        for d in duplicate_ids
-                        if d not in seen_ids and d != primary_id
+                        dup_id
+                        for dup_id in duplicate_ids
+                        if dup_id not in seen_ids and dup_id != primary_id
                     ]
                     if not filtered_dupes:
                         continue
@@ -519,11 +675,13 @@ async def deduplicate_facts(db: FalkorDBClient, config: MCPServerConfig) -> None
                     fact_ids = [primary_id, *filtered_dupes]
                     try:
                         result_id = await merge_duplicates_with_retry(
-                            db, fact_ids, owner_id=owner_id
+                            db,
+                            fact_ids,
+                            owner_id=owner_id,
                         )
                     except Exception as exc:  # noqa: BLE001
                         logger.warning(
-                            "Dedup job: failed to merge group for primary %s: %s",
+                            "Dedup job: failed to merge fact group for primary %s: %s",
                             primary_id,
                             exc,
                         )
@@ -535,35 +693,50 @@ async def deduplicate_facts(db: FalkorDBClient, config: MCPServerConfig) -> None
                         merged_facts += len(filtered_dupes)
                         seen_ids.add(primary_id)
                         seen_ids.update(filtered_dupes)
-                        if merged_groups == 1 or merged_groups % 10 == 0:
-                            logger.info(
-                                "Dedup job: sample merge #%d - primary=%s, merged %d facts",
-                                merged_groups,
-                                primary_id,
-                                len(filtered_dupes),
-                            )
                     else:
                         failed_groups += 1
 
-                elapsed_time = time.time() - start_time
                 logger.info(
-                    "Dedup job finished (owner_id=%s): merged_groups=%d, merged_facts=%d, failed_groups=%d, "
-                    "elapsed_time=%.2fs",
+                    "Dedup job (facts) finished (owner_id=%s): merged_groups=%d, merged_facts=%d, failed_groups=%d, elapsed_time=%.2fs",
                     owner_id,
                     merged_groups,
                     merged_facts,
                     failed_groups,
-                    elapsed_time,
+                    time.time() - start_time,
                 )
 
-            # Also deduplicate Entity nodes
             try:
-                ent_groups = await find_entity_duplicates_with_retry(
+                _mark_nodes_deduped(
                     db,
-                    threshold,
-                    max_group_size,
+                    label="Fact",
                     owner_id=owner_id,
-                    hours_threshold=hours_threshold,
+                    node_ids=[candidate["node_id"] for candidate in fact_candidates],
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Dedup job: failed to mark fact candidates as deduped (owner_id=%s): %s",
+                    owner_id,
+                    exc,
+                )
+
+            entity_candidates = _load_dedup_candidates(
+                db,
+                label="Entity",
+                owner_id=owner_id,
+                hours_threshold=hours_threshold,
+            )
+            try:
+                entity_groups = (
+                    await find_entity_duplicates_with_retry(
+                        db,
+                        threshold,
+                        max_group_size,
+                        owner_id=owner_id,
+                        hours_threshold=hours_threshold,
+                        candidates=entity_candidates,
+                    )
+                    if entity_candidates
+                    else []
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
@@ -573,37 +746,41 @@ async def deduplicate_facts(db: FalkorDBClient, config: MCPServerConfig) -> None
                 )
                 continue
 
-            if not ent_groups:
+            if not entity_groups:
                 logger.info(
-                    "Dedup job: no duplicate entity groups found (owner_id=%s)",
+                    "Dedup job: no duplicate entity groups found (owner_id=%s, candidates=%d)",
                     owner_id,
+                    len(entity_candidates),
                 )
             else:
                 merged_entity_groups = 0
                 failed_entity_groups = 0
-                seen_entity_ids = set()
+                seen_entity_ids: set[str] = set()
 
-                for group in ent_groups:
+                for group in entity_groups:
                     primary_id = group.get("primary_id")
                     duplicate_ids = group.get("duplicate_ids") or []
-                    if not primary_id or not duplicate_ids:
-                        continue
-
-                    if primary_id in seen_entity_ids:
+                    if (
+                        not primary_id
+                        or not duplicate_ids
+                        or primary_id in seen_entity_ids
+                    ):
                         continue
 
                     filtered_dupes = [
-                        d
-                        for d in duplicate_ids
-                        if d not in seen_entity_ids and d != primary_id
+                        dup_id
+                        for dup_id in duplicate_ids
+                        if dup_id not in seen_entity_ids and dup_id != primary_id
                     ]
                     if not filtered_dupes:
                         continue
 
-                    ent_ids = [primary_id, *filtered_dupes]
+                    entity_ids = [primary_id, *filtered_dupes]
                     try:
                         result_id = await merge_entity_duplicates_with_retry(
-                            db, entity_ids=ent_ids, owner_id=owner_id
+                            db,
+                            entity_ids=entity_ids,
+                            owner_id=owner_id,
                         )
                     except Exception as exc:  # noqa: BLE001
                         logger.warning(
@@ -626,6 +803,20 @@ async def deduplicate_facts(db: FalkorDBClient, config: MCPServerConfig) -> None
                     owner_id,
                     merged_entity_groups,
                     failed_entity_groups,
+                )
+
+            try:
+                _mark_nodes_deduped(
+                    db,
+                    label="Entity",
+                    owner_id=owner_id,
+                    node_ids=[candidate["node_id"] for candidate in entity_candidates],
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Dedup job: failed to mark entity candidates as deduped (owner_id=%s): %s",
+                    owner_id,
+                    exc,
                 )
 
         finally:

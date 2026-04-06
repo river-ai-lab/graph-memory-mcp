@@ -5,15 +5,21 @@ import logging
 import re
 from typing import Any, Dict, List, Optional
 
-from graph_memory_mcp.config import MCPServerConfig
-
 logger = logging.getLogger(__name__)
 
 
 def normalize_owner_id(owner_id: Optional[str]) -> str:
     """Normalize owner_id to a valid string."""
-    value = (owner_id or MCPServerConfig.default_owner_id).strip()
-    return value or MCPServerConfig.default_owner_id
+    default_owner_id = "default"
+    if owner_id is None:
+        return default_owner_id
+    if isinstance(owner_id, bytes):
+        value = owner_id.decode("utf-8", errors="replace").strip()
+    elif isinstance(owner_id, str):
+        value = owner_id.strip()
+    else:
+        value = str(owner_id).strip()
+    return value or default_owner_id
 
 
 def escape_value(value: Optional[str]) -> str:

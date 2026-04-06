@@ -72,12 +72,7 @@ def start_scheduler() -> AsyncIOScheduler:
         return scheduler
 
     # Initialize FalkorDB client
-    db = FalkorDBClient(
-        host=config.falkordb_host,
-        port=config.falkordb_port,
-        graph_name=config.falkordb_graph,
-        password=config.falkordb_password,
-    )
+    db = FalkorDBClient(config)
 
     # Test connection
     health = db.health_check()
@@ -143,12 +138,7 @@ async def run_job_now(job_name: str) -> Dict[str, Any]:
     """Run a known job immediately via API."""
     config = load_mcp_server_config()
 
-    db = FalkorDBClient(
-        host=config.falkordb_host,
-        port=config.falkordb_port,
-        graph_name=config.falkordb_graph,
-        password=config.falkordb_password,
-    )
+    db = FalkorDBClient(config)
 
     # Test connection
     health = db.health_check()
