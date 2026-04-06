@@ -3,8 +3,8 @@
 This directory contains usage patterns for **graph-memory-mcp** in three integration modes:
 
 - Direct Python integration
-- MCP over HTTP/SSE
-- External MCP-client configuration
+- MCP over Streamable HTTP
+- External MCP runtime configuration
 
 **Prerequisite:** FalkorDB must be running before any example.
 
@@ -25,9 +25,9 @@ pip install -e .
 | Mode | When to use | Server process | Transport | Example |
 |------|-------------|---------------|----------|--------|
 | **Direct Python** | LangGraph / RAG / pipelines inside Python | No | In-process calls | `embedded_python_usage.py` |
-| **HTTP MCP Server** | Agents connect to memory service | Yes | HTTP + SSE | `run_server.py` |
-| **HTTP MCP Client** | Testing / agent integration | Requires server | HTTP + SSE | `http_client_usage.py` |
-| **MCP Client Config** | Cursor / Claude / n8n | External server | MCP runtime | `mcp_servers_config.json` |
+| **HTTP MCP Server** | Agents connect to memory service | Yes | Streamable HTTP | `run_server.py` |
+| **HTTP MCP Client** | Testing / agent integration | Requires server | Streamable HTTP | `http_client_usage.py` |
+| **MCP Runtime Config** | HTTP-capable MCP runtimes | External server | Streamable HTTP | `mcp_servers_config.json` |
 
 ---
 
@@ -37,7 +37,7 @@ Runs Graph Memory as a library, not a service. No HTTP, no MCP client — tools 
 
 **Run example:**
 ```bash
-python examples/embedded_python_usage.py
+uv run --env-file .env python examples/embedded_python_usage.py
 ```
 
 **Concept:**
@@ -50,8 +50,11 @@ graph TD
 **Example call:**
 ```python
 server = GraphMemoryMCP(config)
-# Tools are available directly on the server instance
-await server.call_tool("create_node", arguments={"text": "Example fact"})
+result = server.create_node(
+    text="Example fact",
+    node_type="Fact",
+    owner_id="demo_owner",
+)
 ```
 
 **Best for:**
@@ -68,12 +71,11 @@ Runs Graph Memory as a standalone MCP service.
 
 **Start server:**
 ```bash
-python examples/run_server.py
+uv run --env-file .env python examples/run_server.py
 ```
 
 **Server endpoints:**
-- `http://127.0.0.1:8000/mcp/sse`
-- `http://127.0.0.1:8000/mcp/messages`
+- `http://127.0.0.1:8000/mcp` (MCP Streamable HTTP endpoint)
 
 **Concept:**
 ```mermaid
@@ -97,37 +99,41 @@ Demonstrates how to connect to the MCP server using the Python MCP SDK.
 
 **1. Start server first:**
 ```bash
-python examples/run_server.py
+uv run --env-file .env python examples/run_server.py
 ```
 
 **2. Then run client:**
 ```bash
-python examples/http_client_usage.py
+uv run --env-file .env python examples/http_client_usage.py
 ```
 
 **Example tool call:**
 ```python
-async with ClientSession(read, write) as session:
-    await session.call_tool("create_node", arguments={...})
+async with streamable_http_client("http://127.0.0.1:8000/mcp") as (read, write, get_session_id):
+    async with ClientSession(read, write) as session:
+        await session.call_tool("create_node", arguments={...})
 ```
 
 ---
 
 ## 4. MCP Client Configuration
 
-`mcp_servers_config.json` shows how to register Graph Memory in:
-- Cursor
-- Claude Desktop
-- n8n
-- Other MCP runtimes
+`mcp_servers_config.json` shows the essential values for runtimes that support
+connecting to an existing Streamable HTTP MCP server by URL.
+
+Important:
+
+- This is **not** a universal copy-paste config for every client.
+- Some MCP clients support only stdio servers, not remote HTTP servers.
+- If your client supports remote MCP over HTTP, point it to `http://127.0.0.1:8000/mcp`.
 
 **Example configuration:**
 ```json
 {
   "mcpServers": {
     "graph-memory-mcp": {
-      "command": "uv",
-      "args": ["run", "graph-memory-mcp"]
+      "transport": "streamable_http",
+      "url": "http://127.0.0.1:8000/mcp"
     }
   }
 }
@@ -140,12 +146,15 @@ async with ClientSession(read, write) as session:
 The server can be run directly using the CLI:
 
 ```bash
-# Default (port 8000)
-graph-memory-mcp
+uv run graph-memory-mcp
 
 # Custom host/port
-graph-memory-mcp --host 0.0.0.0 --port 8100
+uv run graph-memory-mcp --host 0.0.0.0 --port 8100
 ```
+
+Note:
+
+- The CLI and `examples/run_server.py` both serve the MCP endpoint at `/mcp`.
 
 ---
 
