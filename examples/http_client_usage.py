@@ -2,11 +2,11 @@
 HTTP Client Example (Pure Python)
 =================================
 
-This example demonstrates how to act as an MCP Client connecting to the
-Graph Memory Server over HTTP/SSE.
+This example demonstrates how to act as an MCP client connecting to the
+Graph Memory server over Streamable HTTP.
 
 Architecture:
-  [Your Script] -> (HTTP/SSE) -> [Graph Memory Server]
+  [Your Script] -> (Streamable HTTP) -> [Graph Memory Server]
 
 Prerequisites:
   1. Start the server (in a separate terminal):
@@ -22,9 +22,9 @@ Dependencies:
 import asyncio
 
 from mcp.client.session import ClientSession
-from mcp.client.sse import sse_client
+from mcp.client.streamable_http import streamable_http_client
 
-SERVER_URL = "http://127.0.0.1:8000/mcp/sse"
+SERVER_URL = "http://127.0.0.1:8000/mcp"
 
 
 def dump_tool_result(res):
@@ -42,12 +42,16 @@ def dump_tool_result(res):
 
 
 async def main():
-    async with sse_client(SERVER_URL) as (read, write):
+    async with streamable_http_client(SERVER_URL) as (read, write, get_session_id):
         async with ClientSession(read, write) as session:
             await session.initialize()
+            print("Connected. Session ID:", get_session_id())
 
             tools = await session.list_tools()
             print("Tools:", [t.name for t in tools.tools])
+
+            res = await session.call_tool("ensure_vector_indexes", arguments={})
+            dump_tool_result(res)
 
             res = await session.call_tool(
                 "create_node",
@@ -62,8 +66,9 @@ async def main():
             res = await session.call_tool(
                 "search",
                 arguments={
-                    "query": "connect external data",
+                    "query": "MCP allows AI models to connect to external data.",
                     "owner_id": "http_client_demo",
+                    "similarity_threshold": 0.3,
                 },
             )
             dump_tool_result(res)
