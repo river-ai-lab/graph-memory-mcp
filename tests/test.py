@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import os
 import uuid
+from typing import Any, cast
 
 import anyio
 import httpx
@@ -44,7 +45,11 @@ import redis
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
-from graph_memory_mcp.config import load_mcp_server_config
+from graph_memory_mcp.config import MCPServerConfig, load_mcp_server_config
+from graph_memory_mcp.graph_memory.database import FalkorDBClient
+from graph_memory_mcp.graph_memory.mcp_handlers_graph import get_context
+from graph_memory_mcp.graph_memory.mcp_handlers_nodes import create_node, update_node
+from graph_memory_mcp.graph_memory.mcp_handlers_search import find_similar, search
 from graph_memory_mcp.server import GraphMemoryMCP
 
 
@@ -595,3 +600,271 @@ async def test_multi_tenant_isolation():
                 assert not owner1_found, "Owner2 should not see Owner1's data"
 
                 tg.cancel_scope.cancel()
+
+
+class _FakeResult:
+    def __init__(self, rows):
+        self.result_set = rows
+
+
+class _FakeGraph:
+    def __init__(self, responses=None):
+        self.calls: list[tuple[str, Any]] = []
+        self._responses = list(responses or [])
+
+    def query(self, query, params=None):
+        self.calls.append((query, params))
+        if self._responses:
+            return self._responses.pop(0)
+        return _FakeResult([])
+
+
+class _FakeCache:
+    def __init__(self):
+        self.invalidations = 0
+        self.search_cache = {}
+
+    def invalidate_search(self):
+        self.invalidations += 1
+
+    def get_search(self, key):
+        return self.search_cache.get(key)
+
+    def set_search(self, key, value):
+        self.search_cache[key] = value
+
+
+class _FakeNodeDB:
+    def __init__(self, responses):
+        self.graph = _FakeGraph(responses)
+        self.cache = _FakeCache()
+        self.embedding_calls: list[str] = []
+        self.config = MCPServerConfig()
+
+    def get_embedding(self, text: str):
+        self.embedding_calls.append(text)
+        return [0.1, 0.2, 0.3]
+
+
+class _FakeGraphDB:
+    def __init__(self, responses=None):
+        self.graph = _FakeGraph(responses)
+
+
+class _FakeSearchDB:
+    def __init__(self, responses):
+        self.graph = _FakeGraph(responses)
+        self.cache = _FakeCache()
+        self.config = MCPServerConfig()
+
+    def get_embedding(self, text: str):
+        return [0.1, 0.2, 0.3]
+
+
+def _fact_row(
+    node_id: int,
+    *,
+    text: str,
+    updated_at: int = 1_700_000_000_000,
+):
+    return [
+        node_id,
+        "Fact",
+        text,
+        None,
+        "active",
+        1_700_000_000_000,
+        updated_at,
+        "{}",
+        [],
+        None,
+        None,
+        None,
+    ]
+
+
+def test_get_context_limits_nodes_before_collect():
+    """get_context should keep isolated nodes and limit nodes before loading edges."""
+    db = _FakeGraphDB(
+        [
+            _FakeResult([[123, "Fact", "isolated fact"]]),
+            _FakeResult([]),
+        ]
+    )
+    cfg = MCPServerConfig()
+
+    result = get_context(
+        cast(Any, db),
+        cfg,
+        node_id="123",
+        owner_id="default",
+        depth=2,
+        max_nodes=5,
+    )
+
+    assert result["success"] is True
+    assert result["nodes"] == [
+        {"node_id": "123", "node_type": "Fact", "text": "isolated fact"}
+    ]
+    assert result["edges"] == []
+
+    nodes_query, nodes_params = db.graph.calls[0]
+    assert nodes_params == {"node_id": 123, "owner_id": "default"}
+    assert "WITH DISTINCT connected" in nodes_query
+    assert "LIMIT 5" in nodes_query
+    assert "RETURN\n        id(connected) as node_id" in nodes_query
+
+    edges_query, edges_params = db.graph.calls[1]
+    assert "WHERE id(n) IN $node_ids AND id(m) IN $node_ids" in edges_query
+    assert edges_params == {"node_ids": [123]}
+
+
+def test_create_node_reuses_embedding_for_auto_link():
+    """create_node should not re-embed fact text before auto-linking."""
+    db = _FakeNodeDB(
+        [
+            _FakeResult([_fact_row(123, text="created fact")]),
+            _FakeResult([[1]]),
+        ]
+    )
+    cfg = MCPServerConfig()
+
+    result = create_node(
+        cast(Any, db),
+        cfg,
+        text="created fact",
+        node_type="Fact",
+        owner_id="default",
+        auto_link=True,
+    )
+
+    assert result["success"] is True
+    assert result["node"]["node_id"] == "123"
+    assert db.embedding_calls == ["created fact"]
+    assert len(db.graph.calls) == 2
+    assert db.cache.invalidations == 1
+
+
+def test_update_node_returns_updated_node_without_follow_up_fetch():
+    """update_node should return projected fields from the update query."""
+    db = _FakeNodeDB(
+        [
+            _FakeResult([_fact_row(123, text="before", updated_at=1)]),
+            _FakeResult([_fact_row(123, text="after", updated_at=2)]),
+        ]
+    )
+
+    result = update_node(
+        cast(Any, db),
+        node_id="123",
+        owner_id="default",
+        text="after",
+    )
+
+    assert result["success"] is True
+    assert result["node"]["text"] == "after"
+    assert len(db.graph.calls) == 2
+    assert db.embedding_calls == ["after"]
+    assert db.cache.invalidations == 1
+
+
+def test_find_similar_uses_shared_escape_helper():
+    """find_similar should not depend on a db.escape_value method."""
+    db = _FakeSearchDB(
+        [
+            _FakeResult([[[0.1, 0.2, 0.3]]]),
+            _FakeResult(
+                [
+                    [
+                        456,
+                        "Similar fact",
+                        "active",
+                        1_700_000_000_000,
+                        '{"source":"test"}',
+                        0.2,
+                    ]
+                ]
+            ),
+        ]
+    )
+    cfg = MCPServerConfig()
+
+    result = find_similar(
+        cast(FalkorDBClient, db),
+        cfg,
+        fact_id="123",
+        owner_id="team'o",
+        limit=5,
+    )
+
+    assert result["success"] is True
+    assert result["similar_facts"][0]["node_id"] == "456"
+    assert len(db.graph.calls) == 2
+
+    similar_query, _ = db.graph.calls[1]
+    assert "node.owner_id = 'team\\'o'" in similar_query
+
+
+def test_search_filters_active_nodes_by_default():
+    """search should filter both Facts and Entities to active nodes by default."""
+    db = _FakeSearchDB([_FakeResult([]), _FakeResult([])])
+    cfg = MCPServerConfig()
+
+    result = search(
+        cast(Any, db),
+        cfg,
+        query="important query",
+        owner_id="default",
+    )
+
+    assert result["success"] is True
+
+    fact_query, _ = db.graph.calls[0]
+    entity_query, _ = db.graph.calls[1]
+    active_clause = "(node.status IS NULL OR node.status = 'active')"
+    assert active_clause in fact_query
+    assert active_clause in entity_query
+    assert "(node.expires_at IS NULL OR node.expires_at > timestamp())" in fact_query
+
+
+def test_search_status_override_applies_to_entities():
+    """Explicit status filters should apply to Entity searches too."""
+    db = _FakeSearchDB([_FakeResult([])])
+    cfg = MCPServerConfig()
+
+    result = search(
+        cast(Any, db),
+        cfg,
+        query="archived query",
+        owner_id="default",
+        node_types=["Entity"],
+        status="archived",
+    )
+
+    assert result["success"] is True
+    entity_query, _ = db.graph.calls[0]
+    assert "node.status = 'archived'" in entity_query
+    assert "(node.status IS NULL OR node.status = 'active')" not in entity_query
+
+
+def test_update_node_clears_expiration_for_nonpositive_ttl():
+    """update_node should clear expires_at instead of expiring immediately."""
+    db = _FakeNodeDB(
+        [
+            _FakeResult([_fact_row(123, text="before", updated_at=1)]),
+            _FakeResult([_fact_row(123, text="before", updated_at=2)]),
+        ]
+    )
+    db.config = MCPServerConfig(min_ttl_days=-1.0)
+
+    result = update_node(
+        cast(Any, db),
+        node_id="123",
+        owner_id="default",
+        ttl_days=0,
+    )
+
+    assert result["success"] is True
+    update_query, update_params = db.graph.calls[1]
+    assert "n.expires_at = NULL" in update_query
+    assert "expires_at" not in update_params

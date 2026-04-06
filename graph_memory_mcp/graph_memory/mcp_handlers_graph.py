@@ -27,63 +27,73 @@ def get_context(
 ) -> Dict:
     """Get subgraph context around a node."""
     owner_id = normalize_owner_id(owner_id)
-    depth = min(depth or config.subgraph_default_depth, config.subgraph_max_depth)
+    depth = max(
+        0, min(depth or config.subgraph_default_depth, config.subgraph_max_depth)
+    )
     max_nodes = min(
         max_nodes or config.subgraph_default_max_nodes, config.subgraph_max_nodes_limit
     )
 
-    query = f"""
+    nodes_query = f"""
     MATCH path = (center)-[*0..{depth}]-(connected)
     WHERE id(center) = $node_id
       AND center.owner_id = $owner_id
       AND connected.owner_id = $owner_id
-    WITH collect(DISTINCT connected) as nodes
+    WITH DISTINCT connected
     LIMIT {max_nodes}
-    MATCH (n)-[r]->(m)
-    WHERE n IN nodes AND m IN nodes
-    RETURN DISTINCT
-        id(n) as from_id,
-        labels(n)[0] as from_type,
-        n.text as from_text,
-        type(r) as relation_type,
-        id(m) as to_id,
-        labels(m)[0] as to_type,
-        m.text as to_text,
-        properties(r) as relation_props
+    RETURN
+        id(connected) as node_id,
+        labels(connected)[0] as node_type,
+        connected.text as text
     """
-
-    result = execute_query(db, query, {"node_id": int(node_id), "owner_id": owner_id})
 
     nodes = {}
     edges = []
 
-    if result and hasattr(result, "result_set"):
-        for row in result.result_set:
-            from_id = str(row[0])
-            to_id = str(row[4])
+    nodes_result = execute_query(
+        db,
+        nodes_query,
+        {"node_id": int(node_id), "owner_id": owner_id},
+    )
+    if nodes_result and hasattr(nodes_result, "result_set"):
+        for row in nodes_result.result_set:
+            current_id = str(row[0])
+            nodes[current_id] = {
+                "node_id": current_id,
+                "node_type": row[1],
+                "text": ensure_text(row[2]),
+            }
 
-            if from_id not in nodes:
-                nodes[from_id] = {
-                    "node_id": from_id,
-                    "node_type": row[1],
-                    "text": ensure_text(row[2]),
-                }
+    if nodes:
+        edges_query = """
+        MATCH (n)-[r]->(m)
+        WHERE id(n) IN $node_ids AND id(m) IN $node_ids
+        RETURN DISTINCT
+            id(n) as from_id,
+            labels(n)[0] as from_type,
+            n.text as from_text,
+            type(r) as relation_type,
+            id(m) as to_id,
+            labels(m)[0] as to_type,
+            m.text as to_text,
+            properties(r) as relation_props
+        """
 
-            if to_id not in nodes:
-                nodes[to_id] = {
-                    "node_id": to_id,
-                    "node_type": row[5],
-                    "text": ensure_text(row[6]),
-                }
-
-            edges.append(
-                {
-                    "from_id": from_id,
-                    "to_id": to_id,
-                    "relation_type": ensure_text(row[3]),
-                    "properties": row[7] if len(row) > 7 else {},
-                }
-            )
+        edges_result = execute_query(
+            db,
+            edges_query,
+            {"node_ids": [int(current_id) for current_id in nodes]},
+        )
+        if edges_result and hasattr(edges_result, "result_set"):
+            for row in edges_result.result_set:
+                edges.append(
+                    {
+                        "from_id": str(row[0]),
+                        "to_id": str(row[4]),
+                        "relation_type": ensure_text(row[3]),
+                        "properties": row[7] if len(row) > 7 else {},
+                    }
+                )
 
     return success_response(
         nodes=list(nodes.values()),
