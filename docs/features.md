@@ -5,8 +5,8 @@
 This document is the **normative contract** (tool signatures, response shapes, error codes).
 
 See also:
-- `docs/ops.md` (deployment/runtime notes)
 - `docs/background_jobs.md` (optional background jobs)
+- `README.md` (install, FalkorDB, CLI including `--simple`)
 
 ## Data Model
 
@@ -21,7 +21,7 @@ All nodes share these attributes:
 - `ttl_days`: relative TTL in days (float, optional) — calculates `expires_at` if not set
 - `expires_at`: absolute expiration timestamp (int, milliseconds, optional) — takes precedence over `ttl_days` if both set
 - `embedding`: vector representation (list[float], not returned via MCP)
-- `source`: creation source (string, default: "mcp")
+- `source`: optional provenance object: `{ref, type, uri, content_hash, updated_at, version}`
 - `status`: lifecycle status (string: "active" | "outdated" | "archived", default: "active")
 
 ### Fact
@@ -66,6 +66,7 @@ All inputs are validated to ensure data quality and security. Validation limits 
 | `ttl_days` | Range | 0 < ttl_days ≤ 3650 | `memory_validation_error` |
 | `owner_id` | Format | Alphanumeric + `-_@` | `memory_validation_error` |
 | `relation_type` | Format | Alphanumeric + `_` | `memory_validation_error` |
+| `source.version` | Range | Integer ≥ 1 | `memory_validation_error` |
 
 ### Configuration
 
@@ -146,25 +147,67 @@ Cache statistics are available in `health_check`:
 
 ---
 
+## Simple server profile
+
+`GraphMemorySimpleMCP` (`graph_memory_mcp.server_simple`) and `graph-memory-mcp --simple` expose the **same tool names and handler behavior** as the default server, with these MCP differences:
+
+| Area | Default server | Simple profile |
+|------|----------------|----------------|
+| Provenance | `source: dict` on `create_node` / `update_node` | Flat fields: `ref`, `provenance_type`, `uri`, `content_hash`, `updated_at`, `version` (mapped to the same `source` object internally) |
+| `upsert_node` | Available (`source.ref` required) | **Not registered** — use the default server for sync-by-ref |
+
+All other tools (search, triplets, graph traversal, admin, jobs via config, etc.) match the default server.
+
+---
+
 ## Tools
 
 #### create_node
 **Required:**
-- `text: str | None`
+- `text: str`
 
 **Optional:**
 - `node_type: str = "Fact"` — "Fact" or "Entity"
 - `owner_id: str = "default"`
-- `source: str = "mcp"`
 - `metadata: dict | None = None`
+- `source: dict | None = None` — optional provenance object with keys `ref`, `type`, `uri`, `content_hash`, `updated_at`, `version`
 - `status: str | None = None` — "active" | "outdated" | "archived" (default: "active")
 - `ttl_days: float | None = None`
-- `expires_at: int | None = None`
+- `entity_type: str | None = None` (Entities only)
 - `auto_link: bool = True` (Facts only)
 - `semantic_threshold: float | None = None` (Facts only)
 - `links: list[dict] | None = None` — list of `{"node_id": str, "node_type": str, "relation_type": str}`
 
 **Response:** `{"success": true, "node": {...}}`
+**Errors:** `memory_validation_error`, `memory_service_error`
+
+#### ensure_vector_indexes
+**Required:** (none)
+
+**Optional:** (none)
+
+**Response:** `{"success": true, "indexes": {"Fact": bool, "Entity": bool}, "dimension": int}`
+**Errors:** `memory_service_error`
+
+#### upsert_node
+**Required:**
+- `text: str`
+- `source: dict` — must include `source.ref`
+
+**Optional:**
+- `node_type: str = "Fact"` — "Fact" or "Entity"
+- `owner_id: str = "default"`
+- `metadata: dict | None = None`
+- `description: str | None = None`
+- `status: str | None = None` — "active" | "outdated" | "archived"
+- `ttl_days: float | None = None`
+- `entity_type: str | None = None` (Entities only)
+- `versioning: bool = False` — when true, stores a snapshot before update and auto-increments `source.version` if omitted
+- `auto_link: bool = True` (Facts only)
+- `semantic_threshold: float | None = None` (Facts only)
+- `links: list[dict] | None = None`
+
+**Response:** `{"success": true, "node": {...}, "operation": "created" | "updated"}`
 **Errors:** `memory_validation_error`, `memory_service_error`
 
 #### get_node
@@ -184,13 +227,12 @@ Cache statistics are available in `health_check`:
 **Optional:**
 - `owner_id: str = "default"`
 - `text: str | None = None`
-- `source: str | None = None`
 - `metadata: dict | None = None`
+- `source: dict | None = None` — provenance object with keys `ref`, `type`, `uri`, `content_hash`, `updated_at`, `version`
 - `status: str | None = None` — "active" | "outdated" | "archived"
 - `ttl_days: float | None = None`
-- `expires_at: int | None = None`
 - `entity_type: str | None = None` (Entities only)
-- `versioning: bool = False`
+- `versioning: bool = False` — stores a snapshot before update and auto-increments `source.version` if omitted
 
 **Response:** `{"success": true, "node": {...}}`
 **Errors:** `memory_validation_error`, `memory_not_found`, `memory_service_error`
@@ -212,7 +254,7 @@ Cache statistics are available in `health_check`:
 **Optional:**
 - `owner_id: str = "default"`
 
-**Response:** `{"success": true, "versions": [...]}`
+**Response:** `{"success": true, "versions": [...], "count": int}`
 **Errors:** `memory_not_found`, `memory_service_error`
 
 
@@ -237,11 +279,10 @@ Cache statistics are available in `health_check`:
 
 **Optional:**
 - `owner_id: str = "default"`
-- `threshold: float | None = None` (default from config)
-- `limit: int = 10`
-- `include_relations: bool = True`
+- `similarity_threshold: float | None = None` (default from config)
+- `limit: int = 5`
 
-**Response:** `{"success": true, "results": [...]}`
+**Response:** `{"success": true, "similar_facts": [...]}`
 **Errors:** `memory_service_error`
 
 #### mark_outdated
@@ -277,7 +318,7 @@ Cache statistics are available in `health_check`:
 - `predicate: str | None = None`
 - `object_value: str | None = None`
 - `owner_id: str = "default"`
-- `limit: int = 100`
+- `limit: int = 10`
 
 **Response:** `{"success": true, "triplets": [...]}`
 **Errors:** `memory_service_error`
@@ -309,15 +350,15 @@ Cache statistics are available in `health_check`:
 
 #### get_context
 **Required:**
-- `node_id: str` (default: "" — empty string allowed but not recommended)
+- `node_id: str`
 
 **Optional:**
 - `owner_id: str = "default"`
 - `depth: int = 1`
 - `max_nodes: int = 20` (default from config: `subgraph_default_max_nodes`)
 
-**Response:** `{"success": true, "nodes": [...], "edges": [...]}`
-**Errors:** `memory_not_found`, `memory_service_error`
+**Response:** `{"success": true, "nodes": [...], "edges": [...], "depth": int, "max_nodes": int}`
+**Errors:** `memory_service_error`
 
 #### get_trace
 **Required:**
@@ -326,9 +367,10 @@ Cache statistics are available in `health_check`:
 
 **Optional:**
 - `owner_id: str = "default"`
-- `max_paths: int = 5`
+- `max_depth: int = 5`
 
-**Response:** `{"success": true, "paths": [...]}`
+**Response:** `{"success": true, "nodes": [...], "relations": [...], "message"?: str}`
+If no path is found, `nodes` and `relations` are returned as empty arrays.
 **Errors:** `memory_service_error`
 
 #### create_summary_fact
@@ -338,8 +380,9 @@ Cache statistics are available in `health_check`:
 
 **Optional:**
 - `owner_id: str = "default"`
+- `metadata: dict | None = None`
 
-**Response:** `{"success": true, "node": {...}}`
+**Response:** `{"success": true, "summary": {...}}`
 **Errors:** `memory_validation_error`, `memory_service_error`
 
 #### test_connection
@@ -347,8 +390,8 @@ Cache statistics are available in `health_check`:
 
 **Optional:** (none)
 
-**Response:** `{success, message}`
-**Errors:** `connection_error`
+**Response:** `{"success": true, "ready": bool}`
+**Errors:** `memory_service_error`
 
 #### get_stats
 **Required:** (none)
@@ -364,7 +407,7 @@ Cache statistics are available in `health_check`:
 
 **Optional:** (none)
 
-**Response:** `{"success": true, "falkordb": bool, "embeddings": bool, "vector_index": bool}`
+**Response:** `{"success": true, "falkordb": bool, "embeddings": bool, "vector_index": bool, "cache": {...}}`
 **Errors:** (none)
 
 ### Response Format
@@ -376,7 +419,7 @@ Cache statistics are available in `health_check`:
 
 **Error:**
 ```json
-{"success": false, "error": "error message", "error_code": "error_code"}
+{"success": false, "error": "error message", "code": "error_code"}
 ```
 
 ### Error Codes

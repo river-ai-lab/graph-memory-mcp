@@ -60,23 +60,25 @@ class CacheManager:
         return {
             "embeddings": {
                 "enabled": self.embeddings is not None,
-                "size": len(self.embeddings) if self.embeddings else 0,
+                "size": len(self.embeddings) if self.embeddings is not None else 0,
                 "maxsize": (
                     getattr(self.config, "cache_embeddings_maxsize", 0)
-                    if self.embeddings
+                    if self.embeddings is not None
                     else 0
                 ),
             },
             "search": {
                 "enabled": self.search is not None,
-                "size": len(self.search) if self.search else 0,
+                "size": len(self.search) if self.search is not None else 0,
                 "maxsize": (
                     getattr(self.config, "cache_search_maxsize", 0)
-                    if self.search
+                    if self.search is not None
                     else 0
                 ),
                 "ttl": (
-                    getattr(self.config, "cache_search_ttl", 0) if self.search else 0
+                    getattr(self.config, "cache_search_ttl", 0)
+                    if self.search is not None
+                    else 0
                 ),
             },
         }
