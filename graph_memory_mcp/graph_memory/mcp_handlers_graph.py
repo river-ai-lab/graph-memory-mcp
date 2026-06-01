@@ -141,7 +141,11 @@ def get_trace(
     )
 
     if not result:
-        return success_response(path=None, message="No path found")
+        return success_response(nodes=[], relations=[], message="No path found")
 
     row = result.result_set[0]
-    return success_response(nodes=row[0], relations=row[1])
+    nodes = row[0] if len(row) > 0 and row[0] else []
+    relations = row[1] if len(row) > 1 and row[1] else []
+    if not nodes:
+        return success_response(nodes=[], relations=[], message="No path found")
+    return success_response(nodes=nodes, relations=relations)

@@ -91,6 +91,16 @@ To run with a persistent HTTP endpoint for manual debugging via `curl`:
 graph-memory-mcp --host 127.0.0.1 --port 8000
 ```
 
+### Simple server profile (home / personal)
+
+Same handlers and graph behavior as the default server, but MCP tools use **flat provenance fields** (`ref`, `provenance_type`, `uri`, …) instead of a nested `source` object, and **`upsert_node` is not registered**. Use the full server when you need sync-by-ref upserts.
+
+```bash
+graph-memory-mcp --simple --host 127.0.0.1 --port 8000
+```
+
+See [Simple server profile](./docs/features.md#simple-server-profile) in the API contract.
+
 ## Configuration
 
 Settings are loaded from environment variables and optional `.env` file.
@@ -152,10 +162,10 @@ MCP Graph Memory is designed for **multi-agent systems** where multiple agents n
 
 ### Example: Multi-Agent Setup
 
-Use `owner_id` to isolate knowledge between agents/tenants. For example:
+Use `owner_id` to isolate knowledge between agents/tenants. Values must be alphanumeric plus `-`, `_`, and `@` (see [`docs/memory_policies_for_LLM.md`](docs/memory_policies_for_LLM.md)). For example:
 
-- Agent A writes to `owner_id="team:shared"`
-- Agent B searches within `owner_id="team:shared"` (shared) or `owner_id="agent:codegen"` (isolated)
+- Agent A writes to `owner_id="team_platform"`
+- Agent B searches within `owner_id="team_platform"` (shared) or `owner_id="agent_codegen"` (isolated)
 
 ### Owner Isolation
 
@@ -164,14 +174,22 @@ Use `owner_id` to:
 - **Share knowledge**: Use the same `owner_id` for shared knowledge base
 - **Cross-reference**: Query across owners when needed (with proper permissions)
 
-All MCP tools support `owner_id` parameter (defaults to `"default"`).
+All MCP tools support `owner_id` parameter (defaults to `"default"`). Agents should pass `owner_id` explicitly rather than relying on the default.
 
-See [`docs/use-cases.md`](docs/use-cases.md) for comprehensive multi-agent usage guide.
+See [`docs/memory_policies_for_LLM.md`](docs/memory_policies_for_LLM.md) and [`docs/memory_faq.md`](docs/memory_faq.md) for operational guidance.
 
 ## Development
 
+Unit tests (no FalkorDB):
+
 ```bash
-pytest
+uv run pytest -q
+```
+
+Full suite including integration tests (requires a running FalkorDB; see [Running FalkorDB](#running-falkordb)):
+
+```bash
+RUN_INTEGRATION_TESTS=1 uv run pytest -q
 ```
 
 ## Smoke Test (Quick Verification)
@@ -237,6 +255,6 @@ Graph Memory MCP sits between:
 - Full graph analytics platforms (too heavy)
 
 It provides practical, agent-ready memory infrastructure.
-See [`comparison.md`](comparison.md) for detailed comparison with alternatives.
+See [`docs/comparison.md`](docs/comparison.md) for detailed comparison with alternatives.
 
 > **Note:** Some test code was generated with LLM assistance and may require further review and refinement.

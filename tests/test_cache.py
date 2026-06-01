@@ -80,8 +80,11 @@ def test_cache_stats(cache_manager, cache_config):
     assert "search" in stats
     assert stats["embeddings"]["enabled"] is True
     assert stats["embeddings"]["size"] == 0
+    assert stats["embeddings"]["maxsize"] == 10
     assert stats["search"]["enabled"] is True
     assert stats["search"]["size"] == 0
+    assert stats["search"]["maxsize"] == 5
+    assert stats["search"]["ttl"] == 60
 
     # Add items
     cache_manager.set_embedding("text1", [0.1])

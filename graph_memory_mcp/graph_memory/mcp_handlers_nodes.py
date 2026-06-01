@@ -16,6 +16,7 @@ from graph_memory_mcp.graph_memory.utils import (
     load_json,
     mcp_handler,
     normalize_owner_id,
+    normalize_unix_ms,
     success_response,
     validate_inputs,
 )
@@ -37,12 +38,14 @@ def _node_return_fields(alias: str = "n") -> str:
         {alias}.shared_with_ids as shared_with_ids,
         {alias}.ttl_days as ttl_days,
         {alias}.expires_at as expires_at,
-        {alias}.type as entity_type
+        {alias}.type as entity_type,
+        {alias}.source_str as source_str
     """
 
 
 def _node_from_row(row: List[Any]) -> Dict[str, Any]:
     """Build the public node payload from a projected DB row."""
+    source = load_json(row[12], None)
     node = {
         "node_id": str(row[0]),
         "node_type": row[1],
@@ -62,11 +65,67 @@ def _node_from_row(row: List[Any]) -> Dict[str, Any]:
                 ("description", ensure_text(row[3]) if row[3] else None),
                 ("updated_at", row[6]),
                 ("shared_with_ids", row[8]),
+                ("source", source),
             ]
             if v is not None and v != []
         }
     )
     return node
+
+
+def _normalize_source(source: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Normalize source payload while keeping the MCP-facing schema compact."""
+    if source is None:
+        return None
+    if not isinstance(source, dict):
+        raise ValueError("source must be an object")
+
+    normalized = dict(source)
+
+    for key in ("ref", "type", "uri", "content_hash"):
+        value = ensure_text(source.get(key))
+        if value is None:
+            normalized.pop(key, None)
+            continue
+        value = value.strip()
+        if value:
+            normalized[key] = value
+        else:
+            normalized.pop(key, None)
+
+    updated_at = normalize_unix_ms(source.get("updated_at"))
+    if updated_at is not None:
+        normalized["updated_at"] = updated_at
+    else:
+        normalized.pop("updated_at", None)
+
+    version = source.get("version")
+    if isinstance(version, int) and version >= 1:
+        normalized["version"] = version
+    else:
+        normalized.pop("version", None)
+
+    return normalized or None
+
+
+def _source_properties(source: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Flatten source payload into DB-friendly properties while exposing one MCP field."""
+    normalized = _normalize_source(source)
+    source_ref = ensure_text((normalized or {}).get("ref"))
+    source_type = ensure_text((normalized or {}).get("type"))
+    source_uri = ensure_text((normalized or {}).get("uri"))
+    content_hash = ensure_text((normalized or {}).get("content_hash"))
+    source_updated_at = normalize_unix_ms((normalized or {}).get("updated_at"))
+
+    return {
+        "source": normalized,
+        "source_str": dump_json(normalized) if normalized is not None else None,
+        "source_ref": source_ref,
+        "source_type": source_type,
+        "source_uri": source_uri,
+        "content_hash": content_hash,
+        "source_updated_at": source_updated_at,
+    }
 
 
 @mcp_handler
@@ -81,6 +140,7 @@ def create_node(
     shared_with_ids: Optional[List[str]] = None,
     collection_id: Optional[str] = None,
     metadata: Optional[Dict] = None,
+    source: Optional[Dict] = None,
     status: Optional[Literal["active", "outdated", "archived"]] = None,
     ttl_days: Optional[float] = None,
     entity_type: Optional[str] = None,
@@ -102,6 +162,7 @@ def create_node(
 
     # Create node
     metadata_str = dump_json(metadata or {})  # Maps must be JSON strings in FalkorDB
+    source_props = _source_properties(source)
 
     # Add entity_type for Entity nodes
     type_prop = ""
@@ -121,7 +182,13 @@ def create_node(
         shared_with_ids: $shared_with_ids,
         ttl_days: $ttl_days,
         expires_at: $expires_at,
-        last_dedup_at: NULL{type_prop}
+        last_dedup_at: NULL,
+        source_str: $source_str,
+        source_ref: $source_ref,
+        source_type: $source_type,
+        source_uri: $source_uri,
+        content_hash: $content_hash,
+        source_updated_at: $source_updated_at{type_prop}
     }})
     RETURN {_node_return_fields()}
     """
@@ -136,6 +203,16 @@ def create_node(
         "ttl_days": ttl_days,
         "expires_at": expires_at,
     }
+    params.update(
+        {
+            "source_str": source_props["source_str"],
+            "source_ref": source_props["source_ref"],
+            "source_type": source_props["source_type"],
+            "source_uri": source_props["source_uri"],
+            "content_hash": source_props["content_hash"],
+            "source_updated_at": source_props["source_updated_at"],
+        }
+    )
 
     if node_type == "Entity" and entity_type:
         params["entity_type"] = entity_type
@@ -205,6 +282,91 @@ def create_node(
 
 
 @mcp_handler
+def upsert_node(
+    db: FalkorDBClient,
+    config: Any,
+    *,
+    text: str,
+    description: Optional[str] = None,
+    node_type: Literal["Fact", "Entity"] = "Fact",
+    owner_id: str = "default",
+    metadata: Optional[Dict] = None,
+    source: Optional[Dict] = None,
+    status: Optional[Literal["active", "outdated", "archived"]] = None,
+    ttl_days: Optional[float] = None,
+    versioning: bool = False,
+    entity_type: Optional[str] = None,
+    auto_link: bool = True,
+    semantic_threshold: Optional[float] = None,
+    links: Optional[List[Dict]] = None,
+) -> Dict:
+    """Create or update a node using source.ref as the stable sync key."""
+    if source is None:
+        return error_response(
+            "source is required for upsert_node", code="memory_validation_error"
+        )
+    if error := validate_inputs(locals(), config):
+        return error_response(error, code="memory_validation_error")
+
+    owner_id = normalize_owner_id(owner_id)
+    source_props = _source_properties(source)
+    source_ref = ensure_text((source_props["source"] or {}).get("ref"))
+    if not source_ref:
+        return error_response(
+            "source.ref is required for upsert_node",
+            code="memory_validation_error",
+        )
+
+    upsert_source = dict(source_props["source"] or {})
+    existing = _get_node_by_source_ref(
+        db,
+        owner_id=owner_id,
+        node_type=node_type,
+        source_ref=source_ref,
+    )
+    if existing is None:
+        if versioning and "version" not in upsert_source:
+            upsert_source["version"] = 1
+        result = create_node(
+            db,
+            config,
+            text=text,
+            description=description,
+            node_type=node_type,
+            owner_id=owner_id,
+            metadata=metadata,
+            source=upsert_source,
+            status=status,
+            ttl_days=ttl_days,
+            entity_type=entity_type,
+            auto_link=auto_link,
+            semantic_threshold=semantic_threshold,
+            links=links,
+        )
+        if not result.get("success"):
+            return result
+        return success_response(node=result["node"], operation="created")
+
+    result = update_node(
+        db,
+        node_id=existing["node_id"],
+        owner_id=owner_id,
+        text=text,
+        description=description,
+        metadata=metadata,
+        source=upsert_source,
+        status=status,
+        ttl_days=ttl_days,
+        entity_type=entity_type,
+        versioning=versioning,
+    )
+    if not result.get("success"):
+        return result
+
+    return success_response(node=result["node"], operation="updated")
+
+
+@mcp_handler
 def get_node(db: FalkorDBClient, *, node_id: str, owner_id: str = "default") -> Dict:
     """Get a node by ID."""
     owner_id = normalize_owner_id(owner_id)
@@ -233,6 +395,7 @@ def update_node(
     description: Optional[str] = None,
     shared_with_ids: Optional[List[str]] = None,
     metadata: Optional[Dict] = None,
+    source: Optional[Dict] = None,
     status: Optional[Literal["active", "outdated", "archived"]] = None,
     ttl_days: Optional[float] = None,
     entity_type: Optional[str] = None,
@@ -263,6 +426,7 @@ def update_node(
             text: n.text,
             description: n.description,
             metadata_str: n.metadata_str,
+            source_str: n.source_str,
             shared_with_ids: n.shared_with_ids,
             status: n.status,
             ttl_days: n.ttl_days,
@@ -300,6 +464,45 @@ def update_node(
         merged_metadata = {**base_meta, **metadata}
         set_clauses.append("n.metadata_str = $metadata_str")
         params["metadata_str"] = dump_json(merged_metadata)
+
+    next_source = None
+    if source is not None:
+        next_source = dict(source)
+    elif versioning:
+        next_source = dict(node.get("source") or {})
+
+    if (
+        versioning
+        and next_source is not None
+        and (source is None or "version" not in next_source)
+    ):
+        current_version = (node.get("source") or {}).get("version")
+        if not isinstance(current_version, int) or current_version < 1:
+            current_version = 0
+        next_source["version"] = current_version + 1
+
+    if next_source is not None:
+        source_props = _source_properties(next_source)
+        set_clauses.extend(
+            [
+                "n.source_str = $source_str",
+                "n.source_ref = $source_ref",
+                "n.source_type = $source_type",
+                "n.source_uri = $source_uri",
+                "n.content_hash = $content_hash",
+                "n.source_updated_at = $source_updated_at",
+            ]
+        )
+        params.update(
+            {
+                "source_str": source_props["source_str"],
+                "source_ref": source_props["source_ref"],
+                "source_type": source_props["source_type"],
+                "source_uri": source_props["source_uri"],
+                "content_hash": source_props["content_hash"],
+                "source_updated_at": source_props["source_updated_at"],
+            }
+        )
 
     if status is not None:
         set_clauses.append("n.status = $status")
@@ -398,6 +601,7 @@ def get_node_change_history(
         id(v) as version_id,
         v.text as text,
         v.metadata_str as metadata_str,
+        v.source_str as source_str,
         v.status as status,
         v.ttl_days as ttl_days,
         v.version_timestamp as version_timestamp,
@@ -417,10 +621,11 @@ def get_node_change_history(
                     "version_id": str(row[0]),
                     "text": ensure_text(row[1]),
                     "metadata": load_json(row[2], {}),
-                    "status": ensure_text(row[3]),
-                    "ttl_days": row[4],
-                    "version_timestamp": row[5],
-                    "original_created_at": row[6],
+                    "source": load_json(row[3], None),
+                    "status": ensure_text(row[4]),
+                    "ttl_days": row[5],
+                    "version_timestamp": row[6],
+                    "original_created_at": row[7],
                 }
             )
 
@@ -430,6 +635,31 @@ def get_node_change_history(
 # ====================
 # Inner Functions
 # ====================
+
+
+def _get_node_by_source_ref(
+    db: FalkorDBClient,
+    *,
+    owner_id: str,
+    node_type: Literal["Fact", "Entity"],
+    source_ref: str,
+) -> Optional[Dict[str, Any]]:
+    """Load a node by same-owner source.ref, used for idempotent upserts."""
+    query = f"""
+    MATCH (n:{node_type})
+    WHERE n.owner_id = $owner_id AND n.source_ref = $source_ref
+    RETURN {_node_return_fields()}
+    LIMIT 1
+    """
+
+    result = execute_query(
+        db,
+        query,
+        {"owner_id": normalize_owner_id(owner_id), "source_ref": source_ref},
+    )
+    if not result:
+        return None
+    return _node_from_row(result.result_set[0])
 
 
 def _create_auto_links(

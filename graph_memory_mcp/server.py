@@ -145,7 +145,8 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
                 "Create a node (Fact or Entity). "
                 "Required: `text`, "
                 "Optional: `node_type` ('Fact' default, or 'Entity'), `owner_id`, "
-                "`metadata`, `auto_link` (Facts only), `ttl_days` (Facts only), "
+                "`metadata`, `source` (provenance dict with keys like ref/type/uri/content_hash/updated_at/version), "
+                "`auto_link` (Facts only), `ttl_days` (Facts only), "
                 "`links` (create relations immediately after creation). "
                 "Note: auto_link=true by default creates semantic MENTIONS_ENTITY relations to existing entities (Facts only). "
                 "Set ttl_days for automatic archival."
@@ -156,6 +157,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
             node_type: Literal["Fact", "Entity"] = "Fact",
             owner_id: str = "default",
             metadata: dict | None = None,
+            source: dict | None = None,
             status: Literal["active", "outdated", "archived"] | None = None,
             ttl_days: float | None = None,
             entity_type: str | None = None,
@@ -170,8 +172,51 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
                 node_type=node_type,
                 owner_id=owner_id,
                 metadata=metadata,
+                source=source,
                 status=status,
                 ttl_days=ttl_days,
+                entity_type=entity_type,
+                auto_link=auto_link,
+                semantic_threshold=semantic_threshold,
+                links=links,
+            )
+
+        @mcp.tool(
+            title="Upsert node",
+            description=(
+                "Create or update a node using `source.ref` as a stable sync key. "
+                "Required: `text`, `source.ref`. "
+                "Optional: same fields as create_node, plus `versioning=true` to store "
+                "a version snapshot and auto-increment `source.version` when it is omitted."
+            ),
+        )
+        def upsert_node(
+            text: str,
+            source: dict,
+            node_type: Literal["Fact", "Entity"] = "Fact",
+            owner_id: str = "default",
+            metadata: dict | None = None,
+            status: Literal["active", "outdated", "archived"] | None = None,
+            ttl_days: float | None = None,
+            versioning: bool = False,
+            entity_type: str | None = None,
+            auto_link: bool = True,
+            semantic_threshold: float | None = None,
+            links: list[dict] | None = None,
+            description: str | None = None,
+        ) -> dict:
+            return mcp_handlers_nodes.upsert_node(
+                db,
+                config,
+                text=text,
+                description=description,
+                node_type=node_type,
+                owner_id=owner_id,
+                metadata=metadata,
+                source=source,
+                status=status,
+                ttl_days=ttl_days,
+                versioning=versioning,
                 entity_type=entity_type,
                 auto_link=auto_link,
                 semantic_threshold=semantic_threshold,
@@ -221,7 +266,8 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
             title="Update node",
             description=(
                 "Update a node (Fact or Entity). "
-                "You can update text, metadata, status, or ttl_days."
+                "You can update text, metadata, source, status, or ttl_days. "
+                "Set versioning=true to store a previous snapshot and auto-increment source.version when it is omitted."
             ),
         )
         def update_node(
@@ -229,6 +275,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
             owner_id: str = "default",
             text: str | None = None,
             metadata: dict | None = None,
+            source: dict | None = None,
             status: Literal["active", "outdated", "archived"] | None = None,
             ttl_days: float | None = None,
             entity_type: str | None = None,
@@ -240,6 +287,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
                 owner_id=owner_id,
                 text=text,
                 metadata=metadata,
+                source=source,
                 status=status,
                 ttl_days=ttl_days,
                 entity_type=entity_type,
@@ -279,7 +327,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
             title="Get node change history",
             description=(
                 "Retrieve version history for a node. "
-                "Returns a list of previous versions with timestamps"
+                "Returns a list of previous versions with timestamps. "
                 "Currently only supported for Fact nodes."
             ),
             annotations=ToolAnnotations(readOnlyHint=True),
@@ -291,6 +339,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
 
         exposed["search"] = search
         exposed["create_node"] = create_node
+        exposed["upsert_node"] = upsert_node
         exposed["get_node"] = get_node
         exposed["update_node"] = update_node
         exposed["delete_node"] = delete_node
