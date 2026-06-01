@@ -16,15 +16,31 @@ def main() -> None:
         default="INFO",
         choices=["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"],
     )
+    parser.add_argument(
+        "--simple",
+        action="store_true",
+        help=(
+            "Use graph_memory_mcp.server_simple: like the default server but "
+            "no upsert_node tool; provenance is flat fields (ref, provenance_type, …) "
+            "instead of a nested `source` object."
+        ),
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=getattr(logging, args.log_level))
 
     from graph_memory_mcp.config import load_mcp_server_config
-    from graph_memory_mcp.server import GraphMemoryMCP
 
     memory_cfg = load_mcp_server_config()
-    server = GraphMemoryMCP(memory_cfg)
+
+    if args.simple:
+        from graph_memory_mcp.server_simple import GraphMemorySimpleMCP
+
+        server = GraphMemorySimpleMCP(memory_cfg)
+    else:
+        from graph_memory_mcp.server import GraphMemoryMCP
+
+        server = GraphMemoryMCP(memory_cfg)
     app = server.get_mcp_app()
 
     try:
