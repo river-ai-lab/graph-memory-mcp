@@ -13,7 +13,6 @@ import time
 from typing import Any, Dict, List
 
 from falkordb import FalkorDB
-from sentence_transformers import SentenceTransformer
 
 from graph_memory_mcp.graph_memory.cache import CacheManager
 
@@ -32,7 +31,7 @@ class FalkorDBClient:
             password=config.falkordb_password,
         )
         self.graph = self.db.select_graph(config.falkordb_graph)
-        self.embedder = SentenceTransformer(config.embedding_model)
+        self._embedding_service: Any | None = None
         self.start_time = time.time()  # Retain start_time for health check
         self.cache = CacheManager(config)
 

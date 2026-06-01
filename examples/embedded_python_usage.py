@@ -6,14 +6,13 @@ This example demonstrates how to integrate `GraphMemoryMCP` directly into your
 Python application (e.g., LangChain, LangGraph, RAG pipeline) without running
 a separate HTTP server.
 
-You can import the server class and call the tool methods directly as Python functions.
+You can import the server class and call the exposed tool methods directly as Python functions.
 
 Prerequisites:
 - `graph-memory-mcp` installed
 - FalkorDB running
 """
 
-import asyncio
 import logging
 import uuid
 
@@ -26,7 +25,7 @@ from graph_memory_mcp.server import GraphMemoryMCP
 logging.basicConfig(level=logging.INFO)
 
 
-async def main():
+def main():
     print("🚀 Starting Direct Integration Example\n")
 
     # 2. Load configuration
@@ -42,14 +41,17 @@ async def main():
         print("❌ Could not connect to FalkorDB. Make sure it's running.")
         return
 
-    # 4. Use tools as Python methods!
-    # The server class exposes all tools as methods:
+    # 4. Use tools as Python methods.
+    # The server class exposes registered tools directly:
     # server.create_node(...)
     # server.search(...)
     # server.create_relation(...)
 
     owner_id = f"demo_user_{uuid.uuid4().hex[:6]}"
     print(f"Using owner_id: {owner_id}\n")
+
+    # Ensure vector indexes exist before semantic search.
+    server.ensure_vector_indexes()
 
     # --- Create a Fact ---
     print("1️⃣  Creating a fact...")
@@ -86,12 +88,12 @@ async def main():
     print("4️⃣  Searching...")
     # This uses the embedding model loaded in memory
     search_res = server.search(
-        query="programmatic mcp usage", owner_id=owner_id, limit=2
+        query="running MCP servers in Python", owner_id=owner_id, limit=2
     )
 
     print(f"   Found {len(search_res['results'])} results:")
     for item in search_res["results"]:
-        print(f"   - [{item['score']:.4f}] {item['text']}")
+        print(f"   - [{item['similarity']:.4f}] {item['text']}")
 
     # --- Network Graph (Context) ---
     print("\n5️⃣  Getting Context (Subgraph)...")
@@ -104,4 +106,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
