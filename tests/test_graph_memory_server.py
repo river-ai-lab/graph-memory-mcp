@@ -34,11 +34,11 @@ The test creates a realistic knowledge graph and exercises all tools.
 
 from __future__ import annotations
 
+import json
 import os
 import uuid
 from typing import Any, cast
 
-import anyio
 import httpx
 import pytest
 import redis
@@ -47,8 +47,12 @@ from mcp.client.streamable_http import streamable_http_client
 
 from graph_memory_mcp.config import MCPServerConfig, load_mcp_server_config
 from graph_memory_mcp.graph_memory.database import FalkorDBClient
-from graph_memory_mcp.graph_memory.mcp_handlers_graph import get_context
-from graph_memory_mcp.graph_memory.mcp_handlers_nodes import create_node, update_node
+from graph_memory_mcp.graph_memory.mcp_handlers_graph import get_context, get_trace
+from graph_memory_mcp.graph_memory.mcp_handlers_nodes import (
+    create_node,
+    update_node,
+    upsert_node,
+)
 from graph_memory_mcp.graph_memory.mcp_handlers_search import find_similar, search
 from graph_memory_mcp.server import GraphMemoryMCP
 
@@ -107,10 +111,15 @@ async def test_all_mcp_tools_comprehensive():
     server = GraphMemoryMCP(cfg)
     app = server.get_mcp_app()
 
-    async with anyio.create_task_group() as tg:
+    # httpx ASGITransport does not run Starlette lifespan; MCP streamable HTTP needs it.
+    async with server.mcp.session_manager.run():
         async with streamable_http_client(
-            httpx.AsyncClient(app=app, base_url="http://test")
-        ) as (read, write):
+            "http://127.0.0.1:8000/mcp",
+            http_client=httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://127.0.0.1:8000",
+            ),
+        ) as (read, write, _get_session_id):
             async with ClientSession(read, write) as session:
                 await session.initialize()
 
@@ -122,7 +131,7 @@ async def test_all_mcp_tools_comprehensive():
                 result = await session.call_tool("test_connection", {})
                 data = _extract_tool_json(result)
                 assert data.get("success") is True
-                assert data.get("message") == "pong"
+                assert data.get("ready") is True
 
                 # 2. health_check
                 result = await session.call_tool("health_check", {})
@@ -133,6 +142,10 @@ async def test_all_mcp_tools_comprehensive():
 
                 # 3. get_stats (initial - should be empty)
                 result = await session.call_tool("get_stats", {"owner_id": owner_id})
+                data = _extract_tool_json(result)
+                assert data.get("success") is True
+
+                result = await session.call_tool("ensure_vector_indexes", {})
                 data = _extract_tool_json(result)
                 assert data.get("success") is True
 
@@ -231,10 +244,11 @@ async def test_all_mcp_tools_comprehensive():
                 result = await session.call_tool(
                     "search",
                     {
-                        "query": "container orchestration",
+                        "query": "Kubernetes container orchestration platform",
                         "owner_id": owner_id,
                         "limit": 10,
                         "node_types": ["Fact"],
+                        "similarity_threshold": 0.25,
                     },
                 )
                 data = _extract_tool_json(result)
@@ -411,7 +425,8 @@ async def test_all_mcp_tools_comprehensive():
                 data = _extract_tool_json(result)
                 assert data.get("success") is True
                 # Should find path: fact2 -> fact1 -> entity1
-                assert len(data.get("path", [])) > 0
+                assert len(data.get("nodes", [])) > 0
+                assert len(data.get("relations", [])) > 0
 
                 # 17. find_similar - find facts similar to fact1
                 result = await session.call_tool(
@@ -439,7 +454,7 @@ async def test_all_mcp_tools_comprehensive():
                 )
                 data = _extract_tool_json(result)
                 assert data.get("success") is True
-                summary_fact_id = data["summary_fact"]["node_id"]
+                summary_fact_id = data["summary"]["node_id"]
 
                 # Verify summary is linked to source facts
                 result = await session.call_tool(
@@ -517,8 +532,6 @@ async def test_all_mcp_tools_comprehensive():
                 # Should have created multiple nodes
                 assert stats.get("total_nodes", 0) > 0
 
-                tg.cancel_scope.cancel()
-
 
 @pytest.mark.integration
 @pytest.mark.asyncio
@@ -540,10 +553,14 @@ async def test_multi_tenant_isolation():
     server = GraphMemoryMCP(cfg)
     app = server.get_mcp_app()
 
-    async with anyio.create_task_group() as tg:
+    async with server.mcp.session_manager.run():
         async with streamable_http_client(
-            httpx.AsyncClient(app=app, base_url="http://test")
-        ) as (read, write):
+            "http://127.0.0.1:8000/mcp",
+            http_client=httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://127.0.0.1:8000",
+            ),
+        ) as (read, write, _get_session_id):
             async with ClientSession(read, write) as session:
                 await session.initialize()
 
@@ -598,8 +615,6 @@ async def test_multi_tenant_isolation():
                 results = data.get("results", [])
                 owner1_found = any(r["node_id"] == fact1_id for r in results)
                 assert not owner1_found, "Owner2 should not see Owner1's data"
-
-                tg.cancel_scope.cancel()
 
 
 class _FakeResult:
@@ -666,6 +681,7 @@ def _fact_row(
     *,
     text: str,
     updated_at: int = 1_700_000_000_000,
+    source: dict[str, Any] | None = None,
 ):
     return [
         node_id,
@@ -680,6 +696,7 @@ def _fact_row(
         None,
         None,
         None,
+        "{}" if source is None else json.dumps(source),
     ]
 
 
@@ -717,6 +734,69 @@ def test_get_context_limits_nodes_before_collect():
     edges_query, edges_params = db.graph.calls[1]
     assert "WHERE id(n) IN $node_ids AND id(m) IN $node_ids" in edges_query
     assert edges_params == {"node_ids": [123]}
+
+
+def test_get_trace_returns_nodes_and_relations():
+    """get_trace should expose a consistent nodes/relations payload."""
+    db = _FakeGraphDB(
+        [
+            _FakeResult(
+                [
+                    [
+                        [
+                            {
+                                "node_id": "123",
+                                "node_type": "Fact",
+                                "text": "from fact",
+                            },
+                            {
+                                "node_id": "456",
+                                "node_type": "Entity",
+                                "text": "to entity",
+                            },
+                        ],
+                        [{"relation_type": "MENTIONS"}],
+                    ]
+                ]
+            )
+        ]
+    )
+
+    result = get_trace(
+        cast(Any, db),
+        from_id="123",
+        to_id="456",
+        owner_id="default",
+        max_depth=5,
+    )
+
+    assert result["success"] is True
+    assert result["nodes"][0]["node_id"] == "123"
+    assert result["relations"] == [{"relation_type": "MENTIONS"}]
+
+    trace_query, trace_params = db.graph.calls[0]
+    assert "shortestPath" in trace_query
+    assert trace_params == {"from_id": 123, "to_id": 456, "owner_id": "default"}
+
+
+def test_get_trace_returns_empty_lists_when_path_is_missing():
+    """get_trace should keep the same payload shape when no path exists."""
+    db = _FakeGraphDB([_FakeResult([[None, None]])])
+
+    result = get_trace(
+        cast(Any, db),
+        from_id="123",
+        to_id="456",
+        owner_id="default",
+        max_depth=5,
+    )
+
+    assert result == {
+        "success": True,
+        "nodes": [],
+        "relations": [],
+        "message": "No path found",
+    }
 
 
 def test_create_node_reuses_embedding_for_auto_link():
@@ -868,3 +948,146 @@ def test_update_node_clears_expiration_for_nonpositive_ttl():
     update_query, update_params = db.graph.calls[1]
     assert "n.expires_at = NULL" in update_query
     assert "expires_at" not in update_params
+
+
+def test_create_node_returns_source_payload():
+    """create_node should expose source as a single MCP-facing dict."""
+    db = _FakeNodeDB(
+        [
+            _FakeResult(
+                [
+                    _fact_row(
+                        123,
+                        text="created fact",
+                        source={
+                            "ref": "PROJ-123",
+                            "type": "jira_issue",
+                            "content_hash": "sha256:abc",
+                            "version": 1,
+                        },
+                    )
+                ]
+            )
+        ]
+    )
+    cfg = MCPServerConfig()
+
+    result = create_node(
+        cast(Any, db),
+        cfg,
+        text="created fact",
+        node_type="Fact",
+        owner_id="default",
+        source={
+            "ref": "PROJ-123",
+            "type": "jira_issue",
+            "content_hash": "sha256:abc",
+            "version": 1,
+        },
+        auto_link=False,
+    )
+
+    assert result["success"] is True
+    assert result["node"]["source"]["ref"] == "PROJ-123"
+    assert result["node"]["source"]["version"] == 1
+
+    create_query, create_params = db.graph.calls[0]
+    assert "source_ref: $source_ref" in create_query
+    assert create_params["source_ref"] == "PROJ-123"
+    assert create_params["content_hash"] == "sha256:abc"
+
+
+def test_update_node_versioning_increments_source_version():
+    """update_node should auto-increment source.version when versioning is enabled."""
+    db = _FakeNodeDB(
+        [
+            _FakeResult(
+                [
+                    _fact_row(
+                        123,
+                        text="before",
+                        updated_at=1,
+                        source={"ref": "PROJ-123", "version": 2},
+                    )
+                ]
+            ),
+            _FakeResult([[999]]),
+            _FakeResult(
+                [
+                    _fact_row(
+                        123,
+                        text="before",
+                        updated_at=2,
+                        source={"ref": "PROJ-123", "version": 3},
+                    )
+                ]
+            ),
+        ]
+    )
+
+    result = update_node(
+        cast(Any, db),
+        node_id="123",
+        owner_id="default",
+        versioning=True,
+    )
+
+    assert result["success"] is True
+    assert result["node"]["source"]["version"] == 3
+
+    update_query, update_params = db.graph.calls[2]
+    assert "n.source_str = $source_str" in update_query
+    assert '"version": 3' in update_params["source_str"]
+
+
+def test_upsert_node_creates_with_initial_source_version():
+    """upsert_node should seed source.version=1 on first create when versioning is enabled."""
+    db = _FakeNodeDB(
+        [
+            _FakeResult([]),
+            _FakeResult(
+                [
+                    _fact_row(
+                        123,
+                        text="created via upsert",
+                        source={"ref": "PROJ-123", "type": "jira_issue", "version": 1},
+                    )
+                ]
+            ),
+        ]
+    )
+    cfg = MCPServerConfig()
+
+    result = upsert_node(
+        cast(Any, db),
+        cfg,
+        text="created via upsert",
+        node_type="Fact",
+        owner_id="default",
+        source={"ref": "PROJ-123", "type": "jira_issue"},
+        versioning=True,
+        auto_link=False,
+    )
+
+    assert result["success"] is True
+    assert result["operation"] == "created"
+    assert result["node"]["source"]["version"] == 1
+
+
+def test_upsert_node_requires_source_ref():
+    """upsert_node should reject sync writes without a stable source.ref key."""
+    db = _FakeNodeDB([])
+    cfg = MCPServerConfig()
+
+    result = upsert_node(
+        cast(Any, db),
+        cfg,
+        text="bad upsert",
+        node_type="Fact",
+        owner_id="default",
+        source={"type": "jira_issue"},
+        auto_link=False,
+    )
+
+    assert result["success"] is False
+    assert result["code"] == "memory_validation_error"

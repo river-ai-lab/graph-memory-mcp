@@ -15,15 +15,25 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from graph_memory_mcp.config import load_mcp_server_config
+from graph_memory_mcp.config import MCPServerConfig, load_mcp_server_config
 from graph_memory_mcp.graph_memory import mcp_handlers_nodes, mcp_handlers_relations
 from graph_memory_mcp.graph_memory.database import FalkorDBClient
 from graph_memory_mcp.graph_memory.embedding_service import EmbeddingService
-from graph_memory_mcp.jobs.archive_old_facts import archive_old_facts
+from graph_memory_mcp.jobs.archive_old_facts import (
+    _resolve_owner_ids as _resolve_archive_owner_ids,
+)
+from graph_memory_mcp.jobs.archive_old_facts import (
+    archive_old_facts,
+)
 from graph_memory_mcp.jobs.deduplicate_facts import (
     _find_duplicate_entity_groups,
     _find_duplicate_fact_groups,
     _merge_duplicate_entities,
+)
+from graph_memory_mcp.jobs.deduplicate_facts import (
+    _resolve_owner_ids as _resolve_dedup_owner_ids,
+)
+from graph_memory_mcp.jobs.deduplicate_facts import (
     deduplicate_facts,
 )
 from graph_memory_mcp.jobs.scheduler import (
@@ -62,6 +72,24 @@ def _falkordb_is_available() -> bool:
         return False
 
 
+class _FakeResult:
+    def __init__(self, rows):
+        self.result_set = rows
+
+
+class _FakeOwnerGraph:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def query(self, query):
+        return _FakeResult(self.rows)
+
+
+class _FakeOwnerDB:
+    def __init__(self, rows):
+        self.graph = _FakeOwnerGraph(rows)
+
+
 @pytest.mark.asyncio
 async def test_scheduler_lifecycle(monkeypatch):
     """Test that scheduler starts and stops correctly based on config."""
@@ -92,11 +120,29 @@ async def test_scheduler_lifecycle(monkeypatch):
         health = get_scheduler_health()
         assert health["running"] is True
         assert any(j.get("id") == "deduplicate_facts" for j in health.get("jobs", []))
+        assert mock_db_class.call_count == 1
+        assert mock_db_class.call_args.kwargs == {}
+        assert len(mock_db_class.call_args.args) == 1
+        assert mock_db_class.call_args.args[0].jobs_enabled is True
 
         shutdown_scheduler()
         time.sleep(0.1)
         health = get_scheduler_health()
         assert health["running"] is False
+
+
+@pytest.mark.parametrize(
+    "resolver",
+    [_resolve_archive_owner_ids, _resolve_dedup_owner_ids],
+)
+def test_jobs_process_all_owners_discovers_graph_owners(resolver):
+    """Owner discovery should honor jobs_process_all_owners when enabled."""
+    cfg = MCPServerConfig(jobs_process_all_owners=True, jobs_owner_ids="fallback")
+    db = _FakeOwnerDB([["team_b"], ["team_a"], [None], [""]])
+
+    owners = resolver(db, cfg)
+
+    assert owners == ["team_a", "team_b"]
 
 
 @pytest.mark.integration
@@ -369,6 +415,147 @@ async def test_find_duplicate_fact_groups(monkeypatch, db_client):
 
     assert len(groups) > 0, "Should find duplicate fact groups"
     assert all("primary_id" in g and "duplicate_ids" in g for g in groups)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_find_duplicate_fact_groups_backfills_old_pending_facts(
+    monkeypatch, db_client
+):
+    """Old pending duplicates should still be found even outside the recent window."""
+    owner_id = f"pytest_backfill_dupes_{uuid.uuid4().hex[:8]}"
+
+    cfg = load_mcp_server_config()
+    db = db_client
+
+    health = db.health_check()
+    assert health.get("status") == "healthy"
+
+    db.set_embedding_service(EmbeddingService(model_name=cfg.embedding_model))
+    db.create_vector_index()
+
+    shared_text = f"backfill duplicate test {uuid.uuid4().hex[:8]}"
+    old_ms = int((time.time() - 7 * 24 * 3600) * 1000)
+
+    created_ids = []
+    for offset in (0, 1000):
+        result = mcp_handlers_nodes.create_node(
+            db,
+            cfg,
+            text=shared_text,
+            node_type="Fact",
+            owner_id=owner_id,
+            auto_link=False,
+        )
+        assert result.get("success")
+        fact_id = result["node"]["node_id"]
+        created_ids.append(fact_id)
+
+        db.graph.query(f"""
+            MATCH (f:Fact)
+            WHERE id(f) = {int(fact_id)}
+            SET f.created_at = {old_ms + offset},
+                f.updated_at = {old_ms + offset},
+                f.last_dedup_at = NULL
+            """)
+
+    groups = await _find_duplicate_fact_groups(
+        db,
+        threshold=0.95,
+        max_group_size=2,
+        owner_id=owner_id,
+        hours_threshold=24,
+    )
+
+    expected_ids = set(created_ids)
+    assert any(
+        {group["primary_id"], *group["duplicate_ids"]} == expected_ids
+        for group in groups
+    ), "Should backfill old same-owner duplicates outside the recent window"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_deduplicate_facts_stays_within_owner_and_keeps_oldest_primary(
+    monkeypatch, db_client
+):
+    """Dedup should stay within one owner and keep the oldest same-owner fact active."""
+    owner_id = f"pytest_owner_scope_{uuid.uuid4().hex[:8]}"
+    other_owner_id = f"{owner_id}_other"
+    monkeypatch.setenv("JOBS_ENABLED", "true")
+    monkeypatch.setenv("JOB_DEDUPLICATE_ENABLED", "true")
+    monkeypatch.setenv("JOBS_OWNER_IDS", owner_id)
+
+    cfg = load_mcp_server_config()
+    db = db_client
+
+    health = db.health_check()
+    assert health.get("status") == "healthy"
+
+    db.set_embedding_service(EmbeddingService(model_name=cfg.embedding_model))
+    db.create_vector_index()
+
+    shared_text = f"owner scoped duplicate test {uuid.uuid4().hex[:8]}"
+
+    old_result = mcp_handlers_nodes.create_node(
+        db,
+        cfg,
+        text=shared_text,
+        node_type="Fact",
+        owner_id=owner_id,
+        auto_link=False,
+    )
+    assert old_result.get("success")
+    old_fact_id = old_result["node"]["node_id"]
+
+    old_ms = int((time.time() - 7 * 24 * 3600) * 1000)
+    db.graph.query(f"""
+        MATCH (f:Fact)
+        WHERE id(f) = {int(old_fact_id)}
+        SET f.created_at = {old_ms},
+            f.updated_at = {old_ms},
+            f.last_dedup_at = NULL
+        """)
+
+    cross_owner_result = mcp_handlers_nodes.create_node(
+        db,
+        cfg,
+        text=shared_text,
+        node_type="Fact",
+        owner_id=other_owner_id,
+        auto_link=False,
+    )
+    assert cross_owner_result.get("success")
+    cross_owner_fact_id = cross_owner_result["node"]["node_id"]
+
+    new_result = mcp_handlers_nodes.create_node(
+        db,
+        cfg,
+        text=shared_text,
+        node_type="Fact",
+        owner_id=owner_id,
+        auto_link=False,
+    )
+    assert new_result.get("success")
+    new_fact_id = new_result["node"]["node_id"]
+
+    await deduplicate_facts(db=db, config=cfg)
+
+    old_fact = mcp_handlers_nodes.get_node(db, node_id=old_fact_id, owner_id=owner_id)
+    assert old_fact.get("success")
+    assert old_fact["node"]["status"] == "active"
+
+    new_fact = mcp_handlers_nodes.get_node(db, node_id=new_fact_id, owner_id=owner_id)
+    assert new_fact.get("success")
+    assert new_fact["node"]["status"] == "outdated"
+
+    cross_owner_fact = mcp_handlers_nodes.get_node(
+        db,
+        node_id=cross_owner_fact_id,
+        owner_id=other_owner_id,
+    )
+    assert cross_owner_fact.get("success")
+    assert cross_owner_fact["node"]["status"] == "active"
 
 
 @pytest.mark.integration

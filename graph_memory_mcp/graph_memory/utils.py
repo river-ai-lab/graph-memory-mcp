@@ -5,15 +5,21 @@ import logging
 import re
 from typing import Any, Dict, List, Optional
 
-from graph_memory_mcp.config import MCPServerConfig
-
 logger = logging.getLogger(__name__)
 
 
 def normalize_owner_id(owner_id: Optional[str]) -> str:
     """Normalize owner_id to a valid string."""
-    value = (owner_id or MCPServerConfig.default_owner_id).strip()
-    return value or MCPServerConfig.default_owner_id
+    default_owner_id = "default"
+    if owner_id is None:
+        return default_owner_id
+    if isinstance(owner_id, bytes):
+        value = owner_id.decode("utf-8", errors="replace").strip()
+    elif isinstance(owner_id, str):
+        value = owner_id.strip()
+    else:
+        value = str(owner_id).strip()
+    return value or default_owner_id
 
 
 def escape_value(value: Optional[str]) -> str:
@@ -162,6 +168,32 @@ def _validate_relation_type_format(value: str) -> Optional[str]:
     return None
 
 
+def _validate_source_shape(value: Any) -> Optional[str]:
+    """Validate source payload used for provenance/upsert."""
+    if not isinstance(value, dict):
+        return "source must be an object"
+
+    for field in ("ref", "type", "uri", "content_hash"):
+        field_value = value.get(field)
+        if field_value is None:
+            continue
+        if ensure_text(field_value) is None:
+            return f"source.{field} must be a string"
+
+    updated_at = value.get("updated_at")
+    if updated_at is not None and normalize_unix_ms(updated_at) is None:
+        return "source.updated_at must be Unix milliseconds"
+
+    version = value.get("version")
+    if version is not None:
+        if not isinstance(version, int):
+            return "source.version must be an integer"
+        if version < 1:
+            return "source.version must be >= 1"
+
+    return None
+
+
 # Validation registry
 VALIDATORS = {
     "text": lambda v, cfg: _validate_text_length(v, cfg.max_text_length),
@@ -179,6 +211,7 @@ VALIDATORS = {
         if v in {"active", "outdated", "archived"}
         else "status must be one of: active, archived, outdated"
     ),
+    "source": lambda v, cfg: _validate_source_shape(v),
 }
 
 

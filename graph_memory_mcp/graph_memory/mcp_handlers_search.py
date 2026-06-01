@@ -1,8 +1,9 @@
 """Search handlers for MCP Graph Memory."""
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
+from graph_memory_mcp.config import MCPServerConfig
 from graph_memory_mcp.graph_memory.cache import hash_query
 from graph_memory_mcp.graph_memory.database import FalkorDBClient
 from graph_memory_mcp.graph_memory.utils import (
@@ -33,6 +34,12 @@ def _search_nodes_by_type(
 ) -> List[Dict]:
     """Helper to search nodes of a specific type (Fact/Entity)."""
 
+    status_clause = ""
+    if status:
+        status_clause = f" AND node.status = '{escape_value(status)}'"
+    elif not include_outdated:
+        status_clause = " AND (node.status IS NULL OR node.status = 'active')"
+
     query = f"""
     CALL db.idx.vector.queryNodes('{node_type}', 'embedding', {limit * 2}, {format_vecf32(embedding)})
     YIELD node, score
@@ -40,15 +47,12 @@ def _search_nodes_by_type(
       AND node.owner_id = '{escape_value(owner_id)}'
     """
 
+    query += status_clause
+
     # Specific filtering for Facts
     if node_type == "Fact":
-        query += " AND (node.expires_at IS NULL OR node.expires_at > timestamp())"
-
-        if not include_outdated:
-            query += " AND node.status <> 'outdated'"
-
-        if status:
-            query += f" AND node.status = '{escape_value(status)}'"
+        if status == "active" or (status is None and not include_outdated):
+            query += " AND (node.expires_at IS NULL OR node.expires_at > timestamp())"
 
     query += f"""
     RETURN
@@ -85,7 +89,7 @@ def _search_nodes_by_type(
 @mcp_handler
 def search(
     db: FalkorDBClient,
-    config: Any,
+    config: MCPServerConfig,
     *,
     query: str,
     owner_id: str = "default",
@@ -170,7 +174,7 @@ def search(
 @mcp_handler
 def find_similar(
     db: FalkorDBClient,
-    config: Any,
+    config: MCPServerConfig,
     *,
     fact_id: str,
     owner_id: str = "default",
@@ -209,7 +213,7 @@ def find_similar(
     CALL db.idx.vector.queryNodes('Fact', 'embedding', {limit + 1}, {format_vecf32(embedding)})
     YIELD node, score
     WHERE score <= {max_distance}
-      AND node.owner_id = '{db.escape_value(owner_id)}'
+      AND node.owner_id = '{escape_value(owner_id)}'
       AND id(node) <> {int(fact_id)}
     RETURN
         id(node) as node_id,

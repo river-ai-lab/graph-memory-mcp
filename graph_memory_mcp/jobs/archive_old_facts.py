@@ -19,6 +19,46 @@ def _parse_owner_ids(config: MCPServerConfig) -> List[str]:
     return owners or ["default"]
 
 
+def _resolve_owner_ids(db: FalkorDBClient, config: MCPServerConfig) -> List[str]:
+    """Resolve owner IDs either from config or by discovering them from the graph."""
+    if not config.jobs_process_all_owners:
+        return _parse_owner_ids(config)
+
+    query = """
+    MATCH (n)
+    WHERE n.owner_id IS NOT NULL AND n.owner_id <> ''
+    RETURN DISTINCT n.owner_id as owner_id
+    ORDER BY owner_id
+    """
+
+    try:
+        result = db.graph.query(query)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Archive job: failed to discover owners, falling back to jobs_owner_ids: %s",
+            exc,
+        )
+        return _parse_owner_ids(config)
+
+    if not result or not hasattr(result, "result_set") or not result.result_set:
+        return _parse_owner_ids(config)
+
+    owners = []
+    for row in result.result_set:
+        if not row or row[0] is None:
+            continue
+        raw_owner = row[0]
+        if isinstance(raw_owner, bytes):
+            raw_owner = raw_owner.decode("utf-8", errors="replace")
+        owner_text = str(raw_owner).strip()
+        if not owner_text:
+            continue
+        owners.append(normalize_owner_id(owner_text))
+
+    resolved_owners = sorted(set(owners))
+    return resolved_owners or _parse_owner_ids(config)
+
+
 async def _execute_query(
     db: FalkorDBClient,
     query: str,
@@ -54,7 +94,7 @@ async def archive_old_facts(db: FalkorDBClient, config: MCPServerConfig) -> None
         backoff_max=retry_backoff_max,
     )(_execute_query)
 
-    owners = _parse_owner_ids(config)
+    owners = _resolve_owner_ids(db, config)
     lock_ttl = config.jobs_lock_ttl_seconds
 
     # Fact.created_at / expires_at are stored in milliseconds (timestamp())
