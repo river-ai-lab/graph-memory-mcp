@@ -174,8 +174,8 @@ Cache statistics are available in `health_check`:
 
 | Area | Default server | Simple profile |
 |------|----------------|----------------|
-| Provenance | `source: dict` on `create_node` / `update_node` | Flat fields: `ref`, `provenance_type`, `uri`, `content_hash`, `updated_at`, `version` (mapped to the same `source` object internally) |
-| `upsert_node` | Available (`source.ref` required) | **Not registered** — use the default server for sync-by-ref |
+| Provenance | `source: dict` on `create_node` / `update_node` / `upsert_node` | Flat fields: `ref`, `provenance_type`, `uri`, `content_hash`, `updated_at`, `version` (mapped to the same `source` object internally) |
+| `upsert_node` | `source.ref` required (via `source` dict) | Same behavior; **`ref` required** as a flat field |
 
 All other tools (search, triplets, graph traversal, admin, jobs via config, etc.) match the default server.
 
