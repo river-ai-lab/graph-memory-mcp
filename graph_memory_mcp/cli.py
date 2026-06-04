@@ -21,8 +21,8 @@ def main() -> None:
         action="store_true",
         help=(
             "Use graph_memory_mcp.server_simple: like the default server but "
-            "no upsert_node tool; provenance is flat fields (ref, provenance_type, …) "
-            "instead of a nested `source` object."
+            "provenance is flat fields (ref, provenance_type, …) instead of a nested "
+            "`source` object."
         ),
     )
     args = parser.parse_args()

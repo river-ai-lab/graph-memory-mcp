@@ -2,8 +2,6 @@
 MCP Graph Memory server — same as `graph_memory_mcp.server.GraphMemoryMCP` for
 operators who prefer not to pass a nested `source` object on MCP tools.
 
-No `upsert_node` tool (use the full `GraphMemoryMCP` if you need sync-by-ref).
-
 Handlers and DB behavior are unchanged: optional provenance is forwarded as a
 `source` dict built from flat parameters (`ref`, `provenance_type`, `uri`, …).
 """
@@ -52,12 +50,12 @@ def _provenance_source(
 
 
 class GraphMemorySimpleMCP(GraphMemoryMCP):
-    """Like `GraphMemoryMCP` with flat provenance fields; does not register `upsert_node`."""
+    """Like `GraphMemoryMCP` with flat provenance fields instead of a nested `source` dict."""
 
     def __init__(self, server_config: MCPServerConfig):
         super().__init__(server_config)
         logger.info(
-            "GraphMemorySimpleMCP: like GraphMemoryMCP but no upsert_node; provenance via flat fields (no `source` object)"
+            "GraphMemorySimpleMCP: like GraphMemoryMCP; provenance via flat fields (no `source` object)"
         )
 
     def _register_fact_tools(self) -> Dict[str, Any]:
@@ -119,6 +117,62 @@ class GraphMemorySimpleMCP(GraphMemoryMCP):
                 source=source,
                 status=status,
                 ttl_days=ttl_days,
+                entity_type=entity_type,
+                auto_link=auto_link,
+                semantic_threshold=semantic_threshold,
+                links=links,
+            )
+
+        @mcp.tool(
+            title="Upsert node",
+            description=(
+                "Create or update a node using `ref` as a stable sync key. "
+                "Required: `text`, `ref`. "
+                "Optional: same flat provenance fields as create_node (`provenance_type`, `uri`, "
+                "`content_hash`, `updated_at`, `version`), plus `versioning=true` to store "
+                "a version snapshot and auto-increment `version` when it is omitted."
+            ),
+        )
+        def upsert_node(
+            text: str,
+            ref: str,
+            node_type: Literal["Fact", "Entity"] = "Fact",
+            owner_id: str = "default",
+            metadata: dict | None = None,
+            provenance_type: str | None = None,
+            uri: str | None = None,
+            content_hash: str | None = None,
+            updated_at: int | None = None,
+            version: int | None = None,
+            status: Literal["active", "outdated", "archived"] | None = None,
+            ttl_days: float | None = None,
+            versioning: bool = False,
+            entity_type: str | None = None,
+            auto_link: bool = True,
+            semantic_threshold: float | None = None,
+            links: list[dict] | None = None,
+            description: str | None = None,
+        ) -> dict:
+            source = _provenance_source(
+                ref=ref,
+                provenance_type=provenance_type,
+                uri=uri,
+                content_hash=content_hash,
+                updated_at=updated_at,
+                version=version,
+            )
+            return mcp_handlers_nodes.upsert_node(
+                db,
+                config,
+                text=text,
+                description=description,
+                node_type=node_type,
+                owner_id=owner_id,
+                metadata=metadata,
+                source=source,
+                status=status,
+                ttl_days=ttl_days,
+                versioning=versioning,
                 entity_type=entity_type,
                 auto_link=auto_link,
                 semantic_threshold=semantic_threshold,
@@ -256,6 +310,7 @@ class GraphMemorySimpleMCP(GraphMemoryMCP):
 
         exposed["search"] = search
         exposed["create_node"] = create_node
+        exposed["upsert_node"] = upsert_node
         exposed["get_node"] = get_node
         exposed["update_node"] = update_node
         exposed["delete_node"] = delete_node
