@@ -95,7 +95,7 @@ graph-memory-mcp --host 127.0.0.1 --port 8000
 
 ### Simple server profile (home / personal)
 
-Same handlers and graph behavior as the default server, but MCP tools use **flat provenance fields** (`ref`, `provenance_type`, `uri`, …) instead of a nested `source` object, and **`upsert_node` is not registered**. Use the full server when you need sync-by-ref upserts.
+Same handlers and graph behavior as the default server, but MCP tools use **flat provenance fields** (`ref`, `provenance_type`, `uri`, …) instead of a nested `source` object (including `upsert_node`, where `ref` is required).
 
 ```bash
 graph-memory-mcp --simple --host 127.0.0.1 --port 8000
