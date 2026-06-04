@@ -262,6 +262,7 @@ async def test_deduplication_with_relation_redirection(monkeypatch, db_client):
         to_id=entity_id,
         relation_type="MENTIONS",
         owner_id=owner_id,
+        config=cfg,
     )
     assert rel_result.get("success")
 
@@ -606,6 +607,7 @@ async def test_archive_respects_active_relations(monkeypatch, db_client):
         to_id=entity_id,
         relation_type="MENTIONS",
         owner_id=owner_id,
+        config=cfg,
     )
     assert rel_result.get("success")
 

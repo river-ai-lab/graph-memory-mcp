@@ -47,12 +47,14 @@ from mcp.client.streamable_http import streamable_http_client
 
 from graph_memory_mcp.config import MCPServerConfig, load_mcp_server_config
 from graph_memory_mcp.graph_memory.database import FalkorDBClient
+from graph_memory_mcp.graph_memory.embedding_service import EmbeddingService
 from graph_memory_mcp.graph_memory.mcp_handlers_graph import get_context, get_trace
 from graph_memory_mcp.graph_memory.mcp_handlers_nodes import (
     create_node,
     update_node,
     upsert_node,
 )
+from graph_memory_mcp.graph_memory.mcp_handlers_relations import create_relation
 from graph_memory_mcp.graph_memory.mcp_handlers_search import find_similar, search
 from graph_memory_mcp.server import GraphMemoryMCP
 
@@ -617,6 +619,99 @@ async def test_multi_tenant_isolation():
                 assert not owner1_found, "Owner2 should not see Owner1's data"
 
 
+@pytest.mark.integration
+def test_get_context_default_and_pagination_integration():
+    """Default get_context (offset=0) and paginated pages against real FalkorDB."""
+    if os.environ.get("RUN_INTEGRATION_TESTS") != "1":
+        pytest.skip("integration tests disabled (set RUN_INTEGRATION_TESTS=1)")
+
+    cfg = load_mcp_server_config()
+    if not _falkordb_is_available(
+        cfg.falkordb_host, cfg.falkordb_port, cfg.falkordb_password
+    ):
+        pytest.skip("FalkorDB unavailable")
+
+    owner_id = f"pytest_ctx_page_{uuid.uuid4().hex[:8]}"
+    db = FalkorDBClient(cfg)
+    if not db.connect():
+        pytest.skip("FalkorDB connection failed")
+    db.set_embedding_service(EmbeddingService(model_name=cfg.embedding_model))
+
+    center = create_node(
+        db,
+        cfg,
+        text="Pagination center fact",
+        node_type="Fact",
+        owner_id=owner_id,
+        auto_link=False,
+    )
+    center_id = center["node"]["node_id"]
+
+    for i in range(5):
+        neighbor = create_node(
+            db,
+            cfg,
+            text=f"Pagination neighbor {i}",
+            node_type="Fact",
+            owner_id=owner_id,
+            auto_link=False,
+        )
+        create_relation(
+            db,
+            from_id=center_id,
+            to_id=neighbor["node"]["node_id"],
+            relation_type="RELATED_TO",
+            owner_id=owner_id,
+            config=cfg,
+        )
+
+    default_result = get_context(
+        db,
+        cfg,
+        node_id=center_id,
+        owner_id=owner_id,
+        depth=1,
+        max_nodes=50,
+    )
+    assert default_result["success"] is True
+    assert "offset" not in default_result
+    assert "has_more" not in default_result
+    assert len(default_result["nodes"]) >= 6
+    assert len(default_result["edges"]) >= 5
+
+    page1 = get_context(
+        db,
+        cfg,
+        node_id=center_id,
+        owner_id=owner_id,
+        depth=1,
+        max_nodes=2,
+        offset=1,
+    )
+    assert page1["success"] is True
+    assert page1["offset"] == 1
+    assert page1["max_nodes"] == 2
+    assert len(page1["nodes"]) == 2
+    assert page1["has_more"] is True
+
+    page2 = get_context(
+        db,
+        cfg,
+        node_id=center_id,
+        owner_id=owner_id,
+        depth=1,
+        max_nodes=2,
+        offset=3,
+    )
+    assert page2["success"] is True
+    assert page2["offset"] == 3
+    assert len(page2["nodes"]) == 2
+
+    page1_ids = {n["node_id"] for n in page1["nodes"]}
+    page2_ids = {n["node_id"] for n in page2["nodes"]}
+    assert page1_ids.isdisjoint(page2_ids)
+
+
 class _FakeResult:
     def __init__(self, rows):
         self.result_set = rows
@@ -660,6 +755,9 @@ class _FakeNodeDB:
         self.embedding_calls.append(text)
         return [0.1, 0.2, 0.3]
 
+    def ensure_vector_indexes_if_missing(self, **_kwargs):
+        return {"Fact": True, "Entity": True}
+
 
 class _FakeGraphDB:
     def __init__(self, responses=None):
@@ -674,6 +772,9 @@ class _FakeSearchDB:
 
     def get_embedding(self, text: str):
         return [0.1, 0.2, 0.3]
+
+    def ensure_vector_indexes_if_missing(self, **_kwargs):
+        return {"Fact": True, "Entity": True}
 
 
 def _fact_row(
@@ -724,16 +825,82 @@ def test_get_context_limits_nodes_before_collect():
         {"node_id": "123", "node_type": "Fact", "text": "isolated fact"}
     ]
     assert result["edges"] == []
+    assert "offset" not in result
+    assert "has_more" not in result
 
     nodes_query, nodes_params = db.graph.calls[0]
     assert nodes_params == {"node_id": 123, "owner_id": "default"}
     assert "WITH DISTINCT connected" in nodes_query
     assert "LIMIT 5" in nodes_query
-    assert "RETURN\n        id(connected) as node_id" in nodes_query
+    assert "ORDER BY id(connected)" not in nodes_query
+    assert "SKIP" not in nodes_query
 
     edges_query, edges_params = db.graph.calls[1]
     assert "WHERE id(n) IN $node_ids AND id(m) IN $node_ids" in edges_query
     assert edges_params == {"node_ids": [123]}
+
+
+def test_get_context_pagination_uses_offset_and_max_nodes():
+    """When offset > 0, get_context paginates with stable ORDER BY id."""
+    db = _FakeGraphDB(
+        [
+            _FakeResult(
+                [
+                    [124, "Fact", "neighbor a"],
+                    [125, "Entity", "neighbor b"],
+                ]
+            ),
+            _FakeResult([]),
+        ]
+    )
+    cfg = MCPServerConfig()
+
+    result = get_context(
+        cast(Any, db),
+        cfg,
+        node_id="123",
+        owner_id="default",
+        depth=1,
+        max_nodes=2,
+        offset=10,
+    )
+
+    assert result["success"] is True
+    assert result["offset"] == 10
+    assert result["max_nodes"] == 2
+    assert result["has_more"] is True
+    assert result["nodes"] == [
+        {"node_id": "124", "node_type": "Fact", "text": "neighbor a"},
+        {"node_id": "125", "node_type": "Entity", "text": "neighbor b"},
+    ]
+
+    nodes_query, _ = db.graph.calls[0]
+    assert "ORDER BY id(connected)" in nodes_query
+    assert "SKIP 10" in nodes_query
+    assert "LIMIT 2" in nodes_query
+    assert "WITH DISTINCT connected\n    LIMIT" not in nodes_query
+
+
+def test_get_context_pagination_has_more_false_on_partial_page():
+    """has_more is false when fewer nodes than max_nodes are returned."""
+    db = _FakeGraphDB([_FakeResult([[124, "Fact", "only one"]]), _FakeResult([])])
+    cfg = MCPServerConfig()
+
+    result = get_context(
+        cast(Any, db),
+        cfg,
+        node_id="123",
+        owner_id="default",
+        depth=1,
+        max_nodes=10,
+        offset=5,
+    )
+
+    assert result["success"] is True
+    assert result["offset"] == 5
+    assert result["max_nodes"] == 10
+    assert result["has_more"] is False
+    assert len(result["nodes"]) == 1
 
 
 def test_get_trace_returns_nodes_and_relations():

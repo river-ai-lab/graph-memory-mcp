@@ -32,7 +32,7 @@ Primary memory unit for detailed information, definitions, reasoning, descriptio
 
 
 ### Entity
-Named entity (person, organization, technology, etc.).
+Named concept (person, organization, technology, etc.). **Not a strict ontology** — a practical label distinct from Fact; agents may choose either when storing durable knowledge.
 
 **Entity-specific attributes:**
 - `type`: entity type (string, optional, e.g., "PERSON", "ORGANIZATION")
@@ -40,10 +40,31 @@ Named entity (person, organization, technology, etc.).
 ### Edge
 Typed relationship between nodes.
 
-**Types:**
-- Fact-Fact: `SIMILAR_TO`, `RELATED_TO`, `SUMMARIZES`, `FOLLOWS_FROM`, `CONTRADICTS`
-- Fact-Entity: `MENTIONS_ENTITY`, `DESCRIBES`, `REFERENCES`
-- Entity-Entity: predicate from triplets (subject-predicate-object)
+**Recommended types:**
+- General: `RELATED_TO` (default when unsure)
+- Reference: `MENTIONS` (one node refers to / is about another — any node pair)
+- Semantic: `SUMMARIZES`, `FOLLOWS_FROM`, `CONTRADICTS` (use only when the type matters)
+- Triplets: predicate from `create_triplet` (e.g. `RUNS_ON`, `USES`)
+- System: `EXTRACTED_FROM` (triplet ↔ fact), `SIMILAR_TO` (reserved for jobs/manual use — **not** used by Fact auto_link)
+
+**Relation policy (server config):**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RELATION_POLICY_ENFORCE` | `warn` | `off` \| `warn` \| `enforce` |
+| `RELATION_ALLOWED_TYPES` | see `config.py` | Comma-separated allowlist checked on `create_relation`, `create_node.links`, `create_triplet` |
+
+- **`off`**: format validation only (alphanumeric + `_`)
+- **`warn`**: disallowed types still create the edge; response includes `warning`
+- **`enforce`**: disallowed types return `memory_relation_policy_error`
+
+`create_node` with `links` returns `link_errors` / `link_warnings` when inline relations fail policy (node is still created).
+
+**Auto-linking:** `create_node(..., auto_link=true)` on Facts creates `MENTIONS` edges to semantically similar **Entity** nodes (Entity vector index; threshold `AUTO_LINKING_SEMANTIC_THRESHOLD`, default 0.75). Does not link Fact→Fact. Use `create_relation` or `links` for other pairs.
+
+**Vector indexes:** Created automatically when missing on first `search`, `find_similar`, or auto_link; optional `AUTO_CREATE_INDEXES=true` at startup; or call `ensure_vector_indexes`.
+
+Agent guidance: see [memory_policies_for_LLM.md](./memory_policies_for_LLM.md). Operational FAQ: [memory_faq.md](./memory_faq.md).
 
 **Properties:**
 - `metadata`: edge metadata (dict, optional)
@@ -176,9 +197,14 @@ All other tools (search, triplets, graph traversal, admin, jobs via config, etc.
 - `entity_type: str | None = None` (Entities only)
 - `auto_link: bool = True` (Facts only)
 - `semantic_threshold: float | None = None` (Facts only)
-- `links: list[dict] | None = None` — list of `{"node_id": str, "node_type": str, "relation_type": str}`
+- `links: list[dict] | None = None` — inline edges after create. Each item:
+  - `to_id` or `node_id` (target node id)
+  - `relation_type` (or `type`)
+  - optional `properties` or `metadata` (edge properties)
 
 **Response:** `{"success": true, "node": {...}}`
+May also include `link_errors` (policy/validation failures per link) and `link_warnings` (policy `warn` mode). The node is still created when inline links fail.
+
 **Errors:** `memory_validation_error`, `memory_service_error`
 
 #### ensure_vector_indexes
@@ -308,7 +334,7 @@ All other tools (search, triplets, graph traversal, admin, jobs via config, etc.
 - `fact_id: str | None = None`
 
 **Response:** `{"success": true, "triplet": {...}}`
-**Errors:** `memory_validation_error`, `memory_service_error`
+**Errors:** `memory_validation_error`, `memory_relation_policy_error`, `memory_service_error`
 
 #### search_triplets
 **Required:** (none)
@@ -333,8 +359,9 @@ All other tools (search, triplets, graph traversal, admin, jobs via config, etc.
 - `owner_id: str = "default"`
 - `properties: dict | None = None`
 
-**Response:** `{"success": true, "relation_type": str}`
-**Errors:** `memory_validation_error`, `memory_service_error`
+**Response:** `{"success": true, "relation_type": str}` — may include `warning` when `RELATION_POLICY_ENFORCE=warn` and type is outside allowlist.
+
+**Errors:** `memory_validation_error`, `memory_relation_policy_error` (enforce mode), `memory_service_error`
 
 #### delete_relation
 **Required:**
@@ -355,9 +382,15 @@ All other tools (search, triplets, graph traversal, admin, jobs via config, etc.
 **Optional:**
 - `owner_id: str = "default"`
 - `depth: int = 1`
-- `max_nodes: int = 20` (default from config: `subgraph_default_max_nodes`)
+- `max_nodes: int = 20` (default from config: `subgraph_default_max_nodes`) — also page size when paginating
+- `offset: int = 0` — when `> 0`, skip nodes (stable `ORDER BY id`) and return `has_more`
 
 **Response:** `{"success": true, "nodes": [...], "edges": [...], "depth": int, "max_nodes": int}`
+
+When `offset > 0`, the response also includes:
+- `offset: int`
+- `has_more: bool` — true when the page is full (`len(nodes) >= max_nodes`)
+
 **Errors:** `memory_service_error`
 
 #### get_trace
@@ -426,6 +459,7 @@ If no path is found, `nodes` and `relations` are returned as empty arrays.
 
 - `memory_validation_error`: invalid input parameters
 - `memory_not_found`: node not found
+- `memory_relation_policy_error`: relation type blocked (`RELATION_POLICY_ENFORCE=enforce`) or inline `links` / triplet predicate rejected
 - `memory_service_error`: general service error
 - `connection_error`: database connection failure
 - `falkordb_error`: FalkorDB operation error

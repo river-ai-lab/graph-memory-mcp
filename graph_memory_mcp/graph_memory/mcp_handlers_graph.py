@@ -24,28 +24,48 @@ def get_context(
     owner_id: str = "default",
     depth: Optional[int] = None,
     max_nodes: Optional[int] = None,
+    offset: int = 0,
 ) -> Dict:
     """Get subgraph context around a node."""
     owner_id = normalize_owner_id(owner_id)
     depth = max(
         0, min(depth or config.subgraph_default_depth, config.subgraph_max_depth)
     )
-    max_nodes = min(
+    effective_max_nodes: int = min(
         max_nodes or config.subgraph_default_max_nodes, config.subgraph_max_nodes_limit
     )
+    offset = max(0, offset)
 
-    nodes_query = f"""
+    if offset == 0:
+        nodes_query = f"""
     MATCH path = (center)-[*0..{depth}]-(connected)
     WHERE id(center) = $node_id
       AND center.owner_id = $owner_id
       AND connected.owner_id = $owner_id
     WITH DISTINCT connected
-    LIMIT {max_nodes}
+    LIMIT {effective_max_nodes}
     RETURN
         id(connected) as node_id,
         labels(connected)[0] as node_type,
         connected.text as text
     """
+        paginated = False
+    else:
+        nodes_query = f"""
+    MATCH path = (center)-[*0..{depth}]-(connected)
+    WHERE id(center) = $node_id
+      AND center.owner_id = $owner_id
+      AND connected.owner_id = $owner_id
+    WITH DISTINCT connected
+    ORDER BY id(connected)
+    SKIP {offset}
+    LIMIT {effective_max_nodes}
+    RETURN
+        id(connected) as node_id,
+        labels(connected)[0] as node_type,
+        connected.text as text
+    """
+        paginated = True
 
     nodes = {}
     edges = []
@@ -95,12 +115,17 @@ def get_context(
                     }
                 )
 
-    return success_response(
+    response = success_response(
         nodes=list(nodes.values()),
         edges=edges,
         depth=depth,
-        max_nodes=max_nodes,
+        max_nodes=effective_max_nodes,
     )
+    if paginated:
+        node_count = len(response["nodes"])
+        response["offset"] = offset
+        response["has_more"] = node_count >= effective_max_nodes
+    return response
 
 
 @mcp_handler
