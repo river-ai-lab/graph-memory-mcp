@@ -135,6 +135,8 @@ def search(
         if not node_types:
             node_types = ["Fact", "Entity"]
 
+    db.ensure_vector_indexes_if_missing()
+
     # Get embedding
     embedding = db.get_embedding(query)
     if not embedding:
@@ -183,6 +185,7 @@ def find_similar(
 ) -> Dict:
     """Find similar facts to a given fact."""
     owner_id = normalize_owner_id(owner_id)
+    db.ensure_vector_indexes_if_missing()
     similarity_threshold = (
         similarity_threshold
         if similarity_threshold is not None

@@ -6,3 +6,5 @@
 - [**memory_faq.md**](./memory_faq.md) - Frequently asked questions (Search vs Summary, Forget, Sharing)
 - [**comparison.md**](./comparison.md) - Comparison with other memory solutions (Mem0, Zep, LangMem)
 - [**roadmap.md**](./roadmap.md) - Roadmap and future considerations
+
+See also [README — Graph Explorer](../README.md#graph-explorer-local-gui) for the local web UI.

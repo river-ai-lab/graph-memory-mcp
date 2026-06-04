@@ -1,9 +1,10 @@
 """Relation and triplet handlers for MCP Graph Memory."""
 
 import logging
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from graph_memory_mcp.graph_memory.database import FalkorDBClient
+from graph_memory_mcp.graph_memory.relation_policy import evaluate_relation_policy
 from graph_memory_mcp.graph_memory.utils import (
     ensure_text,
     error_response,
@@ -29,13 +30,17 @@ def create_relation(
     relation_type: str,
     properties: Optional[Dict] = None,
     owner_id: str = "default",
+    config: Any = None,
 ) -> Dict:
     """Create a relation between two nodes."""
     owner_id = normalize_owner_id(owner_id)
-    if error := validate_inputs(locals(), None):
+    if error := validate_inputs(locals(), config):
         return error_response(error, code="memory_validation_error")
 
     rel_type = normalize_predicate_type(relation_type)
+    proceed, warning, policy_error = evaluate_relation_policy(config, rel_type)
+    if not proceed:
+        return error_response(policy_error, code="memory_relation_policy_error")
 
     props_str = ""
     if properties:
@@ -64,7 +69,10 @@ def create_relation(
 
     db.cache.invalidate_search()
 
-    return success_response(relation_type=rel_type)
+    response = success_response(relation_type=rel_type)
+    if warning:
+        response["warning"] = warning
+    return response
 
 
 @mcp_handler
@@ -77,9 +85,15 @@ def create_triplet(
     metadata: Optional[Dict] = None,
     fact_id: Optional[str] = None,
     owner_id: str = "default",
+    config: Any = None,
 ) -> Dict:
     """Create a subject-predicate-object triplet."""
     owner_id = normalize_owner_id(owner_id)
+
+    rel_type = normalize_predicate_type(predicate)
+    proceed, warning, policy_error = evaluate_relation_policy(config, rel_type)
+    if not proceed:
+        return error_response(policy_error, code="memory_relation_policy_error")
 
     # Create or get subject entity
     subj_emb = db.get_embedding(subject)
@@ -98,7 +112,7 @@ def create_triplet(
         o.embedding = {format_vecf32(obj_emb)},
         o.status = 'active',
         o.metadata_str = '{{}}'
-    MERGE (s)-[r:{normalize_predicate_type(predicate)}]->(o)
+    MERGE (s)-[r:{rel_type}]->(o)
     ON CREATE SET r.created_at = timestamp()
     RETURN id(s) as subject_id, id(o) as object_id, id(r) as relation_id
     """
@@ -125,6 +139,23 @@ def create_triplet(
 
     # Link to fact if provided
     if fact_id:
+        proceed_x, warning_x, err_x = evaluate_relation_policy(
+            config, "EXTRACTED_FROM", internal=True
+        )
+        if not proceed_x:
+            response = success_response(triplet=triplet)
+            response["link_errors"] = [
+                {"relation_type": "EXTRACTED_FROM", "error": err_x}
+            ]
+            if warning:
+                response["warning"] = warning
+            db.cache.invalidate_search()
+            return response
+        if warning_x and warning:
+            warning = f"{warning}; {warning_x}"
+        elif warning_x:
+            warning = warning_x
+
         link_query = """
         MATCH (f:Fact), (s:Entity)
         WHERE id(f) = $fact_id AND id(s) = $subject_id
@@ -143,7 +174,10 @@ def create_triplet(
 
     db.cache.invalidate_search()
 
-    return success_response(triplet=triplet)
+    response = success_response(triplet=triplet)
+    if warning:
+        response["warning"] = warning
+    return response
 
 
 @mcp_handler
