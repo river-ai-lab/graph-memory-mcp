@@ -173,6 +173,7 @@ def create_summary_fact(
                 to_id=str(fact_id),
                 relation_type="SUMMARIZES",
                 owner_id=owner_id,
+                config=config,
             )
         except Exception as link_exc:
             logger.warning("Failed to link summary to fact %s: %s", fact_id, link_exc)

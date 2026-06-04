@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Graph Memory Explorer</title>
+  <link rel="stylesheet" href="/static/explorer.css" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.30.2/cytoscape.min.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <h1>Graph Memory Explorer</h1>
+    <span id="status-badge" class="badge badge-warn">checking…</span>
+    <span id="stats-bar" class="stats"></span>
+  </header>
+
+  <div class="layout">
+    <aside class="panel panel-left">
+      <section>
+        <label>owner_id</label>
+        <input id="owner-id" type="text" value="default" placeholder="default" />
+      </section>
+
+      <section>
+        <label>Anchor node ID</label>
+        <div class="row">
+          <input id="node-id" type="text" placeholder="e.g. 12345" />
+          <button id="btn-load-node" type="button">Load</button>
+        </div>
+      </section>
+
+      <section>
+        <label>Semantic search (text)</label>
+        <input id="search-query" type="text" placeholder="query…" />
+        <div class="row">
+          <label class="inline">limit</label>
+          <input id="search-limit" type="number" value="10" min="1" max="50" />
+          <button id="btn-search" type="button">Search</button>
+        </div>
+      </section>
+
+      <section>
+        <label>Similar facts (from anchor)</label>
+        <div class="row">
+          <label class="inline">top</label>
+          <input id="similar-limit" type="number" value="5" min="1" max="30" />
+          <label class="inline">threshold</label>
+          <input id="similar-threshold" type="number" value="0.55" min="0" max="1" step="0.05" />
+        </div>
+        <button id="btn-similar" type="button">Find similar</button>
+      </section>
+
+      <section>
+        <label>Graph expansion</label>
+        <div class="row">
+          <label class="inline">depth</label>
+          <input id="depth" type="number" value="1" min="0" max="3" />
+          <label class="inline">max_nodes</label>
+          <input id="max-nodes" type="number" value="10" min="1" max="50" />
+        </div>
+        <div class="row">
+          <button id="btn-context" type="button">Context</button>
+          <button id="btn-hop" type="button">+1 hop</button>
+          <button id="btn-clear" type="button" class="secondary">Clear graph</button>
+        </div>
+      </section>
+
+      <section id="log-section">
+        <label>Log</label>
+        <pre id="log"></pre>
+      </section>
+    </aside>
+
+    <main class="graph-wrap">
+      <div id="cy"></div>
+      <div id="hover-plus" class="hover-plus" title="Load 10 neighbors">+</div>
+    </main>
+
+    <aside class="panel panel-right">
+      <h2>Node detail</h2>
+      <p id="detail-empty" class="muted">Click a node to see full text.</p>
+      <div id="detail" hidden>
+        <p><strong>ID</strong> <span id="detail-id"></span></p>
+        <p><strong>Type</strong> <span id="detail-type"></span></p>
+        <p><strong>Status</strong> <span id="detail-status"></span></p>
+        <p><strong>Similarity</strong> <span id="detail-sim"></span></p>
+        <label>Text</label>
+        <pre id="detail-text"></pre>
+        <label>Edges</label>
+        <ul id="detail-edges"></ul>
+        <button id="btn-set-anchor" type="button">Set as anchor</button>
+        <button id="btn-neighbors" type="button">+10 neighbors</button>
+      </div>
+    </aside>
+  </div>
+
+  <script src="/static/explorer.js"></script>
+</body>
+</html>

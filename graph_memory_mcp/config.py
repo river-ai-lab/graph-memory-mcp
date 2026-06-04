@@ -60,6 +60,21 @@ class MCPServerConfig(BaseSettings):
     duplicate_top_k: int = 100
     summary_similarity_threshold: float = 0.7
 
+    # Relation policy (create_relation, create_node links, create_triplet predicates)
+    relation_policy_enforce: str = Field(
+        default="warn",
+        validation_alias="RELATION_POLICY_ENFORCE",
+        description="off | warn | enforce — allowlist for relation types",
+    )
+    relation_allowed_types: str = Field(
+        default=(
+            "RELATED_TO,MENTIONS,SUMMARIZES,FOLLOWS_FROM,CONTRADICTS,"
+            "EXTRACTED_FROM,SIMILAR_TO,NEXT_STEP,EXPOSES,CROSS_REF,"
+            "RUNS_ON,USES,SERVED_BY"
+        ),
+        validation_alias="RELATION_ALLOWED_TYPES",
+    )
+
     # Housekeeping
     cleanup_days_threshold: int = 90
     log_ttl_days: int = 10

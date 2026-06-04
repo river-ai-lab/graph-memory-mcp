@@ -136,6 +136,31 @@ class FalkorDBClient:
             logger.error("Failed to create Entity vector index: %s", e)
             return False
 
+    def ensure_vector_indexes_if_missing(
+        self,
+        *,
+        dimension: int | None = None,
+        similarity_function: str = "cosine",
+    ) -> Dict[str, bool]:
+        """Create Fact/Entity vector indexes when absent (idempotent)."""
+        dim = int(dimension or getattr(self._embedding_service, "dimension", 0) or 0)
+        if dim <= 0:
+            logger.warning(
+                "Cannot ensure vector indexes: embedding dimension is %s", dim
+            )
+            return self.get_vector_index_status()
+
+        status = self.get_vector_index_status()
+        if not status.get("Fact"):
+            self.create_vector_index(
+                dimension=dim, similarity_function=similarity_function
+            )
+        if not status.get("Entity"):
+            self.create_entity_vector_index(
+                dimension=dim, similarity_function=similarity_function
+            )
+        return self.get_vector_index_status()
+
     def get_vector_index_status(self) -> Dict[str, Any]:
         """Get vector index status for Fact and Entity."""
         try:

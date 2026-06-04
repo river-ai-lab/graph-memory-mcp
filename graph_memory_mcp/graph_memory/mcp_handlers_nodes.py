@@ -6,6 +6,10 @@ from typing import Any, Dict, List, Literal, Optional
 
 from graph_memory_mcp.graph_memory.database import FalkorDBClient
 from graph_memory_mcp.graph_memory.mcp_handlers_relations import create_relation
+from graph_memory_mcp.graph_memory.relation_policy import (
+    AUTO_LINK_RELATION,
+    evaluate_relation_policy,
+)
 from graph_memory_mcp.graph_memory.utils import (
     dump_json,
     ensure_text,
@@ -246,6 +250,7 @@ def create_node(
         try:
             _create_auto_links(
                 db,
+                config=config,
                 node_id=node_id,
                 threshold=threshold,
                 owner_id=owner_id,
@@ -255,7 +260,8 @@ def create_node(
         except Exception as exc:
             logger.warning("Auto-link failed for node_id=%s: %s", node_id, exc)
 
-    # Explicit links
+    link_errors: list[dict[str, Any]] = []
+    link_warnings: list[str] = []
     if links:
         for link in links:
             if not isinstance(link, dict):
@@ -263,22 +269,36 @@ def create_node(
             to_id = link.get("node_id") or link.get("to_id")
             rel_type = link.get("relation_type") or link.get("type")
             if to_id and rel_type:
-                try:
-                    props = link.get("metadata") or link.get("properties")
-                    create_relation(
-                        db,
-                        from_id=node_id,
-                        to_id=str(to_id),
-                        relation_type=str(rel_type),
-                        properties=props,
-                        owner_id=owner_id,
+                props = link.get("metadata") or link.get("properties")
+                link_result = create_relation(
+                    db,
+                    from_id=node_id,
+                    to_id=str(to_id),
+                    relation_type=str(rel_type),
+                    properties=props,
+                    owner_id=owner_id,
+                    config=config,
+                )
+                if not link_result.get("success"):
+                    link_errors.append(
+                        {
+                            "to_id": str(to_id),
+                            "relation_type": str(rel_type),
+                            "error": link_result.get("error"),
+                            "code": link_result.get("code"),
+                        }
                     )
-                except Exception as link_exc:
-                    logger.warning("Explicit link failed: %s", link_exc)
+                elif link_result.get("warning"):
+                    link_warnings.append(str(link_result["warning"]))
 
     db.cache.invalidate_search()
 
-    return success_response(node=node)
+    response = success_response(node=node)
+    if link_errors:
+        response["link_errors"] = link_errors
+    if link_warnings:
+        response["link_warnings"] = link_warnings
+    return response
 
 
 @mcp_handler
@@ -665,6 +685,7 @@ def _get_node_by_source_ref(
 def _create_auto_links(
     db: FalkorDBClient,
     *,
+    config: Any,
     node_id: str,
     threshold: float,
     owner_id: str,
@@ -672,7 +693,17 @@ def _create_auto_links(
     fact_text: Optional[str] = None,
 ) -> None:
     """Auto-link a Fact to similar Entities."""
+    proceed, warning, policy_error = evaluate_relation_policy(
+        config, AUTO_LINK_RELATION
+    )
+    if not proceed:
+        logger.warning("Auto-link skipped (policy): %s", policy_error)
+        return
+    if warning:
+        logger.warning("Auto-link policy warning: %s", warning)
+
     try:
+        db.ensure_vector_indexes_if_missing()
         if not embedding and fact_text is not None:
             embedding = db.get_embedding(fact_text)
         if not embedding:
@@ -688,7 +719,7 @@ def _create_auto_links(
         WITH node
         MATCH (f), (e)
         WHERE id(f) = {int(node_id)} AND id(e) = id(node)
-        MERGE (f)-[r:MENTIONS]->(e)
+        MERGE (f)-[r:{AUTO_LINK_RELATION}]->(e)
         ON CREATE SET r.created_at = timestamp(), r.auto_linked = true
         RETURN count(r) as links_created
         """

@@ -117,13 +117,33 @@ Note:
 - Metadata is not the main searchable/filterable surface today.
 - Put the primary fact in `text`, not only in metadata.
 
-## 4. Recommended Agent Behavior
+## 4. Relations (Graph Links)
 
-When using Graph Memory MCP:
+`Fact` and `Entity` are **practical labels**, not a strict ontology (Explorer uses different shapes for humans only). Entity ≈ named concept; Fact ≈ declarative statement. Prefer consistent relations over debating which label to use.
 
-1. Identify the correct `owner_id` first.
-2. Search before writing.
-3. Store only durable, reusable knowledge.
-4. Keep facts atomic and explicit.
-5. When knowledge changes materially, mark the old fact outdated and create a new one.
-6. Never store secrets, raw conversation, or scratchpad reasoning.
+### Default types
+
+| Type | When to use |
+|------|-------------|
+| `RELATED_TO` | Default association when no finer type is needed |
+| `MENTIONS` | Source node refers to, depends on, or is about the target (any node pair) |
+| `SUMMARIZES` | Summary fact → source facts |
+| `FOLLOWS_FROM` | Temporal or logical precedence |
+| `CONTRADICTS` | Explicit conflict between facts |
+
+Use other types (`RUNS_ON`, `USES`, …) only via `create_triplet` or when your team's allowlist includes them.
+
+### Rules
+
+1. **Search before linking** — call `search` / `get_context` to avoid redundant edges.
+2. **Do not invent relation types** — the server may reject types outside `RELATION_ALLOWED_TYPES` (default mode: `warn`; production may use `enforce`).
+3. **`create_relation` is idempotent per type** — repeating the same `(from_id, relation_type, to_id)` does not duplicate that edge; different types between the same pair are still allowed.
+4. **Prefer `links` on `create_node`** when you already know structure at insert time.
+5. **Bulk ingest** — set `auto_link=false` to skip automatic `MENTIONS` edges, then link explicitly.
+6. **Fix mistakes** — `delete_relation`, `mark_outdated`, or `delete_node`.
+
+### Auto-link
+
+`create_node(..., auto_link=true)` on **Facts** adds `MENTIONS` to semantically similar **Entity** nodes (Entity vector index). It does **not** link Fact→Fact. Disable when bulk-importing (`auto_link=false`) and add `links` / `create_relation` explicitly.
+
+The server enforces allowed relation types from config; you do not need to read that config — follow this document and handle `warning` / errors in tool responses.
