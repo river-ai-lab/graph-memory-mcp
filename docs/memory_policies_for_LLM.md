@@ -58,13 +58,63 @@ Examples of valid values:
 
 Avoid values with `:` or spaces, such as `agent:123` or `team:core`.
 
+### How to use `search`
+
+Semantic search finds Facts and Entities **similar in meaning** to your query text, scoped by **`owner_id`**.
+
+**Always pass:**
+
+| Parameter | Rule |
+|-----------|------|
+| `query` | Natural-language question or keywords (e.g. `"Redis hosting"`, `"user prefers dark mode"`) |
+| `owner_id` | Same scope you use for `create_node` / `get_node` (required — see above) |
+
+**Optional — `search_type` (you can omit it):**
+
+The server has a default (`SEARCH_TYPE` in config, typically `pre_filter`). **Do not pass `search_type` unless your operator tells you to override the default** or you need a one-off different mode. When omitted, the server default applies automatically.
+
+| Value | How it works | When to override |
+|-------|----------------|------------------|
+| **`pre_filter`** | Filter by `owner_id` (and status/TTL) **first**, then rank by vector similarity inside that set. | Large graph or many `owner_id`s — complete tenant results (default on most deployments). |
+| **`post_filter`** | **Global** ANN over the whole graph, then keep rows matching `owner_id` / status. | Small graph, few tenants — faster ANN; may miss hits as the graph grows. |
+
+**Example (usual — only required params; `search_type` omitted):**
+
+```json
+{
+  "query": "where is production Redis hosted",
+  "owner_id": "team_platform"
+}
+```
+
+**Example (only if you must override the server default):**
+
+```json
+{
+  "query": "where is production Redis hosted",
+  "owner_id": "team_platform",
+  "search_type": "post_filter"
+}
+```
+
+**Other optional parameters:**
+
+| Parameter | When |
+|-----------|------|
+| `search_type` | Override server default (`pre_filter` \| `post_filter`); **optional** — omit unless instructed |
+| `include_outdated: true` | Look for facts marked obsolete (e.g. after `mark_outdated`) |
+| `node_types: ["Fact"]` or `["Entity"]` | Only one kind of node |
+| `limit` | More or fewer hits than default |
+| `similarity_threshold` | Results too noisy or too sparse |
+| `status: "outdated"` | Outdated nodes only |
+
 ### Search Before Create
 
 Before writing a new fact:
 
-1. Call `search(...)` with the same `owner_id`.
-2. If needed, call `get_context(...)` on promising results.
-3. Only create a new node if the fact is genuinely new or materially different.
+1. Call `search` with your `query` and the same `owner_id` you will write to (`search_type` optional — server default applies).
+2. If needed, call `get_context(...)` on promising `node_id` values from the results.
+3. Only call `create_node` if nothing already covers the fact or your new wording is materially different.
 
 Do not rely only on background deduplication. Agents should actively avoid writing duplicates.
 

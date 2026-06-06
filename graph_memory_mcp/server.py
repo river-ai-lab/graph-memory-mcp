@@ -214,7 +214,10 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
                 "Semantic search using embedding similarity (cosine distance). "
                 "Returns active nodes by default (use include_outdated=true to include outdated and archived nodes). "
                 "Results ranked by similarity to query text. "
-                "Supports multi-tenant isolation via owner_id."
+                "Supports multi-tenant isolation via owner_id. "
+                "search_type: pre_filter (filter owner first, best for large/multi-tenant graphs) "
+                "or post_filter (global ANN then filter, best for small graphs); "
+                "defaults to server SEARCH_TYPE when omitted."
             ),
             annotations=ToolAnnotations(readOnlyHint=True),
         )
@@ -226,6 +229,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
             status: str | None = None,
             similarity_threshold: float | None = None,
             include_outdated: bool = False,
+            search_type: str | None = None,
         ) -> dict:
             return mcp_handlers_search.search(
                 db,
@@ -237,6 +241,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
                 status=status,
                 similarity_threshold=similarity_threshold,
                 include_outdated=include_outdated,
+                search_type=search_type,
             )
 
         @mcp.tool(

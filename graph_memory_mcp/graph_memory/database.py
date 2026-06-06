@@ -12,6 +12,7 @@ import logging
 import time
 from typing import Any, Dict, List
 
+import redis
 from falkordb import FalkorDB
 
 from graph_memory_mcp.graph_memory.cache import CacheManager
@@ -41,6 +42,11 @@ class FalkorDBClient:
             self.config.falkordb_port,
             self.config.falkordb_graph,
         )
+
+    @property
+    def redis_client(self) -> redis.Redis | None:
+        """Underlying Redis connection (used for distributed job locks)."""
+        return getattr(self.db, "connection", None)
 
     def set_embedding_service(self, service: Any) -> None:
         """Attach embedding service instance."""
@@ -160,6 +166,68 @@ class FalkorDBClient:
                 dimension=dim, similarity_function=similarity_function
             )
         return self.get_vector_index_status()
+
+    def create_owner_id_range_index(self, label: str) -> bool:
+        """Create range index on owner_id for faster tenant-scoped MATCH."""
+        try:
+            query = f"CREATE RANGE INDEX FOR (n:{label}) ON (n.owner_id)"
+            self.graph.query(query)
+            logger.info("Created range index for %s.owner_id", label)
+            return True
+        except Exception as e:
+            if (
+                "already indexed" in str(e).lower()
+                or "already exists" in str(e).lower()
+            ):
+                return True
+            logger.error("Failed to create %s owner_id range index: %s", label, e)
+            return False
+
+    def get_owner_id_range_index_status(self) -> Dict[str, bool]:
+        """Return whether Fact/Entity owner_id range indexes exist."""
+        status = {"Fact": False, "Entity": False}
+        try:
+            result = self.graph.query("CALL db.indexes()")
+            if not result or not hasattr(result, "result_set"):
+                return status
+            for row in result.result_set:
+                if len(row) < 3:
+                    continue
+                label = str(row[0]) if row[0] else ""
+                prop = str(row[1]) if row[1] else ""
+                idx_type = str(row[2]) if row[2] else ""
+                if prop != "owner_id" or "range" not in idx_type.lower():
+                    continue
+                if "Fact" in label:
+                    status["Fact"] = True
+                if "Entity" in label:
+                    status["Entity"] = True
+        except Exception as e:
+            logger.error("Failed to get owner_id range index status: %s", e)
+        return status
+
+    def ensure_owner_id_range_indexes_if_missing(self) -> Dict[str, bool]:
+        """Create Fact/Entity owner_id range indexes when absent (idempotent)."""
+        status = self.get_owner_id_range_index_status()
+        if not status.get("Fact"):
+            self.create_owner_id_range_index("Fact")
+        if not status.get("Entity"):
+            self.create_owner_id_range_index("Entity")
+        return self.get_owner_id_range_index_status()
+
+    def ensure_search_indexes_if_missing(
+        self,
+        *,
+        dimension: int | None = None,
+        similarity_function: str = "cosine",
+    ) -> Dict[str, Any]:
+        """Ensure indexes used by owner-scoped semantic search."""
+        vector_status = self.ensure_vector_indexes_if_missing(
+            dimension=dimension,
+            similarity_function=similarity_function,
+        )
+        range_status = self.ensure_owner_id_range_indexes_if_missing()
+        return {"vector": vector_status, "owner_id_range": range_status}
 
     def get_vector_index_status(self) -> Dict[str, Any]:
         """Get vector index status for Fact and Entity."""
