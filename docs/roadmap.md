@@ -1,5 +1,9 @@
 # Roadmap & Future Considerations
 
+## Search & multi-tenant scale
+
+**Hybrid FalkorDB + Qdrant** — dedicated vector index per tenant when an owner holds 100k+ embeddings; FalkorDB remains source of truth for graph structure and metadata.
+
 ## Features
 
 **Hybrid Memory/Disk Database** - Specialized backend supporting hybrid memory/disk operation (active data in memory, archived data on disk). Enables handling datasets larger than RAM without eviction.
