@@ -231,9 +231,10 @@ May also include `link_errors` (policy/validation failures per link) and `link_w
 - `versioning: bool = False` — when true, stores a snapshot before update and auto-increments `source.version` if omitted
 - `auto_link: bool = True` (Facts only)
 - `semantic_threshold: float | None = None` (Facts only)
-- `links: list[dict] | None = None`
+- `links: list[dict] | None = None` — inline edges after create **or update** (same shape as `create_node.links`)
 
 **Response:** `{"success": true, "node": {...}, "operation": "created" | "updated"}`
+May also include `link_errors` / `link_warnings` when inline `links` fail policy (node is still created or updated).
 **Errors:** `memory_validation_error`, `memory_service_error`
 
 #### get_node
@@ -285,6 +286,9 @@ May also include `link_errors` (policy/validation failures per link) and `link_w
 
 
 #### search
+
+Semantic similarity over Facts and Entities. See [memory_policies_for_LLM.md](./memory_policies_for_LLM.md) § “How to use search”. Two modes via `search_type`: **`pre_filter`** (filter by owner first — recommended for large / multi-tenant graphs) and **`post_filter`** (global ANN then filter — fine for small graphs). Server default: config `SEARCH_TYPE` (env), overridable per call. For `post_filter`, ANN candidate pool size: `POST_FILTER_ANN_K_MIN` / `POST_FILTER_ANN_K_MAX` (env).
+
 **Required:**
 - `query: str`
 
@@ -295,6 +299,7 @@ May also include `link_errors` (policy/validation failures per link) and `link_w
 - `status: str | None = None` — "active" | "outdated" | "archived"
 - `similarity_threshold: float | None = None`
 - `include_outdated: bool = False`
+- `search_type: str | None = None` — `pre_filter` | `post_filter`; falls back to config `SEARCH_TYPE` when omitted
 
 **Response:** `{"success": true, "results": [...], "facts": [...], "entities": [...]}`
 **Errors:** `memory_service_error`

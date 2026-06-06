@@ -132,6 +132,64 @@ def _source_properties(source: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+def _apply_inline_links(
+    db: FalkorDBClient,
+    config: Any,
+    *,
+    node_id: str,
+    owner_id: str,
+    links: Optional[List[Dict]] = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Create inline edges after create_node / upsert_node."""
+    link_errors: list[dict[str, Any]] = []
+    link_warnings: list[str] = []
+    if not links:
+        return link_errors, link_warnings
+
+    for link in links:
+        if not isinstance(link, dict):
+            continue
+        to_id = link.get("node_id") or link.get("to_id")
+        rel_type = link.get("relation_type") or link.get("type")
+        if not (to_id and rel_type):
+            continue
+        props = link.get("metadata") or link.get("properties")
+        link_result = create_relation(
+            db,
+            from_id=node_id,
+            to_id=str(to_id),
+            relation_type=str(rel_type),
+            properties=props,
+            owner_id=owner_id,
+            config=config,
+        )
+        if not link_result.get("success"):
+            link_errors.append(
+                {
+                    "to_id": str(to_id),
+                    "relation_type": str(rel_type),
+                    "error": link_result.get("error"),
+                    "code": link_result.get("code"),
+                }
+            )
+        elif link_result.get("warning"):
+            link_warnings.append(str(link_result["warning"]))
+
+    return link_errors, link_warnings
+
+
+def _response_with_link_fields(
+    response: Dict[str, Any],
+    link_errors: list[dict[str, Any]],
+    link_warnings: list[str],
+) -> Dict[str, Any]:
+    if link_errors:
+        response["link_errors"] = link_errors
+    if link_warnings:
+        response["link_warnings"] = link_warnings
+    return response
+
+
 @mcp_handler
 def create_node(
     db: FalkorDBClient,
@@ -260,45 +318,19 @@ def create_node(
         except Exception as exc:
             logger.warning("Auto-link failed for node_id=%s: %s", node_id, exc)
 
-    link_errors: list[dict[str, Any]] = []
-    link_warnings: list[str] = []
-    if links:
-        for link in links:
-            if not isinstance(link, dict):
-                continue
-            to_id = link.get("node_id") or link.get("to_id")
-            rel_type = link.get("relation_type") or link.get("type")
-            if to_id and rel_type:
-                props = link.get("metadata") or link.get("properties")
-                link_result = create_relation(
-                    db,
-                    from_id=node_id,
-                    to_id=str(to_id),
-                    relation_type=str(rel_type),
-                    properties=props,
-                    owner_id=owner_id,
-                    config=config,
-                )
-                if not link_result.get("success"):
-                    link_errors.append(
-                        {
-                            "to_id": str(to_id),
-                            "relation_type": str(rel_type),
-                            "error": link_result.get("error"),
-                            "code": link_result.get("code"),
-                        }
-                    )
-                elif link_result.get("warning"):
-                    link_warnings.append(str(link_result["warning"]))
+    link_errors, link_warnings = _apply_inline_links(
+        db,
+        config,
+        node_id=node_id,
+        owner_id=owner_id,
+        links=links,
+    )
 
     db.cache.invalidate_search()
 
-    response = success_response(node=node)
-    if link_errors:
-        response["link_errors"] = link_errors
-    if link_warnings:
-        response["link_warnings"] = link_warnings
-    return response
+    return _response_with_link_fields(
+        success_response(node=node), link_errors, link_warnings
+    )
 
 
 @mcp_handler
@@ -365,7 +397,12 @@ def upsert_node(
         )
         if not result.get("success"):
             return result
-        return success_response(node=result["node"], operation="created")
+        response = success_response(node=result["node"], operation="created")
+        return _response_with_link_fields(
+            response,
+            result.get("link_errors") or [],
+            result.get("link_warnings") or [],
+        )
 
     result = update_node(
         db,
@@ -383,7 +420,15 @@ def upsert_node(
     if not result.get("success"):
         return result
 
-    return success_response(node=result["node"], operation="updated")
+    link_errors, link_warnings = _apply_inline_links(
+        db,
+        config,
+        node_id=existing["node_id"],
+        owner_id=owner_id,
+        links=links,
+    )
+    response = success_response(node=result["node"], operation="updated")
+    return _response_with_link_fields(response, link_errors, link_warnings)
 
 
 @mcp_handler
@@ -703,7 +748,7 @@ def _create_auto_links(
         logger.warning("Auto-link policy warning: %s", warning)
 
     try:
-        db.ensure_vector_indexes_if_missing()
+        db.ensure_search_indexes_if_missing()
         if not embedding and fact_text is not None:
             embedding = db.get_embedding(fact_text)
         if not embedding:
@@ -712,11 +757,15 @@ def _create_auto_links(
         max_distance = 1.0 - threshold
 
         query = f"""
-        CALL db.idx.vector.queryNodes('Entity', 'embedding', 10, {format_vecf32(embedding)})
-        YIELD node, score
+        MATCH (node:Entity)
+        WHERE node.owner_id = '{escape_value(owner_id)}'
+          AND node.embedding IS NOT NULL
+          AND (node.status IS NULL OR node.status = 'active')
+        WITH node, vec.cosineDistance(node.embedding, {format_vecf32(embedding)}) AS score
         WHERE score <= {max_distance}
-          AND node.owner_id = '{escape_value(owner_id)}'
         WITH node
+        ORDER BY score ASC
+        LIMIT 10
         MATCH (f), (e)
         WHERE id(f) = {int(node_id)} AND id(e) = id(node)
         MERGE (f)-[r:{AUTO_LINK_RELATION}]->(e)

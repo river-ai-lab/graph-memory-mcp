@@ -47,6 +47,21 @@ class MCPServerConfig(BaseSettings):
     # Search/graph defaults
     default_search_limit: int = 10
     semantic_similarity_threshold: float = 0.55
+    default_search_type: str = Field(
+        default="pre_filter",
+        validation_alias="SEARCH_TYPE",
+        description="Default search_type when MCP search omits it: pre_filter | post_filter",
+    )
+    post_filter_ann_k_min: int = Field(
+        default=100,
+        validation_alias="POST_FILTER_ANN_K_MIN",
+        description="Minimum global ANN candidates for post_filter search (queryNodes k)",
+    )
+    post_filter_ann_k_max: int = Field(
+        default=2000,
+        validation_alias="POST_FILTER_ANN_K_MAX",
+        description="Maximum global ANN candidates for post_filter search (queryNodes k)",
+    )
 
     # Graph/auto-linking
     auto_linking_semantic_threshold: float = 0.75
