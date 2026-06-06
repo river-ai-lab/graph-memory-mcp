@@ -35,37 +35,26 @@ The test creates a realistic knowledge graph and exercises all tools.
 from __future__ import annotations
 
 import json
-import os
 import uuid
 from typing import Any, cast
 
 import httpx
 import pytest
-import redis
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
 from graph_memory_mcp.config import MCPServerConfig, load_mcp_server_config
 from graph_memory_mcp.graph_memory.database import FalkorDBClient
+from graph_memory_mcp.graph_memory.embedding_service import EmbeddingService
 from graph_memory_mcp.graph_memory.mcp_handlers_graph import get_context, get_trace
 from graph_memory_mcp.graph_memory.mcp_handlers_nodes import (
     create_node,
     update_node,
     upsert_node,
 )
+from graph_memory_mcp.graph_memory.mcp_handlers_relations import create_relation
 from graph_memory_mcp.graph_memory.mcp_handlers_search import find_similar, search
 from graph_memory_mcp.server import GraphMemoryMCP
-
-
-def _falkordb_is_available(host: str, port: int, password: str | None) -> bool:
-    """Check if FalkorDB is available."""
-    try:
-        client = redis.Redis(
-            host=host, port=port, password=password, socket_timeout=0.5
-        )
-        return client.ping() is True
-    except Exception:
-        return False
 
 
 def _extract_tool_json(result) -> dict:
@@ -94,15 +83,7 @@ async def test_all_mcp_tools_comprehensive():
 
     Creates a realistic knowledge graph and exercises every tool.
     """
-    if os.environ.get("RUN_INTEGRATION_TESTS") != "1":
-        pytest.skip("integration tests disabled (set RUN_INTEGRATION_TESTS=1)")
-
     cfg = load_mcp_server_config()
-
-    if not _falkordb_is_available(
-        cfg.falkordb_host, cfg.falkordb_port, cfg.falkordb_password
-    ):
-        pytest.skip("FalkorDB unavailable")
 
     # Use unique owner_id for isolation
     owner_id = f"pytest_all_tools_{uuid.uuid4().hex[:8]}"
@@ -279,13 +260,25 @@ async def test_all_mcp_tools_comprehensive():
                 data = _extract_tool_json(result)
                 assert data.get("success") is True
 
+                result = await session.call_tool(
+                    "get_node",
+                    {
+                        "node_id": temp_fact_id,
+                        "owner_id": owner_id,
+                    },
+                )
+                data = _extract_tool_json(result)
+                assert data.get("success") is True
+                assert data["node"].get("status") == "outdated"
+
                 # Verify it's excluded from default search
                 result = await session.call_tool(
                     "search",
                     {
-                        "query": "Temporary fact",
+                        "query": "Temporary fact to be outdated",
                         "owner_id": owner_id,
                         "include_outdated": False,
+                        "similarity_threshold": 0.25,
                     },
                 )
                 data = _extract_tool_json(result)
@@ -299,9 +292,10 @@ async def test_all_mcp_tools_comprehensive():
                 result = await session.call_tool(
                     "search",
                     {
-                        "query": "Temporary fact",
+                        "query": "Temporary fact to be outdated",
                         "owner_id": owner_id,
                         "include_outdated": True,
+                        "similarity_threshold": 0.25,
                     },
                 )
                 data = _extract_tool_json(result)
@@ -537,15 +531,7 @@ async def test_all_mcp_tools_comprehensive():
 @pytest.mark.asyncio
 async def test_multi_tenant_isolation():
     """Test that owner_id properly isolates data between tenants."""
-    if os.environ.get("RUN_INTEGRATION_TESTS") != "1":
-        pytest.skip("integration tests disabled")
-
     cfg = load_mcp_server_config()
-
-    if not _falkordb_is_available(
-        cfg.falkordb_host, cfg.falkordb_port, cfg.falkordb_password
-    ):
-        pytest.skip("FalkorDB unavailable")
 
     owner1 = f"pytest_tenant1_{uuid.uuid4().hex[:8]}"
     owner2 = f"pytest_tenant2_{uuid.uuid4().hex[:8]}"
@@ -617,6 +603,179 @@ async def test_multi_tenant_isolation():
                 assert not owner1_found, "Owner2 should not see Owner1's data"
 
 
+@pytest.mark.integration
+@pytest.mark.asyncio
+@pytest.mark.parametrize("search_type", ["pre_filter", "post_filter"])
+async def test_search_type_finds_fact_within_owner(search_type: str):
+    """Both search_type values should return the owner's fact via MCP search."""
+    cfg = load_mcp_server_config()
+    owner_id = f"pytest_search_type_{uuid.uuid4().hex[:8]}"
+    fact_text = f"Unique search type probe {uuid.uuid4().hex}"
+
+    server = GraphMemoryMCP(cfg)
+    app = server.get_mcp_app()
+
+    async with server.mcp.session_manager.run():
+        async with streamable_http_client(
+            "http://127.0.0.1:8000/mcp",
+            http_client=httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://127.0.0.1:8000",
+            ),
+        ) as (read, write, _get_session_id):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+
+                create = await session.call_tool(
+                    "create_node",
+                    {
+                        "text": fact_text,
+                        "node_type": "Fact",
+                        "owner_id": owner_id,
+                        "auto_link": False,
+                    },
+                )
+                data = _extract_tool_json(create)
+                assert data.get("success") is True
+                fact_id = data["node"]["node_id"]
+
+                found = await session.call_tool(
+                    "search",
+                    {
+                        "query": fact_text,
+                        "owner_id": owner_id,
+                        "node_types": ["Fact"],
+                        "similarity_threshold": 0.25,
+                        "search_type": search_type,
+                    },
+                )
+                data = _extract_tool_json(found)
+                assert data.get("success") is True
+                ids = [r["node_id"] for r in data.get("results", [])]
+                assert fact_id in ids, f"{search_type} should find the owner's fact"
+
+
+@pytest.mark.integration
+def test_get_context_depth_zero_includes_anchor():
+    """depth=0 should return only the anchor node ([*0..0] includes zero-length path)."""
+    cfg = load_mcp_server_config()
+    owner_id = f"pytest_ctx_d0_{uuid.uuid4().hex[:8]}"
+    db = FalkorDBClient(cfg)
+    if not db.connect():
+        pytest.fail("FalkorDB connection failed")
+
+    created = create_node(
+        db,
+        cfg,
+        text="depth zero anchor",
+        node_type="Fact",
+        owner_id=owner_id,
+        auto_link=False,
+    )
+    anchor_id = created["node"]["node_id"]
+
+    result = get_context(
+        db,
+        cfg,
+        node_id=anchor_id,
+        owner_id=owner_id,
+        depth=0,
+        max_nodes=10,
+    )
+
+    assert result["success"] is True
+    assert result["nodes"] == [
+        {"node_id": anchor_id, "node_type": "Fact", "text": "depth zero anchor"}
+    ]
+    assert result["edges"] == []
+
+
+@pytest.mark.integration
+def test_get_context_default_and_pagination_integration():
+    """Default get_context (offset=0) and paginated pages against real FalkorDB."""
+    cfg = load_mcp_server_config()
+
+    owner_id = f"pytest_ctx_page_{uuid.uuid4().hex[:8]}"
+    db = FalkorDBClient(cfg)
+    if not db.connect():
+        pytest.fail("FalkorDB connection failed")
+    db.set_embedding_service(EmbeddingService(model_name=cfg.embedding_model))
+
+    center = create_node(
+        db,
+        cfg,
+        text="Pagination center fact",
+        node_type="Fact",
+        owner_id=owner_id,
+        auto_link=False,
+    )
+    center_id = center["node"]["node_id"]
+
+    for i in range(5):
+        neighbor = create_node(
+            db,
+            cfg,
+            text=f"Pagination neighbor {i}",
+            node_type="Fact",
+            owner_id=owner_id,
+            auto_link=False,
+        )
+        create_relation(
+            db,
+            from_id=center_id,
+            to_id=neighbor["node"]["node_id"],
+            relation_type="RELATED_TO",
+            owner_id=owner_id,
+            config=cfg,
+        )
+
+    default_result = get_context(
+        db,
+        cfg,
+        node_id=center_id,
+        owner_id=owner_id,
+        depth=1,
+        max_nodes=50,
+    )
+    assert default_result["success"] is True
+    assert "offset" not in default_result
+    assert "has_more" not in default_result
+    assert len(default_result["nodes"]) >= 6
+    assert len(default_result["edges"]) >= 5
+
+    page1 = get_context(
+        db,
+        cfg,
+        node_id=center_id,
+        owner_id=owner_id,
+        depth=1,
+        max_nodes=2,
+        offset=1,
+    )
+    assert page1["success"] is True
+    assert page1["offset"] == 1
+    assert page1["max_nodes"] == 2
+    assert len(page1["nodes"]) == 2
+    assert page1["has_more"] is True
+
+    page2 = get_context(
+        db,
+        cfg,
+        node_id=center_id,
+        owner_id=owner_id,
+        depth=1,
+        max_nodes=2,
+        offset=3,
+    )
+    assert page2["success"] is True
+    assert page2["offset"] == 3
+    assert len(page2["nodes"]) == 2
+
+    page1_ids = {n["node_id"] for n in page1["nodes"]}
+    page2_ids = {n["node_id"] for n in page2["nodes"]}
+    assert page1_ids.isdisjoint(page2_ids)
+
+
 class _FakeResult:
     def __init__(self, rows):
         self.result_set = rows
@@ -629,6 +788,8 @@ class _FakeGraph:
 
     def query(self, query, params=None):
         self.calls.append((query, params))
+        if "RETURN count(n)" in query:
+            return _FakeResult([[0]])
         if self._responses:
             return self._responses.pop(0)
         return _FakeResult([])
@@ -660,6 +821,12 @@ class _FakeNodeDB:
         self.embedding_calls.append(text)
         return [0.1, 0.2, 0.3]
 
+    def ensure_vector_indexes_if_missing(self, **_kwargs):
+        return {"Fact": True, "Entity": True}
+
+    def ensure_search_indexes_if_missing(self, **_kwargs):
+        return {"vector": {"Fact": True, "Entity": True}, "owner_id_range": {}}
+
 
 class _FakeGraphDB:
     def __init__(self, responses=None):
@@ -674,6 +841,12 @@ class _FakeSearchDB:
 
     def get_embedding(self, text: str):
         return [0.1, 0.2, 0.3]
+
+    def ensure_search_indexes_if_missing(self, **_kwargs):
+        return {"vector": {"Fact": True, "Entity": True}, "owner_id_range": {}}
+
+    def ensure_vector_indexes_if_missing(self, **_kwargs):
+        return {"Fact": True, "Entity": True}
 
 
 def _fact_row(
@@ -724,16 +897,82 @@ def test_get_context_limits_nodes_before_collect():
         {"node_id": "123", "node_type": "Fact", "text": "isolated fact"}
     ]
     assert result["edges"] == []
+    assert "offset" not in result
+    assert "has_more" not in result
 
     nodes_query, nodes_params = db.graph.calls[0]
     assert nodes_params == {"node_id": 123, "owner_id": "default"}
     assert "WITH DISTINCT connected" in nodes_query
     assert "LIMIT 5" in nodes_query
-    assert "RETURN\n        id(connected) as node_id" in nodes_query
+    assert "ORDER BY id(connected)" not in nodes_query
+    assert "SKIP" not in nodes_query
 
     edges_query, edges_params = db.graph.calls[1]
     assert "WHERE id(n) IN $node_ids AND id(m) IN $node_ids" in edges_query
     assert edges_params == {"node_ids": [123]}
+
+
+def test_get_context_pagination_uses_offset_and_max_nodes():
+    """When offset > 0, get_context paginates with stable ORDER BY id."""
+    db = _FakeGraphDB(
+        [
+            _FakeResult(
+                [
+                    [124, "Fact", "neighbor a"],
+                    [125, "Entity", "neighbor b"],
+                ]
+            ),
+            _FakeResult([]),
+        ]
+    )
+    cfg = MCPServerConfig()
+
+    result = get_context(
+        cast(Any, db),
+        cfg,
+        node_id="123",
+        owner_id="default",
+        depth=1,
+        max_nodes=2,
+        offset=10,
+    )
+
+    assert result["success"] is True
+    assert result["offset"] == 10
+    assert result["max_nodes"] == 2
+    assert result["has_more"] is True
+    assert result["nodes"] == [
+        {"node_id": "124", "node_type": "Fact", "text": "neighbor a"},
+        {"node_id": "125", "node_type": "Entity", "text": "neighbor b"},
+    ]
+
+    nodes_query, _ = db.graph.calls[0]
+    assert "ORDER BY id(connected)" in nodes_query
+    assert "SKIP 10" in nodes_query
+    assert "LIMIT 2" in nodes_query
+    assert "WITH DISTINCT connected\n    LIMIT" not in nodes_query
+
+
+def test_get_context_pagination_has_more_false_on_partial_page():
+    """has_more is false when fewer nodes than max_nodes are returned."""
+    db = _FakeGraphDB([_FakeResult([[124, "Fact", "only one"]]), _FakeResult([])])
+    cfg = MCPServerConfig()
+
+    result = get_context(
+        cast(Any, db),
+        cfg,
+        node_id="123",
+        owner_id="default",
+        depth=1,
+        max_nodes=10,
+        offset=5,
+    )
+
+    assert result["success"] is True
+    assert result["offset"] == 5
+    assert result["max_nodes"] == 10
+    assert result["has_more"] is False
+    assert len(result["nodes"]) == 1
 
 
 def test_get_trace_returns_nodes_and_relations():
@@ -879,14 +1118,14 @@ def test_find_similar_uses_shared_escape_helper():
 
     assert result["success"] is True
     assert result["similar_facts"][0]["node_id"] == "456"
-    assert len(db.graph.calls) == 2
+    assert len(db.graph.calls) == 3
 
-    similar_query, _ = db.graph.calls[1]
+    similar_query, _ = db.graph.calls[2]
     assert "node.owner_id = 'team\\'o'" in similar_query
 
 
-def test_search_filters_active_nodes_by_default():
-    """search should filter both Facts and Entities to active nodes by default."""
+def test_search_pre_filter_by_default():
+    """search should pre-filter by owner, then exact cosine (default search_type)."""
     db = _FakeSearchDB([_FakeResult([]), _FakeResult([])])
     cfg = MCPServerConfig()
 
@@ -902,9 +1141,96 @@ def test_search_filters_active_nodes_by_default():
     fact_query, _ = db.graph.calls[0]
     entity_query, _ = db.graph.calls[1]
     active_clause = "(node.status IS NULL OR node.status = 'active')"
+    assert "MATCH (node:Fact)" in fact_query
+    assert "vec.cosineDistance" in fact_query
+    assert "node.owner_id = 'default'" in fact_query
     assert active_clause in fact_query
-    assert active_clause in entity_query
     assert "(node.expires_at IS NULL OR node.expires_at > timestamp())" in fact_query
+    assert "MATCH (node:Entity)" in entity_query
+    assert "vec.cosineDistance" in entity_query
+
+
+def test_search_post_filter_uses_global_ann():
+    """post_filter search_type should use queryNodes ANN."""
+    db = _FakeSearchDB([_FakeResult([]), _FakeResult([])])
+    cfg = MCPServerConfig()
+
+    result = search(
+        cast(Any, db),
+        cfg,
+        query="important query",
+        owner_id="default",
+        search_type="post_filter",
+    )
+
+    assert result["success"] is True
+
+    ann_k_min = cfg.post_filter_ann_k_min
+    fact_query, _ = db.graph.calls[1]
+    entity_query, _ = db.graph.calls[3]
+    assert f"queryNodes('Fact', 'embedding', {ann_k_min}," in fact_query
+    assert f"queryNodes('Entity', 'embedding', {ann_k_min}," in entity_query
+
+
+def test_search_pre_filter_explicit(monkeypatch):
+    """search_type=pre_filter should use MATCH + vec.cosineDistance."""
+    monkeypatch.setenv("SEARCH_TYPE", "post_filter")
+    db = _FakeSearchDB([_FakeResult([]), _FakeResult([])])
+    cfg = MCPServerConfig()
+
+    result = search(
+        cast(Any, db),
+        cfg,
+        query="important query",
+        owner_id="default",
+        search_type="pre_filter",
+    )
+
+    assert result["success"] is True
+    fact_query, _ = db.graph.calls[0]
+    assert "MATCH (node:Fact)" in fact_query
+    assert "vec.cosineDistance" in fact_query
+    assert "queryNodes" not in fact_query
+
+
+def test_search_config_default_post_filter(monkeypatch):
+    """Omitted search_type should follow SEARCH_TYPE / default_search_type config."""
+    monkeypatch.setenv("SEARCH_TYPE", "post_filter")
+    db = _FakeSearchDB([_FakeResult([]), _FakeResult([])])
+    cfg = MCPServerConfig()
+
+    result = search(
+        cast(Any, db),
+        cfg,
+        query="important query",
+        owner_id="default",
+    )
+
+    assert result["success"] is True
+    assert cfg.default_search_type == "post_filter"
+    fact_query, _ = db.graph.calls[1]
+    assert "queryNodes('Fact', 'embedding'," in fact_query
+
+
+def test_search_rejects_invalid_search_type():
+    db = _FakeSearchDB([])
+    cfg = MCPServerConfig()
+
+    result = search(
+        cast(Any, db),
+        cfg,
+        query="q",
+        owner_id="default",
+        search_type="invalid",
+    )
+
+    assert result["success"] is False
+    assert result.get("code") == "memory_validation_error"
+
+
+def test_search_active_filters_apply_with_pre_filter():
+    """Active-only filters apply under default pre_filter search_type."""
+    test_search_pre_filter_by_default()
 
 
 def test_search_status_override_applies_to_entities():
@@ -1091,3 +1417,65 @@ def test_upsert_node_requires_source_ref():
 
     assert result["success"] is False
     assert result["code"] == "memory_validation_error"
+
+
+@pytest.mark.integration
+def test_upsert_node_update_applies_inline_links():
+    """upsert_node should honor links on the update path, not only on create."""
+    cfg = load_mcp_server_config()
+    owner_id = f"pytest_upsert_links_{uuid.uuid4().hex[:8]}"
+    db = FalkorDBClient(cfg)
+    if not db.connect():
+        pytest.fail("FalkorDB connection failed")
+
+    target = create_node(
+        db,
+        cfg,
+        text="link target entity",
+        node_type="Entity",
+        owner_id=owner_id,
+        auto_link=False,
+    )
+    target_id = target["node"]["node_id"]
+    source = {"ref": "DOC-upsert-links"}
+
+    created = upsert_node(
+        db,
+        cfg,
+        text="synced fact v1",
+        node_type="Fact",
+        owner_id=owner_id,
+        source=source,
+        auto_link=False,
+    )
+    assert created["operation"] == "created"
+    fact_id = created["node"]["node_id"]
+
+    updated = upsert_node(
+        db,
+        cfg,
+        text="synced fact v2",
+        node_type="Fact",
+        owner_id=owner_id,
+        source=source,
+        auto_link=False,
+        links=[{"to_id": target_id, "relation_type": "MENTIONS"}],
+    )
+    assert updated["success"] is True
+    assert updated["operation"] == "updated"
+    assert updated["node"]["node_id"] == fact_id
+
+    context = get_context(
+        db,
+        cfg,
+        node_id=fact_id,
+        owner_id=owner_id,
+        depth=1,
+        max_nodes=10,
+    )
+    assert any(
+        edge["from_id"] == fact_id
+        and edge["to_id"] == target_id
+        and edge["relation_type"] == "MENTIONS"
+        for edge in context["edges"]
+    )

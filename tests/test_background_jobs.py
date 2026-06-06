@@ -8,7 +8,6 @@ Tests cover:
 - Scheduler lifecycle
 """
 
-import os
 import time
 import uuid
 from unittest.mock import MagicMock, patch
@@ -46,30 +45,16 @@ from graph_memory_mcp.jobs.scheduler import (
 @pytest.fixture(scope="module")
 def db_client():
     """Shared FalkorDBClient for integration tests to avoid OOM."""
-    if os.environ.get("RUN_INTEGRATION_TESTS") != "1":
-        pytest.skip("integration tests disabled")
-
     cfg = load_mcp_server_config()
     db = FalkorDBClient(cfg)
 
     health = db.health_check()
     if health.get("status") != "healthy":
-        pytest.skip(f"FalkorDB unavailable: {health.get('error')}")
+        pytest.fail(f"FalkorDB unhealthy: {health.get('error')}")
 
     # Initialize embedding service once
     db.set_embedding_service(EmbeddingService(model_name=cfg.embedding_model))
     return db
-
-
-def _falkordb_is_available() -> bool:
-    """Check if FalkorDB is available for integration tests."""
-    try:
-        cfg = load_mcp_server_config()
-        db = FalkorDBClient(cfg)
-        health = db.health_check()
-        return health.get("status") == "healthy"
-    except Exception:
-        return False
 
 
 class _FakeResult:
@@ -262,6 +247,7 @@ async def test_deduplication_with_relation_redirection(monkeypatch, db_client):
         to_id=entity_id,
         relation_type="MENTIONS",
         owner_id=owner_id,
+        config=cfg,
     )
     assert rel_result.get("success")
 
@@ -606,6 +592,7 @@ async def test_archive_respects_active_relations(monkeypatch, db_client):
         to_id=entity_id,
         relation_type="MENTIONS",
         owner_id=owner_id,
+        config=cfg,
     )
     assert rel_result.get("success")
 

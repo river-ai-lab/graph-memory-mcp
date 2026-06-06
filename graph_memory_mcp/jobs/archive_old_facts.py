@@ -104,9 +104,7 @@ async def archive_old_facts(db: FalkorDBClient, config: MCPServerConfig) -> None
     for owner_id in owners:
         lock_key = f"graph_memory_mcp:job:archive_old_facts:{owner_id}"
 
-        # Note: db.redis_client might not exist in new architecture
-        # For now, skip locking if redis not available
-        if not hasattr(db, "redis_client") or db.redis_client is None:
+        if db.redis_client is None:
             logger.warning("Archive job: Redis not available, running without lock")
             acquired = True
             lock_context = None

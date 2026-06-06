@@ -58,13 +58,63 @@ Examples of valid values:
 
 Avoid values with `:` or spaces, such as `agent:123` or `team:core`.
 
+### How to use `search`
+
+Semantic search finds Facts and Entities **similar in meaning** to your query text, scoped by **`owner_id`**.
+
+**Always pass:**
+
+| Parameter | Rule |
+|-----------|------|
+| `query` | Natural-language question or keywords (e.g. `"Redis hosting"`, `"user prefers dark mode"`) |
+| `owner_id` | Same scope you use for `create_node` / `get_node` (required — see above) |
+
+**Optional — `search_type` (you can omit it):**
+
+The server has a default (`SEARCH_TYPE` in config, typically `pre_filter`). **Do not pass `search_type` unless your operator tells you to override the default** or you need a one-off different mode. When omitted, the server default applies automatically.
+
+| Value | How it works | When to override |
+|-------|----------------|------------------|
+| **`pre_filter`** | Filter by `owner_id` (and status/TTL) **first**, then rank by vector similarity inside that set. | Large graph or many `owner_id`s — complete tenant results (default on most deployments). |
+| **`post_filter`** | **Global** ANN over the whole graph, then keep rows matching `owner_id` / status. | Small graph, few tenants — faster ANN; may miss hits as the graph grows. |
+
+**Example (usual — only required params; `search_type` omitted):**
+
+```json
+{
+  "query": "where is production Redis hosted",
+  "owner_id": "team_platform"
+}
+```
+
+**Example (only if you must override the server default):**
+
+```json
+{
+  "query": "where is production Redis hosted",
+  "owner_id": "team_platform",
+  "search_type": "post_filter"
+}
+```
+
+**Other optional parameters:**
+
+| Parameter | When |
+|-----------|------|
+| `search_type` | Override server default (`pre_filter` \| `post_filter`); **optional** — omit unless instructed |
+| `include_outdated: true` | Look for facts marked obsolete (e.g. after `mark_outdated`) |
+| `node_types: ["Fact"]` or `["Entity"]` | Only one kind of node |
+| `limit` | More or fewer hits than default |
+| `similarity_threshold` | Results too noisy or too sparse |
+| `status: "outdated"` | Outdated nodes only |
+
 ### Search Before Create
 
 Before writing a new fact:
 
-1. Call `search(...)` with the same `owner_id`.
-2. If needed, call `get_context(...)` on promising results.
-3. Only create a new node if the fact is genuinely new or materially different.
+1. Call `search` with your `query` and the same `owner_id` you will write to (`search_type` optional — server default applies).
+2. If needed, call `get_context(...)` on promising `node_id` values from the results.
+3. Only call `create_node` if nothing already covers the fact or your new wording is materially different.
 
 Do not rely only on background deduplication. Agents should actively avoid writing duplicates.
 
@@ -117,13 +167,33 @@ Note:
 - Metadata is not the main searchable/filterable surface today.
 - Put the primary fact in `text`, not only in metadata.
 
-## 4. Recommended Agent Behavior
+## 4. Relations (Graph Links)
 
-When using Graph Memory MCP:
+`Fact` and `Entity` are **practical labels**, not a strict ontology (Explorer uses different shapes for humans only). Entity ≈ named concept; Fact ≈ declarative statement. Prefer consistent relations over debating which label to use.
 
-1. Identify the correct `owner_id` first.
-2. Search before writing.
-3. Store only durable, reusable knowledge.
-4. Keep facts atomic and explicit.
-5. When knowledge changes materially, mark the old fact outdated and create a new one.
-6. Never store secrets, raw conversation, or scratchpad reasoning.
+### Default types
+
+| Type | When to use |
+|------|-------------|
+| `RELATED_TO` | Default association when no finer type is needed |
+| `MENTIONS` | Source node refers to, depends on, or is about the target (any node pair) |
+| `SUMMARIZES` | Summary fact → source facts |
+| `FOLLOWS_FROM` | Temporal or logical precedence |
+| `CONTRADICTS` | Explicit conflict between facts |
+
+Use other types (`RUNS_ON`, `USES`, …) only via `create_triplet` or when your team's allowlist includes them.
+
+### Rules
+
+1. **Search before linking** — call `search` / `get_context` to avoid redundant edges.
+2. **Do not invent relation types** — the server may reject types outside `RELATION_ALLOWED_TYPES` (default mode: `warn`; production may use `enforce`).
+3. **`create_relation` is idempotent per type** — repeating the same `(from_id, relation_type, to_id)` does not duplicate that edge; different types between the same pair are still allowed.
+4. **Prefer `links` on `create_node`** when you already know structure at insert time.
+5. **Bulk ingest** — set `auto_link=false` to skip automatic `MENTIONS` edges, then link explicitly.
+6. **Fix mistakes** — `delete_relation`, `mark_outdated`, or `delete_node`.
+
+### Auto-link
+
+`create_node(..., auto_link=true)` on **Facts** adds `MENTIONS` to semantically similar **Entity** nodes (Entity vector index). It does **not** link Fact→Fact. Disable when bulk-importing (`auto_link=false`) and add `links` / `create_relation` explicitly.
+
+The server enforces allowed relation types from config; you do not need to read that config — follow this document and handle `warning` / errors in tool responses.

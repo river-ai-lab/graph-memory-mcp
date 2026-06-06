@@ -4,9 +4,11 @@ from typing import Any, Dict, List
 
 from graph_memory_mcp.config import MCPServerConfig
 from graph_memory_mcp.graph_memory.database import FalkorDBClient
+from graph_memory_mcp.graph_memory.owner_scoped_search import (
+    build_owner_scoped_similarity_query,
+)
 from graph_memory_mcp.graph_memory.utils import (
     escape_value,
-    format_vecf32,
     normalize_owner_id,
     parse_embedding_value,
 )
@@ -169,20 +171,19 @@ def _query_similar_nodes(
 ) -> List[Dict[str, Any]]:
     """Query same-owner similar nodes across the full active corpus."""
     max_distance = 1.0 - threshold
-    query = f"""
-    CALL db.idx.vector.queryNodes('{label}', 'embedding', {top_k + 1}, {format_vecf32(embedding)})
-    YIELD node, score
-    WHERE score <= {max_distance}
-      AND node.owner_id = '{escape_value(owner_id)}'
-      AND id(node) <> {int(node_id)}
-      AND (node.status IS NULL OR node.status = 'active')
-    RETURN
-      id(node) as node_id,
-      node.created_at as created_at,
-      score
-    ORDER BY score ASC, created_at ASC, node_id ASC
-    LIMIT {top_k}
-    """
+    query = build_owner_scoped_similarity_query(
+        node_type=label,
+        embedding=embedding,
+        owner_id=owner_id,
+        limit=top_k,
+        max_distance=max_distance,
+        exclude_node_id=int(node_id),
+    )
+    # Dedup expects ascending score order and extra fields for tie-breaking.
+    query = query.replace(
+        "ORDER BY score ASC",
+        "ORDER BY score ASC, node.created_at ASC, node_id ASC",
+    )
 
     result = db.graph.query(query)
     if not result or not hasattr(result, "result_set") or not result.result_set:
@@ -191,8 +192,8 @@ def _query_similar_nodes(
     return [
         {
             "node_id": str(row[0]),
-            "created_at": row[1] or 0,
-            "score": float(row[2]),
+            "created_at": row[4] or 0,
+            "score": float(row[6]),
         }
         for row in result.result_set
     ]
@@ -589,7 +590,7 @@ async def deduplicate_facts(db: FalkorDBClient, config: MCPServerConfig) -> None
     for owner_id in owners:
         lock_key = f"graph_memory_mcp:job:deduplicate_facts:{owner_id}"
 
-        if not hasattr(db, "redis_client") or db.redis_client is None:
+        if db.redis_client is None:
             logger.warning("Dedup job: Redis not available, running without lock")
             acquired = True
             lock_context = None

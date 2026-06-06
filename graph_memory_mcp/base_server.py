@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
@@ -18,6 +19,21 @@ from graph_memory_mcp.graph_memory.embedding_service import EmbeddingService
 from graph_memory_mcp.jobs.scheduler import shutdown_scheduler, start_scheduler
 
 logger = logging.getLogger(__name__)
+
+_AGENT_POLICIES_URI = "graph-memory://agent-policies"
+_AGENT_POLICIES_PATH = (
+    Path(__file__).resolve().parents[1] / "docs" / "memory_policies_for_LLM.md"
+)
+
+# Shown to MCP clients at connect (see MCP spec: server instructions).
+_MCP_INSTRUCTIONS = (
+    "Graph Memory is a long-term knowledge graph, not a chat log. "
+    "Always pass owner_id explicitly on reads and writes (alphanumeric, _, -, @). "
+    "Search before create; store one durable declarative fact per node. "
+    "Never store chat logs, secrets, or ephemeral execution state. "
+    "For substantive changes: mark_outdated then create_node. "
+    f"Before the first memory write in a session, read MCP resource {_AGENT_POLICIES_URI}."
+)
 
 
 class _UnavailableEmbeddingService:
@@ -60,10 +76,35 @@ class BaseGraphMemoryMCP:
 
         self.mcp = FastMCP(
             name=self.server_config.description or self.server_config.name,
+            instructions=_MCP_INSTRUCTIONS,
             stateless_http=True,
             json_response=True,
         )
+        self._register_resources()
         self._register_tools()
+
+    def _register_resources(self) -> None:
+        """Expose agent policy docs as an MCP resource."""
+        mcp = self.mcp
+        policies_path = _AGENT_POLICIES_PATH
+
+        @mcp.resource(
+            _AGENT_POLICIES_URI,
+            name="agent-policies",
+            title="Agent Memory Directives",
+            description=(
+                "Full read/write policy for Graph Memory: owner_id scope, what to store, "
+                "search-before-create, relations, and update protocol."
+            ),
+            mime_type="text/markdown",
+        )
+        def agent_policies() -> str:
+            if not policies_path.is_file():
+                raise FileNotFoundError(
+                    f"Agent policies not found at {policies_path}. "
+                    "Run the server from a repo checkout that includes docs/."
+                )
+            return policies_path.read_text(encoding="utf-8")
 
     def get_mcp_app(self):
         """Get MCP app with optional background scheduler support."""

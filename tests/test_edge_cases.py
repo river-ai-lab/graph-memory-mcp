@@ -12,26 +12,13 @@ Tests cover:
 from __future__ import annotations
 
 import json
-import os
 import time
 import uuid
 
 import pytest
-import redis
 
 from graph_memory_mcp.config import load_mcp_server_config
 from graph_memory_mcp.server import GraphMemoryMCP
-
-
-def _falkordb_is_available(host: str, port: int, password: str | None) -> bool:
-    """Check if FalkorDB is available."""
-    try:
-        client = redis.Redis(
-            host=host, port=port, password=password, socket_timeout=0.5
-        )
-        return client.ping() is True
-    except Exception:
-        return False
 
 
 def _extract_tool_json(result) -> dict:
@@ -69,9 +56,6 @@ def _extract_tool_json(result) -> dict:
 @pytest.fixture(scope="module")
 def server_instance():
     """Shared server instance for the module to avoid reloading models."""
-    if os.environ.get("RUN_INTEGRATION_TESTS") != "1":
-        pytest.skip("integration tests disabled")
-
     cfg = load_mcp_server_config()
     return GraphMemoryMCP(cfg)
 
@@ -80,46 +64,42 @@ def server_instance():
 @pytest.mark.asyncio
 async def test_auto_link_functionality(server_instance):
     """
-    Test auto_link parameter - automatic semantic linking of facts.
-
-    When auto_link=True, new facts should automatically link to semantically similar facts.
+    auto_link on Facts adds MENTIONS to similar Entity nodes (not Fact→Fact).
     """
     server = server_instance
     owner_id = f"pytest_autolink_{uuid.uuid4().hex[:8]}"
 
-    # Create first fact without auto_link
     result = await server.mcp.call_tool(
         "create_node",
         {
-            "text": "Python is a programming language",
-            "node_type": "Fact",
+            "text": "Python programming language",
+            "node_type": "Entity",
             "owner_id": owner_id,
             "auto_link": False,
         },
     )
     data = _extract_tool_json(result)
     assert data.get("success") is True
+    entity_id = data["node"]["node_id"]
 
-    # Create second fact WITH auto_link (should link to first)
     result = await server.mcp.call_tool(
         "create_node",
         {
             "text": "Python is used for data science and web development",
             "node_type": "Fact",
             "owner_id": owner_id,
-            "auto_link": True,  # Should auto-link to fact1
-            "semantic_threshold": 0.7,
+            "auto_link": True,
+            "semantic_threshold": 0.5,
         },
     )
     data = _extract_tool_json(result)
     assert data.get("success") is True
-    fact2_id = data["node"]["node_id"]
+    fact_id = data["node"]["node_id"]
 
-    # Check that fact2 has auto-created links
     result = await server.mcp.call_tool(
         "get_context",
         {
-            "node_id": fact2_id,
+            "node_id": fact_id,
             "owner_id": owner_id,
             "depth": 1,
         },
@@ -127,12 +107,17 @@ async def test_auto_link_functionality(server_instance):
     data = _extract_tool_json(result)
     edges = data.get("edges", [])
 
-    # Should have at least one edge to fact1 (if embeddings are similar enough)
-    assert len(edges) >= 0
-
-    # If there are edges, verify they are RELATED_TO type
-    if edges:
-        assert any(e.get("relation_type") == "RELATED_TO" for e in edges)
+    mention_edges = [
+        e
+        for e in edges
+        if e.get("relation_type") == "MENTIONS"
+        and (
+            e.get("from_id") == fact_id
+            or e.get("to_id") == entity_id
+            or e.get("target_id") == entity_id
+        )
+    ]
+    assert mention_edges, f"Expected MENTIONS to entity {entity_id}, got edges: {edges}"
 
 
 @pytest.mark.integration
