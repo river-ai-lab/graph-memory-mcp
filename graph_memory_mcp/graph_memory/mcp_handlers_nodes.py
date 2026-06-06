@@ -6,6 +6,10 @@ from typing import Any, Dict, List, Literal, Optional
 
 from graph_memory_mcp.graph_memory.database import FalkorDBClient
 from graph_memory_mcp.graph_memory.mcp_handlers_relations import create_relation
+from graph_memory_mcp.graph_memory.relation_policy import (
+    AUTO_LINK_RELATION,
+    evaluate_relation_policy,
+)
 from graph_memory_mcp.graph_memory.utils import (
     dump_json,
     ensure_text,
@@ -128,6 +132,64 @@ def _source_properties(source: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+def _apply_inline_links(
+    db: FalkorDBClient,
+    config: Any,
+    *,
+    node_id: str,
+    owner_id: str,
+    links: Optional[List[Dict]] = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Create inline edges after create_node / upsert_node."""
+    link_errors: list[dict[str, Any]] = []
+    link_warnings: list[str] = []
+    if not links:
+        return link_errors, link_warnings
+
+    for link in links:
+        if not isinstance(link, dict):
+            continue
+        to_id = link.get("node_id") or link.get("to_id")
+        rel_type = link.get("relation_type") or link.get("type")
+        if not (to_id and rel_type):
+            continue
+        props = link.get("metadata") or link.get("properties")
+        link_result = create_relation(
+            db,
+            from_id=node_id,
+            to_id=str(to_id),
+            relation_type=str(rel_type),
+            properties=props,
+            owner_id=owner_id,
+            config=config,
+        )
+        if not link_result.get("success"):
+            link_errors.append(
+                {
+                    "to_id": str(to_id),
+                    "relation_type": str(rel_type),
+                    "error": link_result.get("error"),
+                    "code": link_result.get("code"),
+                }
+            )
+        elif link_result.get("warning"):
+            link_warnings.append(str(link_result["warning"]))
+
+    return link_errors, link_warnings
+
+
+def _response_with_link_fields(
+    response: Dict[str, Any],
+    link_errors: list[dict[str, Any]],
+    link_warnings: list[str],
+) -> Dict[str, Any]:
+    if link_errors:
+        response["link_errors"] = link_errors
+    if link_warnings:
+        response["link_warnings"] = link_warnings
+    return response
+
+
 @mcp_handler
 def create_node(
     db: FalkorDBClient,
@@ -246,6 +308,7 @@ def create_node(
         try:
             _create_auto_links(
                 db,
+                config=config,
                 node_id=node_id,
                 threshold=threshold,
                 owner_id=owner_id,
@@ -255,30 +318,19 @@ def create_node(
         except Exception as exc:
             logger.warning("Auto-link failed for node_id=%s: %s", node_id, exc)
 
-    # Explicit links
-    if links:
-        for link in links:
-            if not isinstance(link, dict):
-                continue
-            to_id = link.get("node_id") or link.get("to_id")
-            rel_type = link.get("relation_type") or link.get("type")
-            if to_id and rel_type:
-                try:
-                    props = link.get("metadata") or link.get("properties")
-                    create_relation(
-                        db,
-                        from_id=node_id,
-                        to_id=str(to_id),
-                        relation_type=str(rel_type),
-                        properties=props,
-                        owner_id=owner_id,
-                    )
-                except Exception as link_exc:
-                    logger.warning("Explicit link failed: %s", link_exc)
+    link_errors, link_warnings = _apply_inline_links(
+        db,
+        config,
+        node_id=node_id,
+        owner_id=owner_id,
+        links=links,
+    )
 
     db.cache.invalidate_search()
 
-    return success_response(node=node)
+    return _response_with_link_fields(
+        success_response(node=node), link_errors, link_warnings
+    )
 
 
 @mcp_handler
@@ -345,7 +397,12 @@ def upsert_node(
         )
         if not result.get("success"):
             return result
-        return success_response(node=result["node"], operation="created")
+        response = success_response(node=result["node"], operation="created")
+        return _response_with_link_fields(
+            response,
+            result.get("link_errors") or [],
+            result.get("link_warnings") or [],
+        )
 
     result = update_node(
         db,
@@ -363,7 +420,15 @@ def upsert_node(
     if not result.get("success"):
         return result
 
-    return success_response(node=result["node"], operation="updated")
+    link_errors, link_warnings = _apply_inline_links(
+        db,
+        config,
+        node_id=existing["node_id"],
+        owner_id=owner_id,
+        links=links,
+    )
+    response = success_response(node=result["node"], operation="updated")
+    return _response_with_link_fields(response, link_errors, link_warnings)
 
 
 @mcp_handler
@@ -665,6 +730,7 @@ def _get_node_by_source_ref(
 def _create_auto_links(
     db: FalkorDBClient,
     *,
+    config: Any,
     node_id: str,
     threshold: float,
     owner_id: str,
@@ -672,7 +738,17 @@ def _create_auto_links(
     fact_text: Optional[str] = None,
 ) -> None:
     """Auto-link a Fact to similar Entities."""
+    proceed, warning, policy_error = evaluate_relation_policy(
+        config, AUTO_LINK_RELATION
+    )
+    if not proceed:
+        logger.warning("Auto-link skipped (policy): %s", policy_error)
+        return
+    if warning:
+        logger.warning("Auto-link policy warning: %s", warning)
+
     try:
+        db.ensure_search_indexes_if_missing()
         if not embedding and fact_text is not None:
             embedding = db.get_embedding(fact_text)
         if not embedding:
@@ -681,14 +757,18 @@ def _create_auto_links(
         max_distance = 1.0 - threshold
 
         query = f"""
-        CALL db.idx.vector.queryNodes('Entity', 'embedding', 10, {format_vecf32(embedding)})
-        YIELD node, score
+        MATCH (node:Entity)
+        WHERE node.owner_id = '{escape_value(owner_id)}'
+          AND node.embedding IS NOT NULL
+          AND (node.status IS NULL OR node.status = 'active')
+        WITH node, vec.cosineDistance(node.embedding, {format_vecf32(embedding)}) AS score
         WHERE score <= {max_distance}
-          AND node.owner_id = '{escape_value(owner_id)}'
         WITH node
+        ORDER BY score ASC
+        LIMIT 10
         MATCH (f), (e)
         WHERE id(f) = {int(node_id)} AND id(e) = id(node)
-        MERGE (f)-[r:MENTIONS]->(e)
+        MERGE (f)-[r:{AUTO_LINK_RELATION}]->(e)
         ON CREATE SET r.created_at = timestamp(), r.auto_linked = true
         RETURN count(r) as links_created
         """

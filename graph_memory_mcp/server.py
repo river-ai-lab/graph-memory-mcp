@@ -46,24 +46,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
     def _ensure_indexes_if_needed(self) -> None:
         """Create vector indexes if they don't exist (with dimension validation)."""
         dim = int(getattr(self.embedding_service, "dimension", 0) or 0)
-        if dim <= 0:
-            logger.warning("Cannot create indexes: embedding dimension is %s", dim)
-            return
-
-        status = self.db_client.get_vector_index_status()
-        fact_ok = bool(status.get("Fact"))
-        ent_ok = bool(status.get("Entity"))
-
-        if not fact_ok:
-            logger.info("Creating Fact vector index (dimension=%s)", dim)
-            self.db_client.create_vector_index(
-                dimension=dim, similarity_function="cosine"
-            )
-        if not ent_ok:
-            logger.info("Creating Entity vector index (dimension=%s)", dim)
-            self.db_client.create_entity_vector_index(
-                dimension=dim, similarity_function="cosine"
-            )
+        self.db_client.ensure_vector_indexes_if_missing(dimension=dim)
 
     def _register_tools(self) -> None:
         exposed: Dict[str, Any] = {}
@@ -108,10 +91,10 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
         @mcp.tool(
             title="Ensure vector indexes",
             description=(
-                "Create or verify vector indexes for semantic search. "
-                "Idempotent - safe to call multiple times. "
-                "Validates embedding dimension compatibility. "
-                "Required before using search or auto_link features."
+                "Create or verify Fact and Entity vector indexes for semantic search. "
+                "Idempotent — safe to call multiple times. "
+                "Indexes are also created automatically on first search or auto_link "
+                "when missing; set AUTO_CREATE_INDEXES=true to create them at server startup."
             ),
         )
         def ensure_vector_indexes() -> dict:
@@ -148,7 +131,9 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
                 "`metadata`, `source` (provenance dict with keys like ref/type/uri/content_hash/updated_at/version), "
                 "`auto_link` (Facts only), `ttl_days` (Facts only), "
                 "`links` (create relations immediately after creation). "
-                "Note: auto_link=true by default creates semantic MENTIONS_ENTITY relations to existing entities (Facts only). "
+                "Note: auto_link=true (default) on Facts adds MENTIONS edges to similar Entity nodes "
+                "(vector search on Entity index; threshold AUTO_LINKING_SEMANTIC_THRESHOLD). "
+                "Use create_relation for links between arbitrary node pairs. "
                 "Set ttl_days for automatic archival."
             ),
         )
@@ -227,9 +212,12 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
             title="Search",
             description=(
                 "Semantic search using embedding similarity (cosine distance). "
-                "Returns active nodes by default (use include_outdated=true for archived content). "
+                "Returns active nodes by default (use include_outdated=true to include outdated and archived nodes). "
                 "Results ranked by similarity to query text. "
-                "Supports multi-tenant isolation via owner_id."
+                "Supports multi-tenant isolation via owner_id. "
+                "search_type: pre_filter (filter owner first, best for large/multi-tenant graphs) "
+                "or post_filter (global ANN then filter, best for small graphs); "
+                "defaults to server SEARCH_TYPE when omitted."
             ),
             annotations=ToolAnnotations(readOnlyHint=True),
         )
@@ -241,6 +229,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
             status: str | None = None,
             similarity_threshold: float | None = None,
             include_outdated: bool = False,
+            search_type: str | None = None,
         ) -> dict:
             return mcp_handlers_search.search(
                 db,
@@ -252,6 +241,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
                 status=status,
                 similarity_threshold=similarity_threshold,
                 include_outdated=include_outdated,
+                search_type=search_type,
             )
 
         @mcp.tool(
@@ -351,6 +341,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
     def _register_triplet_tools(self) -> Dict[str, Any]:
         exposed: Dict[str, Any] = {}
         db = self.db_client
+        config = self.config
         mcp = self.mcp
         assert mcp is not None
 
@@ -378,6 +369,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
                 metadata=metadata,
                 fact_id=fact_id,
                 owner_id=owner_id,
+                config=config,
             )
 
         @mcp.tool(
@@ -420,8 +412,10 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
             description=(
                 "Create a direct relation between two nodes. "
                 "Both nodes must exist. "
-                "Use this for explicit graph structure. "
-                "For semantic auto-linking, see create_node with auto_link=true."
+                "Uses MERGE — same from_id, to_id, and relation_type will not create duplicates. "
+                "Default: RELATED_TO for general links, MENTIONS when one node refers to another. "
+                "Use SUMMARIZES, FOLLOWS_FROM, CONTRADICTS only when semantics matter. "
+                "Types must be in server RELATION_ALLOWED_TYPES (see memory policies)."
             ),
         )
         def create_relation(
@@ -438,6 +432,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
                 relation_type=relation_type,
                 properties=properties,
                 owner_id=owner_id,
+                config=config,
             )
 
         @mcp.tool(
@@ -485,8 +480,9 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
             description=(
                 "Get subgraph context around a node. "
                 "Returns nodes and edges within specified depth. "
+                "Pass offset (with max_nodes as page size) for paginated neighbor loading. "
                 "Useful for building agent context from related facts and entities. "
-                "Depth defaults to 2 hops."
+                "Depth defaults to config (SUBGRAPH_DEFAULT_DEPTH, default 1)."
             ),
             annotations=ToolAnnotations(readOnlyHint=True),
         )
@@ -495,6 +491,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
             owner_id: str = "default",
             depth: int | None = None,
             max_nodes: int | None = None,
+            offset: int = 0,
         ) -> dict:
             return mcp_handlers_graph.get_context(
                 db,
@@ -503,6 +500,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
                 owner_id=owner_id,
                 depth=depth,
                 max_nodes=max_nodes,
+                offset=offset,
             )
 
         @mcp.tool(

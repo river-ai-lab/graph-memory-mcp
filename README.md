@@ -33,7 +33,9 @@ Graph Memory MCP
    └─ Memory Governance (Dedup, Archival)
 ```
 
----
+## Agent policies
+
+Any LLM agent that reads or writes Graph Memory — single-agent or multi-agent — should have [`docs/memory_policies_for_LLM.md`](docs/memory_policies_for_LLM.md) in context **at the start of each session**. It defines what to store, `owner_id` rules, and how to link facts; without it, memory tends to get noisy or mis-scoped.
 
 ---
 
@@ -59,7 +61,7 @@ Graph Memory MCP is built for systems that require:
 - **Entity & triplet graph** (subject–predicate–object)
 - **Context subgraph extraction** for agent context building
 - **Fact versioning & soft-deletion** (outdated knowledge)
-- **Automatic entity linking**
+- **Fact auto-linking** — new Facts can auto-create `MENTIONS` edges to similar Entity nodes (`auto_link=true` by default)
 - **Multi-tenant isolation** via `owner_id`
 - **Background jobs** (deduplication, archival)
 - **MCP-native API** (FastMCP)
@@ -76,8 +78,18 @@ Backed by **FalkorDB** (pluggable storage layer).
 ## Install
 
 ```bash
-pip install -e ".[dev,embeddings]"
+uv sync
+# or: pip install -e ".[dev,embeddings]"
 ```
+
+`uv sync` installs runtime deps plus the **dev** group (`pre-commit`, `pytest`, …). Hooks are not global — run them via the project venv:
+
+```bash
+uv run pre-commit run --all-files
+uv run pre-commit install   # optional: git hooks
+```
+
+PyTorch is installed from the **CPU-only** index by default (no NVIDIA/CUDA wheels on Linux). Configured in `pyproject.toml` via `[tool.uv.sources]`.
 
 > [!TIP]
 > Check the [examples](examples) directory for code snippets demonstrating various usage patterns (embedded, HTTP, and MCP configuration).
@@ -93,13 +105,28 @@ graph-memory-mcp --host 127.0.0.1 --port 8000
 
 ### Simple server profile (home / personal)
 
-Same handlers and graph behavior as the default server, but MCP tools use **flat provenance fields** (`ref`, `provenance_type`, `uri`, …) instead of a nested `source` object, and **`upsert_node` is not registered**. Use the full server when you need sync-by-ref upserts.
+Same handlers and graph behavior as the default server, but MCP tools use **flat provenance fields** (`ref`, `provenance_type`, `uri`, …) instead of a nested `source` object (including `upsert_node`, where `ref` is required).
 
 ```bash
 graph-memory-mcp --simple --host 127.0.0.1 --port 8000
 ```
 
 See [Simple server profile](./docs/features.md#simple-server-profile) in the API contract.
+
+### Graph Explorer (local GUI)
+
+Read-only web UI to inspect nodes, semantic search, similar facts, and graph context. Proxies read-only MCP tools to a **separately running** Graph Memory server.
+
+```bash
+# Terminal 1 — MCP server (FalkorDB must be running; uses .env)
+uv run graph-memory-mcp --host 127.0.0.1 --port 8000
+
+# Terminal 2 — Explorer GUI only
+uv run graph-memory-explorer --host 127.0.0.1 --port 8088
+# optional: --mcp-url http://127.0.0.1:8000/mcp  (or GRAPH_MEMORY_MCP_URL)
+```
+
+Open http://127.0.0.1:8088 — enter `owner_id` and a `node_id`, run search, expand neighbors with **+** on hover or **+10 neighbors** in the detail panel.
 
 ## Configuration
 
@@ -109,10 +136,23 @@ You can start from `env.example` (copy it to `.env`).
 
 Key defaults live in `graph_memory_mcp/config.py` within the `MCPServerConfig` class, including:
 
+- `RELATION_POLICY_ENFORCE` — `off` | `warn` (default) | `enforce`
+- `RELATION_ALLOWED_TYPES` — comma-separated allowlist for new edges
+- Agent link guidance: `docs/memory_policies_for_LLM.md`
 
 ## Running FalkorDB
 
-FalkorDB is required for the MCP Graph Memory server. You can run it using Docker:
+FalkorDB is required for the MCP Graph Memory server and for **all tests**. Recommended: Docker Compose (matches `env.example`):
+
+```bash
+cp env.example .env   # first time only
+docker compose up -d  # or: ./scripts/falkordb-up.sh
+```
+
+Web UI: http://localhost:3000 — Redis port `6379`, password `falkordb123` (see `.env`).
+
+<details>
+<summary>Manual <code>docker run</code> (alternative)</summary>
 
 ### With Password Authentication
 
@@ -139,19 +179,24 @@ docker run -p 6379:6379 -p 3000:3000 -it --rm \
 
 After starting FalkorDB, you can access the web interface at `http://localhost:3000`.
 
-### Creating Vector Indexes
+</details>
 
-For fast semantic search, create vector indexes once after setting up a fresh database:
+### Vector Indexes
 
-```bash
-python -m graph_memory_mcp.graph_memory.create_vector_index
-```
+The server uses **two vector indexes** (Fact and Entity):
 
-This script creates **two separate vector indexes**:
-- Fact embedding index (for `search` / `find_similar`)
-- Entity embedding index (required for Fact→Entity auto-linking via `MENTIONS_ENTITY`)
+| Index | Used by |
+|-------|---------|
+| Fact | `search`, `find_similar` |
+| Entity | Fact `auto_link` → `MENTIONS` |
 
-**Note:** FalkorDB automatically maintains these indexes when nodes are created/updated/deleted—no manual reindexing needed. The script only needs to be run once per database or when changing embedding model dimensions.
+**Creation (pick one):**
+
+- **Automatic** — indexes are created on first `search`, `find_similar`, or Fact `auto_link` if missing.
+- **Startup** — `AUTO_CREATE_INDEXES=true` in `.env`.
+- **MCP tool** — `ensure_vector_indexes` (idempotent).
+
+FalkorDB keeps index data in sync when nodes change; you only need to recreate index **definitions** after changing embedding model **dimension**.
 
 ## Multi-Agent Usage
 
@@ -180,57 +225,36 @@ See [`docs/memory_policies_for_LLM.md`](docs/memory_policies_for_LLM.md) and [`d
 
 ## Development
 
-Unit tests (no FalkorDB):
+Tests require FalkorDB (see [Running FalkorDB](#running-falkordb)):
 
 ```bash
-uv run pytest -q
+./scripts/test.sh
+# or: docker compose up -d && uv run pytest -q
 ```
 
-Full suite including integration tests (requires a running FalkorDB; see [Running FalkorDB](#running-falkordb)):
+Pre-commit (dev group installed by `uv sync`):
 
 ```bash
-RUN_INTEGRATION_TESTS=1 uv run pytest -q
+uv run pre-commit run --all-files
 ```
 
 ## Smoke Test (Quick Verification)
 
-Quick test via the HTTP interface to verify basic functionality:
+The server uses **Streamable HTTP MCP** at `http://127.0.0.1:8000/mcp`. Tools are invoked with MCP `call_tool` — there is no REST API at `/mcp/tools/...`.
 
-### Prerequisites
+**Terminal 1** — start the server (FalkorDB must be running):
 
-  ```bash
-  # Create a fact
-  curl -X POST http://127.0.0.1:8000/mcp/tools/create_node \
-    -H "Content-Type: application/json" \
-    -d '{"text": "Python is a programming language", "source": "test", "node_type": "Fact"}'
+```bash
+graph-memory-mcp --host 127.0.0.1 --port 8000
+```
 
-  # Search facts
-  curl -X POST http://127.0.0.1:8000/mcp/tools/search \
-    -H "Content-Type: application/json" \
-    -d '{"query": "Python", "limit": 5}'
+**Terminal 2** — run the HTTP MCP client example:
 
-  # Get stats
-  curl -X POST http://127.0.0.1:8000/mcp/tools/get_stats \
-    -H "Content-Type: application/json" \
-    -d '{}'
+```bash
+uv run python examples/http_client_usage.py
+```
 
-  # Working with Triplets
-  curl -X POST http://127.0.0.1:8000/mcp/tools/create_triplet \
-    -H "Content-Type: application/json" \
-    -d '{
-      "subject": "Elon Musk",
-      "predicate": "FOUNDED",
-      "object_value": "SpaceX",
-      "metadata": {"year": 2002}
-    }'
-
-  curl -X POST http://127.0.0.1:8000/mcp/tools/search_triplets \
-    -H "Content-Type: application/json" \
-    -d '{
-      "subject": "Elon Musk",
-      "limit": 10
-    }'
-  ```
+That script calls `ensure_vector_indexes`, `create_node`, and `search` over Streamable HTTP. See [examples/](examples/) for embedded usage and MCP client configuration.
 
 ## Why Choose MCP Graph Memory?
 

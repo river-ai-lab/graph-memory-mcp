@@ -1,0 +1,22 @@
+# FalkorDB for local dev and tests. Matches env.example credentials.
+#
+#   docker compose up -d
+#   docker compose down
+#
+services:
+  falkordb:
+    image: falkordb/falkordb
+    container_name: graph-memory-falkordb
+    ports:
+      - "6379:6379"
+      - "3000:3000"
+    environment:
+      REDIS_ARGS: "--requirepass falkordb123"
+    volumes:
+      - ./data:/var/lib/falkordb/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "falkordb123", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 5s

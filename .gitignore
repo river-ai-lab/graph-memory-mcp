@@ -23,3 +23,5 @@ build/
 *.egg-info/
 
 .DS_Store
+graph_memory_mcp/demo/
+data/
