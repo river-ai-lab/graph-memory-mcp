@@ -78,8 +78,18 @@ Backed by **FalkorDB** (pluggable storage layer).
 ## Install
 
 ```bash
-pip install -e ".[dev,embeddings]"
+uv sync
+# or: pip install -e ".[dev,embeddings]"
 ```
+
+`uv sync` installs runtime deps plus the **dev** group (`pre-commit`, `pytest`, …). Hooks are not global — run them via the project venv:
+
+```bash
+uv run pre-commit run --all-files
+uv run pre-commit install   # optional: git hooks
+```
+
+PyTorch is installed from the **CPU-only** index by default (no NVIDIA/CUDA wheels on Linux). Configured in `pyproject.toml` via `[tool.uv.sources]`.
 
 > [!TIP]
 > Check the [examples](examples) directory for code snippets demonstrating various usage patterns (embedded, HTTP, and MCP configuration).
@@ -132,7 +142,17 @@ Key defaults live in `graph_memory_mcp/config.py` within the `MCPServerConfig` c
 
 ## Running FalkorDB
 
-FalkorDB is required for the MCP Graph Memory server. You can run it using Docker:
+FalkorDB is required for the MCP Graph Memory server and for **all tests**. Recommended: Docker Compose (matches `env.example`):
+
+```bash
+cp env.example .env   # first time only
+docker compose up -d  # or: ./scripts/falkordb-up.sh
+```
+
+Web UI: http://localhost:3000 — Redis port `6379`, password `falkordb123` (see `.env`).
+
+<details>
+<summary>Manual <code>docker run</code> (alternative)</summary>
 
 ### With Password Authentication
 
@@ -158,6 +178,8 @@ docker run -p 6379:6379 -p 3000:3000 -it --rm \
 ```
 
 After starting FalkorDB, you can access the web interface at `http://localhost:3000`.
+
+</details>
 
 ### Vector Indexes
 
@@ -203,16 +225,17 @@ See [`docs/memory_policies_for_LLM.md`](docs/memory_policies_for_LLM.md) and [`d
 
 ## Development
 
-Unit tests (no FalkorDB):
+Tests require FalkorDB (see [Running FalkorDB](#running-falkordb)):
 
 ```bash
-uv run pytest -q
+./scripts/test.sh
+# or: docker compose up -d && uv run pytest -q
 ```
 
-Full suite including integration tests (requires a running FalkorDB; see [Running FalkorDB](#running-falkordb)):
+Pre-commit (dev group installed by `uv sync`):
 
 ```bash
-RUN_INTEGRATION_TESTS=1 uv run pytest -q
+uv run pre-commit run --all-files
 ```
 
 ## Smoke Test (Quick Verification)

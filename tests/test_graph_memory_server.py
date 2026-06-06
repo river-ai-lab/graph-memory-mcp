@@ -35,13 +35,11 @@ The test creates a realistic knowledge graph and exercises all tools.
 from __future__ import annotations
 
 import json
-import os
 import uuid
 from typing import Any, cast
 
 import httpx
 import pytest
-import redis
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
@@ -57,17 +55,6 @@ from graph_memory_mcp.graph_memory.mcp_handlers_nodes import (
 from graph_memory_mcp.graph_memory.mcp_handlers_relations import create_relation
 from graph_memory_mcp.graph_memory.mcp_handlers_search import find_similar, search
 from graph_memory_mcp.server import GraphMemoryMCP
-
-
-def _falkordb_is_available(host: str, port: int, password: str | None) -> bool:
-    """Check if FalkorDB is available."""
-    try:
-        client = redis.Redis(
-            host=host, port=port, password=password, socket_timeout=0.5
-        )
-        return client.ping() is True
-    except Exception:
-        return False
 
 
 def _extract_tool_json(result) -> dict:
@@ -96,15 +83,7 @@ async def test_all_mcp_tools_comprehensive():
 
     Creates a realistic knowledge graph and exercises every tool.
     """
-    if os.environ.get("RUN_INTEGRATION_TESTS") != "1":
-        pytest.skip("integration tests disabled (set RUN_INTEGRATION_TESTS=1)")
-
     cfg = load_mcp_server_config()
-
-    if not _falkordb_is_available(
-        cfg.falkordb_host, cfg.falkordb_port, cfg.falkordb_password
-    ):
-        pytest.skip("FalkorDB unavailable")
 
     # Use unique owner_id for isolation
     owner_id = f"pytest_all_tools_{uuid.uuid4().hex[:8]}"
@@ -539,15 +518,7 @@ async def test_all_mcp_tools_comprehensive():
 @pytest.mark.asyncio
 async def test_multi_tenant_isolation():
     """Test that owner_id properly isolates data between tenants."""
-    if os.environ.get("RUN_INTEGRATION_TESTS") != "1":
-        pytest.skip("integration tests disabled")
-
     cfg = load_mcp_server_config()
-
-    if not _falkordb_is_available(
-        cfg.falkordb_host, cfg.falkordb_port, cfg.falkordb_password
-    ):
-        pytest.skip("FalkorDB unavailable")
 
     owner1 = f"pytest_tenant1_{uuid.uuid4().hex[:8]}"
     owner2 = f"pytest_tenant2_{uuid.uuid4().hex[:8]}"
@@ -622,19 +593,12 @@ async def test_multi_tenant_isolation():
 @pytest.mark.integration
 def test_get_context_default_and_pagination_integration():
     """Default get_context (offset=0) and paginated pages against real FalkorDB."""
-    if os.environ.get("RUN_INTEGRATION_TESTS") != "1":
-        pytest.skip("integration tests disabled (set RUN_INTEGRATION_TESTS=1)")
-
     cfg = load_mcp_server_config()
-    if not _falkordb_is_available(
-        cfg.falkordb_host, cfg.falkordb_port, cfg.falkordb_password
-    ):
-        pytest.skip("FalkorDB unavailable")
 
     owner_id = f"pytest_ctx_page_{uuid.uuid4().hex[:8]}"
     db = FalkorDBClient(cfg)
     if not db.connect():
-        pytest.skip("FalkorDB connection failed")
+        pytest.fail("FalkorDB connection failed")
     db.set_embedding_service(EmbeddingService(model_name=cfg.embedding_model))
 
     center = create_node(

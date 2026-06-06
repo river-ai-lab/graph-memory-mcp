@@ -2,27 +2,15 @@
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 import pytest
-import redis
 from starlette.testclient import TestClient
 
 from graph_memory_mcp.config import load_mcp_server_config
 from graph_memory_mcp.explorer.app import READ_ONLY_TOOLS, STATIC_DIR, create_app
 from graph_memory_mcp.explorer.mcp_client import McpHttpClient
-
-
-def _falkordb_is_available(host: str, port: int, password: str | None) -> bool:
-    try:
-        client = redis.Redis(
-            host=host, port=port, password=password, socket_timeout=0.5
-        )
-        return client.ping() is True
-    except Exception:
-        return False
 
 
 class _MockMcpClient:
@@ -91,20 +79,13 @@ def test_explorer_api_with_mock_client():
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_explorer_live_get_stats():
-    if os.environ.get("RUN_INTEGRATION_TESTS") != "1":
-        pytest.skip("integration tests disabled (set RUN_INTEGRATION_TESTS=1)")
-
     cfg = load_mcp_server_config()
-    if not _falkordb_is_available(
-        cfg.falkordb_host, cfg.falkordb_port, cfg.falkordb_password
-    ):
-        pytest.skip("FalkorDB unavailable")
 
     from graph_memory_mcp.server import GraphMemoryMCP
 
     server = GraphMemoryMCP(cfg)
     if not server._db_connected:
-        pytest.skip("FalkorDB connection failed")
+        pytest.fail("FalkorDB connection failed")
 
     mcp_app = server.get_mcp_app()
 

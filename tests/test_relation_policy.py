@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import os
 import uuid
 from dataclasses import dataclass
 from typing import Any, cast
 
 import httpx
 import pytest
-import redis
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
@@ -52,16 +50,6 @@ class _FakeCache:
 class _FakeDB:
     graph = _FakeGraph()
     cache = _FakeCache()
-
-
-def _falkordb_is_available(host: str, port: int, password: str | None) -> bool:
-    try:
-        client = redis.Redis(
-            host=host, port=port, password=password, socket_timeout=0.5
-        )
-        return client.ping() is True
-    except Exception:
-        return False
 
 
 def _extract_tool_json(result) -> dict:
@@ -216,18 +204,11 @@ def test_create_triplet_enforce_blocks_disallowed_predicate():
 
 @pytest.mark.integration
 def test_create_node_links_surface_policy_errors():
-    if os.environ.get("RUN_INTEGRATION_TESTS") != "1":
-        pytest.skip("integration tests disabled")
-
     cfg = _strict_policy_config()
-    if not _falkordb_is_available(
-        cfg.falkordb_host, cfg.falkordb_port, cfg.falkordb_password
-    ):
-        pytest.skip("FalkorDB unavailable")
 
     db = FalkorDBClient(cfg)
     if not db.connect():
-        pytest.skip("FalkorDB connection failed")
+        pytest.fail("FalkorDB connection failed")
     db.set_embedding_service(EmbeddingService(model_name=cfg.embedding_model))
 
     owner_id = f"pytest_link_policy_{uuid.uuid4().hex[:8]}"
@@ -262,18 +243,11 @@ def test_create_node_links_surface_policy_errors():
 
 @pytest.mark.integration
 def test_auto_link_skipped_under_strict_policy():
-    if os.environ.get("RUN_INTEGRATION_TESTS") != "1":
-        pytest.skip("integration tests disabled")
-
     cfg = _strict_policy_config()
-    if not _falkordb_is_available(
-        cfg.falkordb_host, cfg.falkordb_port, cfg.falkordb_password
-    ):
-        pytest.skip("FalkorDB unavailable")
 
     db = FalkorDBClient(cfg)
     if not db.connect():
-        pytest.skip("FalkorDB connection failed")
+        pytest.fail("FalkorDB connection failed")
     db.set_embedding_service(EmbeddingService(model_name=cfg.embedding_model))
 
     owner_id = f"pytest_autolink_policy_{uuid.uuid4().hex[:8]}"
@@ -310,18 +284,11 @@ def test_auto_link_skipped_under_strict_policy():
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_mcp_create_relation_policy_enforce():
-    if os.environ.get("RUN_INTEGRATION_TESTS") != "1":
-        pytest.skip("integration tests disabled")
-
     cfg = _strict_policy_config()
-    if not _falkordb_is_available(
-        cfg.falkordb_host, cfg.falkordb_port, cfg.falkordb_password
-    ):
-        pytest.skip("FalkorDB unavailable")
 
     server = GraphMemoryMCP(cfg)
     if not server._db_connected:
-        pytest.skip("FalkorDB connection failed")
+        pytest.fail("FalkorDB connection failed")
 
     app = server.get_mcp_app()
     owner_id = f"pytest_mcp_policy_{uuid.uuid4().hex[:8]}"
@@ -390,18 +357,11 @@ async def test_mcp_create_relation_policy_enforce():
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_mcp_create_triplet_policy_enforce():
-    if os.environ.get("RUN_INTEGRATION_TESTS") != "1":
-        pytest.skip("integration tests disabled")
-
     cfg = _strict_policy_config()
-    if not _falkordb_is_available(
-        cfg.falkordb_host, cfg.falkordb_port, cfg.falkordb_password
-    ):
-        pytest.skip("FalkorDB unavailable")
 
     server = GraphMemoryMCP(cfg)
     if not server._db_connected:
-        pytest.skip("FalkorDB connection failed")
+        pytest.fail("FalkorDB connection failed")
 
     app = server.get_mcp_app()
     owner_id = f"pytest_mcp_triplet_{uuid.uuid4().hex[:8]}"

@@ -12,26 +12,13 @@ Tests cover:
 from __future__ import annotations
 
 import json
-import os
 import time
 import uuid
 
 import pytest
-import redis
 
 from graph_memory_mcp.config import load_mcp_server_config
 from graph_memory_mcp.server import GraphMemoryMCP
-
-
-def _falkordb_is_available(host: str, port: int, password: str | None) -> bool:
-    """Check if FalkorDB is available."""
-    try:
-        client = redis.Redis(
-            host=host, port=port, password=password, socket_timeout=0.5
-        )
-        return client.ping() is True
-    except Exception:
-        return False
 
 
 def _extract_tool_json(result) -> dict:
@@ -69,9 +56,6 @@ def _extract_tool_json(result) -> dict:
 @pytest.fixture(scope="module")
 def server_instance():
     """Shared server instance for the module to avoid reloading models."""
-    if os.environ.get("RUN_INTEGRATION_TESTS") != "1":
-        pytest.skip("integration tests disabled")
-
     cfg = load_mcp_server_config()
     return GraphMemoryMCP(cfg)
 
