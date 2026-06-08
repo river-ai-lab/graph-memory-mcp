@@ -1,11 +1,17 @@
-# Graph Memory MCP
+<div align="center">
+
+<img src="assets/logo.svg" alt="Graph Memory MCP logo" width="96">
+
+<h1>Graph Memory MCP</h1>
+
+<p><em>Semantic, persistent knowledge graph memory for LLM agents via MCP</em></p>
 
 [![Status](https://img.shields.io/badge/status-active%20development-informational)]()
 [![PyPI version](https://badge.fury.io/py/graph-memory-mcp.svg)](https://badge.fury.io/py/graph-memory-mcp)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**Graph Memory MCP** is a **semantic, persistent knowledge graph memory** for **LLM-based and multi-agent systems**, exposed via the **Model Context Protocol (MCP)**.
+</div>
 
 It provides **long-term, shared memory** where agents can store facts, entities, and relations, retrieve context semantically, and build on knowledge across sessions.
 
