@@ -65,7 +65,8 @@ Graph Memory MCP is built for systems that require:
 
 - **Fact storage** with embeddings (semantic search)
 - **Entity & triplet graph** (subject–predicate–object)
-- **Context subgraph extraction** for agent context building
+- **Context subgraph extraction** (`get_context`) and paths (`get_trace`)
+- **Optional hybrid shortcut** (`recall_context`) — one-call search + expand on small graphs
 - **Fact versioning & soft-deletion** (outdated knowledge)
 - **Fact auto-linking** — new Facts can auto-create `MENTIONS` edges to similar Entity nodes (`auto_link=true` by default)
 - **Multi-tenant isolation** via `owner_id`
@@ -279,6 +280,8 @@ That script calls `ensure_vector_indexes`, `create_node`, and `search` over Stre
 - **Pure vector search only** → Use Qdrant/Chroma
 
 ### Positioning
+
+**Code maps → [Graphify](https://graphify.net/); agent memory → Graph Memory MCP.**
 
 Graph Memory MCP sits between:
 - Vector databases (too flat)

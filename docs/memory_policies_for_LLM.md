@@ -9,6 +9,7 @@
 2. **Keep signal high**: Do not write noise, scratchpad thoughts, raw conversation, or transient execution state.
 3. **Respect isolation**: Memory is logically partitioned by `owner_id`. Always write into the correct scope.
 4. **Prefer explicit facts**: Store clear declarative facts, not vague summaries when a precise fact can be stored.
+5. **Recall before write**: At task start and before `create_node`, recall with the correct `owner_id` — usually `search`, then `get_context` / `get_trace` as needed (see below).
 
 ## 1. What to Store
 
@@ -108,13 +109,82 @@ The server has a default (`SEARCH_TYPE` in config, typically `pre_filter`). **Do
 | `similarity_threshold` | Results too noisy or too sparse |
 | `status: "outdated"` | Outdated nodes only |
 
+### Recall workflow (primary)
+
+**Default:** compose explicit steps — predictable, paginated, and safe on larger or denser subgraphs.
+
+```text
+search(query)                    → semantic hits (node_id + similarity)
+get_context(node_id, depth=...)  → neighbors + edges around one anchor
+get_trace(from_id, to_id)        → shortest path when you know two node IDs
+```
+
+| Situation | Steps |
+|-----------|--------|
+| "What do we know about X?" | `search(query="X")` → `get_context` on the best `node_id`(s) |
+| "Find everything about Z" | `search(query="Z", limit=50)` → `get_context` on top hits |
+| Subgraph around one known node | `get_context(node_id=..., depth=..., offset=...)` only |
+| Flat list, no graph hop | `search(query=...)` only |
+| "How are X and Y related?" | `search` for X and Y (or one combined query) → `get_trace(from_id=..., to_id=...)` between chosen IDs |
+
+**`get_context`** expands **one** anchor (undirected hops: neighbors in either direction). It returns `nodes` and `edges` in a radius; it does **not** compute a path between two arbitrary nodes.
+
+**`get_trace`** finds a **directed** shortest path `(from)-[*]->(to)` — edge direction matters. A pair visible in `get_context` may still return no path in `get_trace` if links only go the other way. Default `get_context` depth is **1** (config `SUBGRAPH_DEFAULT_DEPTH`); increase `depth` when one hop is not enough.
+
+**`get_context` pagination:** pass `offset` with `max_nodes` as page size when a hub has many neighbors (`has_more` in the response). Stable `ORDER BY id` applies only when `offset > 0`; the first page (`offset=0`) is not sorted by node id.
+
+**Example — open recall:**
+
+```json
+{ "query": "FalkorDB vector index setup", "owner_id": "riverlab" }
+```
+
+Then:
+
+```json
+{ "node_id": "<best_hit_id>", "owner_id": "riverlab", "depth": 2, "max_nodes": 20 }
+```
+
+**Example — path between two facts:**
+
+```json
+{ "from_id": "<id_for_X>", "to_id": "<id_for_Y>", "owner_id": "riverlab", "max_depth": 5 }
+```
+
+### `recall_context` (optional shortcut)
+
+**Hybrid recall** in one MCP call: `search` → multi-seed BFS → ranked `nodes` → optional path between the **top two seeds only**.
+
+Use when the graph is **small or moderate** for your `owner_id` and you want fewer round-trips. **Do not treat it as the only recall API.**
+
+| Prefer `search` + `get_context` + `get_trace` when | `recall_context` is OK when |
+|------------------------------------------------------|-----------------------------|
+| Dense hubs (many edges per node) | Lab-scale memory, sparse links |
+| You need pagination (`offset`) | Quick session warm-up |
+| You need a path between **specific** node IDs you chose | Approximate context from a query text is enough |
+| Latency or cost matters | One call is worth the extra DB work |
+
+**Cost / stability:** one call runs vector search, variable-length graph expansion from up to 5 seeds, edge load, and optionally `get_trace`. Expansion is capped (`max_nodes` ≤ 50, `depth` ≤ 3) but can still be heavy if many nodes sit within `depth` hops of multiple seeds. Prefer **`depth=1`**, **`max_nodes=10`**, **`include_paths=false`** when unsure.
+
+| Situation | Tool |
+|-----------|------|
+| Shortcut for "what do we know about X?" | `recall_context(query="X", depth=1, include_paths=false)` |
+| Shortcut hint for X↔Y (not exact IDs) | `recall_context(query="X Y", include_paths=true)` — check `paths`; confirm with `get_trace` if it matters |
+| Exact path between known IDs | **`get_trace`** (not `recall_context`) |
+
+**Parameters** (same `query` / `owner_id` as `search`; optional `depth`, `limit`, `max_nodes`, `similarity_threshold`, `include_outdated`, `search_type`, `include_paths`).
+
+**Response:** `seeds` (search hits), ranked `nodes` (`score`, `min_hop`), `edges`, optional `paths` (top-2 seeds only).
+
+**Not for codebase maps:** static repo structure (AST, call graphs) belongs in tools like [Graphify](https://graphify.net/). Graph Memory holds **living facts** agents write.
+
 ### Search Before Create
 
 Before writing a new fact:
 
-1. Call `search` with your `query` and the same `owner_id` you will write to (`search_type` optional — server default applies).
-2. If needed, call `get_context(...)` on promising `node_id` values from the results.
-3. Only call `create_node` if nothing already covers the fact or your new wording is materially different.
+1. **`search(query=..., owner_id=...)`** — then **`get_context`** on promising hits if you need neighborhood context.
+2. Or **`recall_context`** only as a shortcut on small/sparse memory (see above).
+3. Call **`create_node`** only if nothing already covers the fact or your new wording is materially different.
 
 Do not rely only on background deduplication. Agents should actively avoid writing duplicates.
 
@@ -185,7 +255,7 @@ Use other types (`RUNS_ON`, `USES`, …) only via `create_triplet` or when your 
 
 ### Rules
 
-1. **Search before linking** — call `search` / `get_context` to avoid redundant edges.
+1. **Search before linking** — `search` (+ `get_context` if needed) to avoid redundant edges; `recall_context` only as a shortcut on small graphs.
 2. **Do not invent relation types** — the server may reject types outside `RELATION_ALLOWED_TYPES` (default mode: `warn`; production may use `enforce`).
 3. **`create_relation` is idempotent per type** — repeating the same `(from_id, relation_type, to_id)` does not duplicate that edge; different types between the same pair are still allowed.
 4. **Prefer `links` on `create_node`** when you already know structure at insert time.

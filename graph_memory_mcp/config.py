@@ -70,6 +70,18 @@ class MCPServerConfig(BaseSettings):
     subgraph_max_depth: int = 3
     subgraph_default_max_nodes: int = 20
     subgraph_max_nodes_limit: int = 50
+    recall_context_default_depth: int = Field(
+        default=2,
+        validation_alias="RECALL_CONTEXT_DEFAULT_DEPTH",
+    )
+    recall_context_default_seed_limit: int = Field(
+        default=5,
+        validation_alias="RECALL_CONTEXT_SEED_LIMIT",
+    )
+    recall_context_hop_decay: float = Field(
+        default=0.7,
+        validation_alias="RECALL_CONTEXT_HOP_DECAY",
+    )
     duplicate_similarity_threshold: float = 0.85
     duplicate_max_group_size: int = 10
     duplicate_top_k: int = 100

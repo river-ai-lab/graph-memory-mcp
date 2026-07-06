@@ -1,7 +1,7 @@
 """
 Comprehensive integration test for all MCP Graph Memory server tools.
 
-This test covers ALL 18 MCP tools from server.py:
+This test covers ALL 19 MCP tools from server.py:
 
 **Information Tools (3):**
 1. test_connection
@@ -21,13 +21,14 @@ This test covers ALL 18 MCP tools from server.py:
 11. create_triplet
 12. search_triplets
 
-**Graph Tools (6):**
+**Graph Tools (7):**
 13. create_relation
 14. get_trace
 15. delete_relation
 16. get_context
-17. find_similar
-18. create_summary_fact
+17. recall_context
+18. find_similar
+19. create_summary_fact
 
 The test creates a realistic knowledge graph and exercises all tools.
 """
@@ -46,7 +47,11 @@ from mcp.client.streamable_http import streamable_http_client
 from graph_memory_mcp.config import MCPServerConfig, load_mcp_server_config
 from graph_memory_mcp.graph_memory.database import FalkorDBClient
 from graph_memory_mcp.graph_memory.embedding_service import EmbeddingService
-from graph_memory_mcp.graph_memory.mcp_handlers_graph import get_context, get_trace
+from graph_memory_mcp.graph_memory.mcp_handlers_graph import (
+    get_context,
+    get_trace,
+    recall_context,
+)
 from graph_memory_mcp.graph_memory.mcp_handlers_nodes import (
     create_node,
     update_node,
@@ -79,7 +84,7 @@ def _extract_tool_json(result) -> dict:
 @pytest.mark.asyncio
 async def test_all_mcp_tools_comprehensive():
     """
-    Comprehensive test covering all 18 MCP tools from server.py.
+    Comprehensive test covering all 19 MCP tools from server.py.
 
     Creates a realistic knowledge graph and exercises every tool.
     """
@@ -406,6 +411,22 @@ async def test_all_mcp_tools_comprehensive():
                 assert len(data.get("nodes", [])) > 0
                 assert len(data.get("edges", [])) > 0
 
+                # 17. recall_context - hybrid search + graph expansion
+                result = await session.call_tool(
+                    "recall_context",
+                    {
+                        "query": "Python programming language",
+                        "owner_id": owner_id,
+                        "depth": 2,
+                        "max_nodes": 20,
+                    },
+                )
+                data = _extract_tool_json(result)
+                assert data.get("success") is True
+                assert isinstance(data.get("seeds"), list)
+                assert len(data.get("seeds", [])) > 0
+                assert len(data.get("nodes", [])) > 0
+
                 # 14. get_trace - shortest path
                 result = await session.call_tool(
                     "get_trace",
@@ -422,7 +443,7 @@ async def test_all_mcp_tools_comprehensive():
                 assert len(data.get("nodes", [])) > 0
                 assert len(data.get("relations", [])) > 0
 
-                # 17. find_similar - find facts similar to fact1
+                # 18. find_similar - find facts similar to fact1
                 result = await session.call_tool(
                     "find_similar",
                     {
@@ -1479,3 +1500,85 @@ def test_upsert_node_update_applies_inline_links():
         and edge["relation_type"] == "MENTIONS"
         for edge in context["edges"]
     )
+
+
+@pytest.mark.integration
+def test_recall_context_expands_from_semantic_seeds():
+    """recall_context should return seeds, ranked nodes, and edges in one call."""
+    cfg = load_mcp_server_config()
+    owner_id = f"pytest_recall_{uuid.uuid4().hex[:8]}"
+    db = FalkorDBClient(cfg)
+    if not db.connect():
+        pytest.fail("FalkorDB connection failed")
+    db.set_embedding_service(EmbeddingService(model_name=cfg.embedding_model))
+
+    center = create_node(
+        db,
+        cfg,
+        text="JWT authentication service validates bearer tokens",
+        node_type="Fact",
+        owner_id=owner_id,
+        auto_link=False,
+    )
+    center_id = center["node"]["node_id"]
+
+    neighbor = create_node(
+        db,
+        cfg,
+        text="Rate limiter protects authentication endpoints",
+        node_type="Fact",
+        owner_id=owner_id,
+        auto_link=False,
+    )
+    neighbor_id = neighbor["node"]["node_id"]
+
+    create_relation(
+        db,
+        from_id=center_id,
+        to_id=neighbor_id,
+        relation_type="RELATED_TO",
+        owner_id=owner_id,
+        config=cfg,
+    )
+
+    result = recall_context(
+        db,
+        cfg,
+        query="authentication JWT tokens",
+        owner_id=owner_id,
+        depth=1,
+        limit=3,
+        max_nodes=10,
+    )
+
+    assert result["success"] is True
+    assert result["query"] == "authentication JWT tokens"
+    assert len(result["seeds"]) >= 1
+    returned_ids = {node["node_id"] for node in result["nodes"]}
+    assert center_id in returned_ids
+    assert neighbor_id in returned_ids
+    assert all("score" in node and "min_hop" in node for node in result["nodes"])
+    assert any(
+        edge["from_id"] == center_id and edge["to_id"] == neighbor_id
+        for edge in result["edges"]
+    )
+
+
+def test_recall_context_ranking_prefers_direct_seed_match():
+    from graph_memory_mcp.graph_memory.mcp_handlers_graph import _rank_recall_score
+
+    similarity = {"1": 0.9, "2": 0.5}
+    score_direct, hop_direct = _rank_recall_score(
+        [{"seed_id": 1, "hop": 0}],
+        similarity,
+        hop_decay=0.7,
+    )
+    score_two_hops, hop_two = _rank_recall_score(
+        [{"seed_id": 2, "hop": 2}],
+        similarity,
+        hop_decay=0.7,
+    )
+    assert score_direct == pytest.approx(0.9)
+    assert hop_direct == 0
+    assert score_direct > score_two_hops
+    assert hop_two == 2

@@ -26,6 +26,7 @@ READ_ONLY_TOOLS = frozenset(
         "get_stats",
         "get_node",
         "get_context",
+        "recall_context",
         "get_trace",
         "find_similar",
         "search",

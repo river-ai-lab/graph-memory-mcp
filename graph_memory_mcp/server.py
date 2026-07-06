@@ -504,6 +504,40 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
             )
 
         @mcp.tool(
+            title="Recall context",
+            description=(
+                "Optional shortcut: semantic search + graph expansion in one call. "
+                "Default recall workflow is search → get_context → get_trace (see memory policies). "
+                "Use on small/sparse owner graphs; prefer depth=1 and include_paths=false when unsure."
+            ),
+            annotations=ToolAnnotations(readOnlyHint=True),
+        )
+        def recall_context(
+            query: str,
+            owner_id: str = "default",
+            depth: int | None = None,
+            limit: int | None = None,
+            max_nodes: int | None = None,
+            similarity_threshold: float | None = None,
+            include_outdated: bool = False,
+            search_type: str | None = None,
+            include_paths: bool = True,
+        ) -> dict:
+            return mcp_handlers_graph.recall_context(
+                db,
+                config,
+                query=query,
+                owner_id=owner_id,
+                depth=depth,
+                limit=limit,
+                max_nodes=max_nodes,
+                similarity_threshold=similarity_threshold,
+                include_outdated=include_outdated,
+                search_type=search_type,
+                include_paths=include_paths,
+            )
+
+        @mcp.tool(
             title="Find similar",
             description=(
                 "Find facts similar to a given fact using embedding similarity. "
@@ -553,6 +587,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
         exposed["delete_relation"] = delete_relation
         exposed["get_trace"] = get_trace
         exposed["get_context"] = get_context
+        exposed["recall_context"] = recall_context
         exposed["find_similar"] = find_similar
         exposed["create_summary_fact"] = create_summary_fact
 

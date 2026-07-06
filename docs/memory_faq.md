@@ -2,19 +2,19 @@
 
 ## Search vs. Summary?
 
-- **“What do we know about Y?”**: Use `search(query="Y")` followed by `create_summary_fact` if you assume synthesis.
-- **“Find all about Z”**: Use `search(query="Z", limit=50)` + `get_context` for raw retrieval.
+- **“What do we know about Y?”**: **`search(query="Y")`** → **`get_context`** on best hits. Optional: `recall_context` on small/sparse memory only.
+- **“Find all about Z”**: `search(query="Z", limit=50)` + `get_context` on top hits.
+- **“How are X and Y related?”**: `search` for both → **`get_trace(from_id=..., to_id=...)`**. `recall_context(..., include_paths=true)` is a rough hint between top seeds, not a substitute for `get_trace`.
 
 ## Deleting Knowledge ("Forget")
 
 There is no single `forget_topic(X)` tool. Use a deliberate workflow:
 
-1. **`search(query="X", owner_id=...)`** — semantic recall (Facts and Entities).
-2. **`get_context(node_id=..., depth=2)`** on promising hits — expand the subgraph.
-3. **Filter** by `metadata.tags`, `metadata.entities`, or your own naming conventions (metadata is not a separate search API today).
-4. **`mark_outdated(fact_id=..., owner_id=..., reason="...")`** — soft-delete for **Facts** only (hidden from default search).
-5. **`delete_node`** — hard removal (Facts or Entities; compliance, mistakes, test data). Entities have no soft-delete.
-6. **`delete_relation`** — remove specific edges between nodes (optional `relation_type`).
+1. **`search(query="X", owner_id=...)`** — semantic hits; add **`get_context`** when you need the subgraph.
+2. **Filter** by `metadata.tags`, `metadata.entities`, or your own naming conventions (metadata is not a separate search API today).
+3. **`mark_outdated(fact_id=..., owner_id=..., reason="...")`** — soft-delete for **Facts** only (hidden from default search).
+4. **`delete_node`** — hard removal (Facts or Entities; compliance, mistakes, test data). Entities have no soft-delete.
+5. **`delete_relation`** — remove specific edges between nodes (optional `relation_type`).
 
 **Why “only X” is hard:** embeddings overlap (e.g. “Redis” vs “cache layer”), and graphs share nodes. Tag facts at write time (`metadata.tags`, `metadata.entities`) if you expect bulk forget later. Shared team facts should stay immutable unless correcting an error.
 

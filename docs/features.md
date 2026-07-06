@@ -398,6 +398,42 @@ When `offset > 0`, the response also includes:
 
 **Errors:** `memory_service_error`
 
+#### recall_context
+
+**Optional shortcut** — same semantics as `search` → multi-seed expand → trim. Primary workflow remains `search` → `get_context` → `get_trace` (see `memory_policies_for_LLM.md`). Prefer this tool on small/sparse `owner_id` graphs only.
+
+**Required:**
+- `query: str`
+
+**Optional:**
+- `owner_id: str = "default"`
+- `depth: int = 2` (config: `RECALL_CONTEXT_DEFAULT_DEPTH`, capped by `SUBGRAPH_MAX_DEPTH`)
+- `limit: int = 5` — semantic seed count (config: `RECALL_CONTEXT_SEED_LIMIT`)
+- `max_nodes: int = 20` — cap on expanded subgraph nodes
+- `similarity_threshold: float | None = None`
+- `include_outdated: bool = false`
+- `search_type: str | None = None` — `pre_filter` | `post_filter` (server default when omitted)
+- `include_paths: bool = true` — shortest path between top two seeds when available
+
+**Response:**
+```json
+{
+  "success": true,
+  "query": "...",
+  "seeds": [...],
+  "nodes": [{"node_id", "node_type", "text", "score", "min_hop"}],
+  "edges": [...],
+  "paths": [{"from_id", "to_id", "nodes", "relations"}],
+  "depth": 2,
+  "max_nodes": 20,
+  "seed_limit": 5
+}
+```
+
+Nodes are ranked by `score = seed_similarity × RECALL_CONTEXT_HOP_DECAY^min_hop` (default decay `0.7`).
+
+**Errors:** `memory_validation_error`, `memory_service_error`
+
 #### get_trace
 **Required:**
 - `from_id: str`
@@ -408,6 +444,9 @@ When `offset > 0`, the response also includes:
 - `max_depth: int = 5`
 
 **Response:** `{"success": true, "nodes": [...], "relations": [...], "message"?: str}`
+
+Uses a **directed** shortest path `(from)-[*]->(to)` — unlike `get_context`, which walks **undirected** hops. No path does not mean nodes are unrelated; edges may point the other way.
+
 If no path is found, `nodes` and `relations` are returned as empty arrays.
 **Errors:** `memory_service_error`
 

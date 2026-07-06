@@ -41,6 +41,7 @@ def test_static_assets_exist():
 
 def test_read_only_tools_include_graph_reads():
     assert "get_context" in READ_ONLY_TOOLS
+    assert "recall_context" in READ_ONLY_TOOLS
     assert "find_similar" in READ_ONLY_TOOLS
     assert "create_node" not in READ_ONLY_TOOLS
 
