@@ -41,7 +41,7 @@ Graph Memory MCP
 
 ## Agent policies
 
-Any LLM agent that reads or writes Graph Memory — single-agent or multi-agent — should have [`docs/memory_policies_for_LLM.md`](docs/memory_policies_for_LLM.md) in context **at the start of each session**. It defines what to store, `owner_id` rules, and how to link facts; without it, memory tends to get noisy or mis-scoped.
+Any LLM agent that reads or writes Graph Memory — single-agent or multi-agent — should have [`graph_memory_mcp/resources/memory_policies_for_LLM.md`](graph_memory_mcp/resources/memory_policies_for_LLM.md) in context **at the start of each session**. It defines what to store, `owner_id` rules, and how to link facts; without it, memory tends to get noisy or mis-scoped.
 
 ---
 
@@ -145,7 +145,7 @@ Key defaults live in `graph_memory_mcp/config.py` within the `MCPServerConfig` c
 
 - `RELATION_POLICY_ENFORCE` — `off` | `warn` (default) | `enforce`
 - `RELATION_ALLOWED_TYPES` — comma-separated allowlist for new edges
-- Agent link guidance: `docs/memory_policies_for_LLM.md`
+- Agent link guidance: `graph_memory_mcp/resources/memory_policies_for_LLM.md`
 
 ## Running FalkorDB
 
@@ -205,6 +205,24 @@ The server uses **two vector indexes** (Fact and Entity):
 
 FalkorDB keeps index data in sync when nodes change; you only need to recreate index **definitions** after changing embedding model **dimension**.
 
+> [!WARNING]
+> **Changing `EMBEDDING_MODEL` invalidates the stored corpus.** Old node embeddings were produced by the old model — new queries will not match them meaningfully. The full procedure is: (1) switch the model, (2) recreate vector index definitions if the dimension changed, (3) **re-embed every node** (currently manual: iterate nodes and `update_node` with the same text, or export/import with `regenerate_embeddings=true`). The same applies to changing prompt/prefix conventions of the same model.
+
+### Embedding prefixes
+
+Some models are trained with prompt prefixes. The default `intfloat/multilingual-e5-base` expects `"query: "` for search queries and `"passage: "` for stored texts — without them retrieval quality degrades. Configure via `EMBEDDING_QUERY_PREFIX` / `EMBEDDING_PASSAGE_PREFIX` (see `env.example`; empty by default for backward compatibility). Enabling prefixes on an existing corpus counts as a model change — re-embed the corpus (see warning above).
+
+## Persistence & Backups
+
+`docker-compose.yml` enables **AOF persistence** (`--appendonly yes --appendfsync everysec`) — a container crash loses at most ~1 second of writes. For point-in-time backups:
+
+```bash
+./scripts/backup.sh            # BGSAVE + copy dump.rdb to ./backups (keeps last 14)
+# cron example (hourly): 0 * * * * cd /path/to/repo && ./scripts/backup.sh
+```
+
+Logical per-owner backups (portable across instances/models): `GET /admin/export/{owner_id}` — supports `?limit=&offset=&section=nodes|relations` for large owners; restore with `POST /admin/import`.
+
 ## Multi-Agent Usage
 
 MCP Graph Memory is designed for **multi-agent systems** where multiple agents need to:
@@ -214,21 +232,20 @@ MCP Graph Memory is designed for **multi-agent systems** where multiple agents n
 
 ### Example: Multi-Agent Setup
 
-Use `owner_id` to isolate knowledge between agents/tenants. Values must be alphanumeric plus `-`, `_`, and `@` (see [`docs/memory_policies_for_LLM.md`](docs/memory_policies_for_LLM.md)). For example:
+Use `owner_id` to isolate knowledge between agents/tenants. Values must be alphanumeric plus `-`, `_`, and `@` (see [`graph_memory_mcp/resources/memory_policies_for_LLM.md`](graph_memory_mcp/resources/memory_policies_for_LLM.md)). For example:
 
 - Agent A writes to `owner_id="team_platform"`
 - Agent B searches within `owner_id="team_platform"` (shared) or `owner_id="agent_codegen"` (isolated)
 
 ### Owner Isolation
 
-Use `owner_id` to:
-- **Isolate agents**: Each agent/team has its own `owner_id`
+Isolation is **physical**: every `owner_id` lives in its own FalkorDB graph (`{FALKORDB_GRAPH}_{owner_id}`) with its own vector indexes. Use `owner_id` to:
+- **Isolate agents**: Each agent/team has its own `owner_id` (= its own graph)
 - **Share knowledge**: Use the same `owner_id` for shared knowledge base
-- **Cross-reference**: Query across owners when needed (with proper permissions)
 
 All MCP tools support `owner_id` parameter (defaults to `"default"`). Agents should pass `owner_id` explicitly rather than relying on the default.
 
-See [`docs/memory_policies_for_LLM.md`](docs/memory_policies_for_LLM.md) and [`docs/memory_faq.md`](docs/memory_faq.md) for operational guidance.
+See [`graph_memory_mcp/resources/memory_policies_for_LLM.md`](graph_memory_mcp/resources/memory_policies_for_LLM.md) and [`docs/memory_faq.md`](docs/memory_faq.md) for operational guidance.
 
 ## Development
 

@@ -4,6 +4,7 @@ operators who prefer not to pass a nested `source` object on MCP tools.
 
 Handlers and DB behavior are unchanged: optional provenance is forwarded as a
 `source` dict built from flat parameters (`ref`, `provenance_type`, `uri`, …).
+Only the node write tools differ; everything else is inherited.
 """
 
 from __future__ import annotations
@@ -11,13 +12,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Literal
 
-from mcp.types import ToolAnnotations
-
 from graph_memory_mcp.config import MCPServerConfig
-from graph_memory_mcp.graph_memory import (
-    mcp_handlers_nodes,
-    mcp_handlers_search,
-)
+from graph_memory_mcp.graph_memory import mcp_handlers_nodes
 from graph_memory_mcp.server import GraphMemoryMCP
 
 logger = logging.getLogger(__name__)
@@ -58,7 +54,8 @@ class GraphMemorySimpleMCP(GraphMemoryMCP):
             "GraphMemorySimpleMCP: like GraphMemoryMCP; provenance via flat fields (no `source` object)"
         )
 
-    def _register_fact_tools(self) -> Dict[str, Any]:
+    def _register_node_write_tools(self) -> Dict[str, Any]:
+        """Flat-provenance create/upsert/update; shared node tools are inherited."""
         exposed: Dict[str, Any] = {}
         db = self.db_client
         config = self.config
@@ -78,7 +75,8 @@ class GraphMemorySimpleMCP(GraphMemoryMCP):
                 "`links` (create relations immediately after creation). "
                 "Note: auto_link=true (default) on Facts adds MENTIONS to similar Entity nodes; "
                 "use create_relation for other pairs. "
-                "Set ttl_days for automatic archival."
+                "Set ttl_days for automatic archival. "
+                "Response may include possible_duplicates — review before keeping both."
             ),
         )
         def create_node(
@@ -146,7 +144,7 @@ class GraphMemorySimpleMCP(GraphMemoryMCP):
             version: int | None = None,
             status: Literal["active", "outdated", "archived"] | None = None,
             ttl_days: float | None = None,
-            versioning: bool = False,
+            versioning: bool | None = None,
             entity_type: str | None = None,
             auto_link: bool = True,
             semantic_threshold: float | None = None,
@@ -180,48 +178,6 @@ class GraphMemorySimpleMCP(GraphMemoryMCP):
             )
 
         @mcp.tool(
-            title="Search",
-            description=(
-                "Semantic search using embedding similarity (cosine distance). "
-                "Returns active nodes by default (use include_outdated=true to include outdated and archived nodes). "
-                "Results ranked by similarity to query text. "
-                "Supports multi-tenant isolation via owner_id. "
-                "search_type: pre_filter or post_filter (see server SEARCH_TYPE default)."
-            ),
-            annotations=ToolAnnotations(readOnlyHint=True),
-        )
-        def search(
-            query: str,
-            owner_id: str = "default",
-            limit: int | None = None,
-            node_types: list[str] | None = None,
-            status: str | None = None,
-            similarity_threshold: float | None = None,
-            include_outdated: bool = False,
-            search_type: str | None = None,
-        ) -> dict:
-            return mcp_handlers_search.search(
-                db,
-                config,
-                query=query,
-                owner_id=owner_id,
-                limit=limit,
-                node_types=node_types,
-                status=status,
-                similarity_threshold=similarity_threshold,
-                include_outdated=include_outdated,
-                search_type=search_type,
-            )
-
-        @mcp.tool(
-            title="Get node",
-            description="Retrieve a single node (Fact or Entity) by its ID.",
-            annotations=ToolAnnotations(readOnlyHint=True),
-        )
-        def get_node(node_id: str, owner_id: str = "default") -> dict:
-            return mcp_handlers_nodes.get_node(db, node_id=node_id, owner_id=owner_id)
-
-        @mcp.tool(
             title="Update node",
             description=(
                 "Update a node (Fact or Entity). "
@@ -245,7 +201,7 @@ class GraphMemorySimpleMCP(GraphMemoryMCP):
             status: Literal["active", "outdated", "archived"] | None = None,
             ttl_days: float | None = None,
             entity_type: str | None = None,
-            versioning: bool = False,
+            versioning: bool | None = None,
         ) -> dict:
             source = _provenance_source(
                 ref=ref,
@@ -268,56 +224,7 @@ class GraphMemorySimpleMCP(GraphMemoryMCP):
                 versioning=versioning,
             )
 
-        @mcp.tool(
-            title="Delete node",
-            description=(
-                "PERMANENT: Irreversibly delete a node (Fact or Entity) and all its relations. "
-                "This operation cannot be undone. "
-                "For reversible removal of Facts, use mark_outdated instead."
-            ),
-        )
-        def delete_node(node_id: str, owner_id: str = "default") -> dict:
-            return mcp_handlers_nodes.delete_node(
-                db, node_id=node_id, owner_id=owner_id
-            )
-
-        @mcp.tool(
-            title="Mark fact as outdated",
-            description=(
-                "Soft-delete a Fact by setting status='outdated'. "
-                "Fact remains in graph but excluded from default searches. "
-                "Optionally stores reason in metadata. "
-                "Note: Only Facts support soft-delete. For Entities, use delete_node."
-            ),
-        )
-        def mark_outdated(
-            fact_id: str, reason: str | None = None, owner_id: str = "default"
-        ) -> dict:
-            return mcp_handlers_nodes.mark_outdated(
-                db, fact_id=fact_id, reason=reason, owner_id=owner_id
-            )
-
-        @mcp.tool(
-            title="Get node change history",
-            description=(
-                "Retrieve version history for a node. "
-                "Returns a list of previous versions with timestamps. "
-                "Currently only supported for Fact nodes."
-            ),
-            annotations=ToolAnnotations(readOnlyHint=True),
-        )
-        def get_node_change_history(node_id: str, owner_id: str = "default") -> dict:
-            return mcp_handlers_nodes.get_node_change_history(
-                db, node_id=node_id, owner_id=owner_id
-            )
-
-        exposed["search"] = search
         exposed["create_node"] = create_node
         exposed["upsert_node"] = upsert_node
-        exposed["get_node"] = get_node
         exposed["update_node"] = update_node
-        exposed["delete_node"] = delete_node
-        exposed["mark_outdated"] = mark_outdated
-        exposed["get_node_change_history"] = get_node_change_history
-
         return exposed

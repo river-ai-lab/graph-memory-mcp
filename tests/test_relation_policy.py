@@ -51,6 +51,9 @@ class _FakeDB:
     graph = _FakeGraph()
     cache = _FakeCache()
 
+    def query(self, query, params=None, owner_id=None):
+        return self.graph.query(query, params=params)
+
 
 def _extract_tool_json(result) -> dict:
     content = getattr(result, "content", None)

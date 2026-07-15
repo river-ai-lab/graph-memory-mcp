@@ -1,28 +1,15 @@
 """
 Pytest configuration.
 
-This repository is laid out as a *package directory* (the repo root contains
-`__init__.py`). To import it as `graph_memory_mcp.*`, Python needs the *parent*
-directory of the repo on `sys.path`.
-
 All tests require a running FalkorDB (see docker-compose.yml / scripts/falkordb-up.sh).
 """
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import pytest
 import redis
 
 from graph_memory_mcp.config import load_mcp_server_config
-
-
-def pytest_configure() -> None:
-    repo_root = Path(__file__).resolve().parents[1]
-    repo_parent = repo_root.parent
-    sys.path.insert(0, str(repo_parent))
 
 
 def falkordb_is_available(host: str, port: int, password: str | None) -> bool:

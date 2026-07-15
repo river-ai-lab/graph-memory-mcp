@@ -24,18 +24,25 @@ _scheduler_lock = RLock()
 
 
 async def _run_instrumented(job_name: str, job_func: JobFunc) -> None:
-    """Run a single job with logging."""
+    """Run a single job with logging and Prometheus metrics."""
     global _last_error
 
+    from time import perf_counter
+
+    from graph_memory_mcp.metrics import observe_job
+
     logger.info("Job started", extra={"job_name": job_name})
+    started = perf_counter()
     try:
         await job_func()
         with _scheduler_lock:
             _last_run[job_name] = datetime.now(UTC)
+        observe_job(job_name, perf_counter() - started, True)
         logger.info("Job finished", extra={"job_name": job_name})
     except Exception as exc:  # noqa: BLE001
         with _scheduler_lock:
             _last_error = str(exc)
+        observe_job(job_name, perf_counter() - started, False)
         logger.error(
             "Job failed",
             extra={"job_name": job_name, "error": str(exc)},

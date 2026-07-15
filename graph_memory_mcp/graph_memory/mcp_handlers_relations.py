@@ -1,6 +1,7 @@
 """Relation and triplet handlers for MCP Graph Memory."""
 
 import logging
+import re
 from typing import Any, Dict, Optional
 
 from graph_memory_mcp.graph_memory.database import FalkorDBClient
@@ -8,17 +9,28 @@ from graph_memory_mcp.graph_memory.relation_policy import evaluate_relation_poli
 from graph_memory_mcp.graph_memory.utils import (
     ensure_text,
     error_response,
-    escape_value,
     execute_query,
-    format_vecf32,
     mcp_handler,
+    new_uid,
+    normalize_entity_name,
     normalize_owner_id,
     normalize_predicate_type,
+    require_node_id,
     success_response,
     validate_inputs,
 )
 
 logger = logging.getLogger(__name__)
+
+_PROPERTY_KEY_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+
+def _validate_property_keys(properties: Optional[Dict]) -> Optional[str]:
+    """Property keys are interpolated into Cypher; restrict to identifiers."""
+    for key in properties or {}:
+        if not _PROPERTY_KEY_RE.match(str(key)):
+            return f"Invalid property key: {key!r} (use letters, digits, _)"
+    return None
 
 
 @mcp_handler
@@ -34,7 +46,11 @@ def create_relation(
 ) -> Dict:
     """Create a relation between two nodes."""
     owner_id = normalize_owner_id(owner_id)
+    from_id = require_node_id(from_id, "from_id")
+    to_id = require_node_id(to_id, "to_id")
     if error := validate_inputs(locals(), config):
+        return error_response(error, code="memory_validation_error")
+    if error := _validate_property_keys(properties):
         return error_response(error, code="memory_validation_error")
 
     rel_type = normalize_predicate_type(relation_type)
@@ -48,7 +64,7 @@ def create_relation(
 
     query = f"""
     MATCH (a), (b)
-    WHERE id(a) = $from_id AND id(b) = $to_id
+    WHERE a.uid = $from_id AND b.uid = $to_id
         AND a.owner_id = $owner_id AND b.owner_id = $owner_id
     MERGE (a)-[r:{rel_type}]->(b)
     ON CREATE SET r.created_at = timestamp(){props_str}
@@ -56,8 +72,8 @@ def create_relation(
     """
 
     params = {
-        "from_id": int(from_id),
-        "to_id": int(to_id),
+        "from_id": from_id,
+        "to_id": to_id,
         "owner_id": owner_id,
     }
     if properties:
@@ -99,29 +115,45 @@ def create_triplet(
     subj_emb = db.get_embedding(subject)
     obj_emb = db.get_embedding(object_value)
 
+    subj_emb_expr = "vecf32($subj_emb)" if subj_emb else "NULL"
+    obj_emb_expr = "vecf32($obj_emb)" if obj_emb else "NULL"
+    # Entities are merged on normalized name so "Redis" and " redis " unify;
+    # original casing is preserved in `text`.
     query = f"""
-    MERGE (s:Entity {{text: $subject, owner_id: $owner_id}})
+    MERGE (s:Entity {{name_norm: $subject_norm, owner_id: $owner_id}})
     ON CREATE SET
+        s.uid = $subj_uid,
+        s.text = $subject,
         s.created_at = timestamp(),
-        s.embedding = {format_vecf32(subj_emb)},
+        s.embedding = {subj_emb_expr},
         s.status = 'active',
         s.metadata_str = '{{}}'
-    MERGE (o:Entity {{text: $object, owner_id: $owner_id}})
+    MERGE (o:Entity {{name_norm: $object_norm, owner_id: $owner_id}})
     ON CREATE SET
+        o.uid = $obj_uid,
+        o.text = $object,
         o.created_at = timestamp(),
-        o.embedding = {format_vecf32(obj_emb)},
+        o.embedding = {obj_emb_expr},
         o.status = 'active',
         o.metadata_str = '{{}}'
     MERGE (s)-[r:{rel_type}]->(o)
     ON CREATE SET r.created_at = timestamp()
-    RETURN id(s) as subject_id, id(o) as object_id, id(r) as relation_id
+    RETURN s.uid as subject_id, o.uid as object_id, id(r) as relation_id
     """
 
     params = {
         "subject": subject,
         "object": object_value,
+        "subject_norm": normalize_entity_name(subject),
+        "object_norm": normalize_entity_name(object_value),
         "owner_id": owner_id,
+        "subj_uid": new_uid(),
+        "obj_uid": new_uid(),
     }
+    if subj_emb:
+        params["subj_emb"] = subj_emb
+    if obj_emb:
+        params["obj_emb"] = obj_emb
 
     result = execute_query(db, query, params)
     if not result:
@@ -158,16 +190,16 @@ def create_triplet(
 
         link_query = """
         MATCH (f:Fact), (s:Entity)
-        WHERE id(f) = $fact_id AND id(s) = $subject_id
+        WHERE f.uid = $fact_id AND s.uid = $subject_id
             AND f.owner_id = $owner_id AND s.owner_id = $owner_id
         MERGE (f)-[r:EXTRACTED_FROM]->(s)
         ON CREATE SET r.created_at = timestamp()
         """
-        db.graph.query(
+        db.query(
             link_query,
             params={
-                "fact_id": int(fact_id),
-                "subject_id": int(row[0]),
+                "fact_id": require_node_id(fact_id, "fact_id"),
+                "subject_id": str(row[0]),
                 "owner_id": owner_id,
             },
         )
@@ -192,13 +224,18 @@ def search_triplets(
 ) -> Dict:
     """Search for triplets matching the pattern."""
     owner_id = normalize_owner_id(owner_id)
+    max_limit = getattr(getattr(db, "config", None), "max_search_limit", 100)
+    limit = max(1, min(int(limit), max_limit))
 
-    where_clauses = [f"s.owner_id = '{escape_value(owner_id)}'"]
+    where_clauses = ["s.owner_id = $owner_id"]
+    params: Dict[str, Any] = {"owner_id": owner_id}
 
     if subject:
-        where_clauses.append(f"s.text = '{escape_value(subject)}'")
+        where_clauses.append("s.name_norm = $subject_norm")
+        params["subject_norm"] = normalize_entity_name(subject)
     if object_value:
-        where_clauses.append(f"o.text = '{escape_value(object_value)}'")
+        where_clauses.append("o.name_norm = $object_norm")
+        params["object_norm"] = normalize_entity_name(object_value)
 
     rel_pattern = f"[r:{normalize_predicate_type(predicate)}]" if predicate else "[r]"
 
@@ -206,16 +243,16 @@ def search_triplets(
     MATCH (s:Entity)-{rel_pattern}->(o:Entity)
     WHERE {' AND '.join(where_clauses)}
     RETURN
-        id(s) as subject_id,
+        s.uid as subject_id,
         s.text as subject,
         type(r) as predicate,
-        id(o) as object_id,
+        o.uid as object_id,
         o.text as object,
         id(r) as relation_id
-    LIMIT {limit}
+    LIMIT {int(limit)}
     """
 
-    result = db.graph.query(query)
+    result = db.query(query, params=params)
 
     triplets = []
     if result and hasattr(result, "result_set"):
@@ -245,6 +282,8 @@ def unlink_facts(
 ) -> Dict:
     """Remove relations between facts."""
     owner_id = normalize_owner_id(owner_id)
+    from_id = require_node_id(from_id, "from_id")
+    to_id = require_node_id(to_id, "to_id")
 
     rel_pattern = (
         f"[r:{normalize_predicate_type(relation_type)}]" if relation_type else "[r]"
@@ -252,7 +291,7 @@ def unlink_facts(
 
     query = f"""
     MATCH (a)-{rel_pattern}->(b)
-    WHERE id(a) = $from_id AND id(b) = $to_id
+    WHERE a.uid = $from_id AND b.uid = $to_id
         AND a.owner_id = $owner_id AND b.owner_id = $owner_id
     DELETE r
     RETURN count(r) as deleted
@@ -262,8 +301,8 @@ def unlink_facts(
         db,
         query,
         {
-            "from_id": int(from_id),
-            "to_id": int(to_id),
+            "from_id": from_id,
+            "to_id": to_id,
             "owner_id": owner_id,
         },
     )

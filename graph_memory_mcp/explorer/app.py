@@ -22,8 +22,8 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 READ_ONLY_TOOLS = frozenset(
     {
         "health_check",
-        "test_connection",
         "get_stats",
+        "get_brief",
         "get_node",
         "get_context",
         "recall_context",

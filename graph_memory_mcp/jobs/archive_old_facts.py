@@ -20,19 +20,12 @@ def _parse_owner_ids(config: MCPServerConfig) -> List[str]:
 
 
 def _resolve_owner_ids(db: FalkorDBClient, config: MCPServerConfig) -> List[str]:
-    """Resolve owner IDs either from config or by discovering them from the graph."""
+    """Resolve owner IDs from config or discover them from per-owner graphs."""
     if not config.jobs_process_all_owners:
         return _parse_owner_ids(config)
 
-    query = """
-    MATCH (n)
-    WHERE n.owner_id IS NOT NULL AND n.owner_id <> ''
-    RETURN DISTINCT n.owner_id as owner_id
-    ORDER BY owner_id
-    """
-
     try:
-        result = db.graph.query(query)
+        discovered = db.list_owners()
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "Archive job: failed to discover owners, falling back to jobs_owner_ids: %s",
@@ -40,23 +33,14 @@ def _resolve_owner_ids(db: FalkorDBClient, config: MCPServerConfig) -> List[str]
         )
         return _parse_owner_ids(config)
 
-    if not result or not hasattr(result, "result_set") or not result.result_set:
-        return _parse_owner_ids(config)
-
     owners = []
-    for row in result.result_set:
-        if not row or row[0] is None:
-            continue
-        raw_owner = row[0]
-        if isinstance(raw_owner, bytes):
-            raw_owner = raw_owner.decode("utf-8", errors="replace")
-        owner_text = str(raw_owner).strip()
-        if not owner_text:
-            continue
-        owners.append(normalize_owner_id(owner_text))
+    for owner_text in discovered:
+        try:
+            owners.append(normalize_owner_id(owner_text))
+        except ValueError:
+            logger.warning("Archive job: skipping invalid owner_id %r", owner_text)
 
-    resolved_owners = sorted(set(owners))
-    return resolved_owners or _parse_owner_ids(config)
+    return sorted(set(owners)) or _parse_owner_ids(config)
 
 
 async def _execute_query(
@@ -65,7 +49,7 @@ async def _execute_query(
     params: Dict[str, Any] | None = None,
 ) -> Any:
     """Execute graph query with retry logic."""
-    result = db.graph.query(query, params=params)
+    result = db.query(query, params=params)
     if not result or not hasattr(result, "result_set"):
         return None
     # Return in old format for compatibility: [header, rows]
@@ -121,14 +105,14 @@ async def archive_old_facts(db: FalkorDBClient, config: MCPServerConfig) -> None
 
             owner_id_normalized = normalize_owner_id(owner_id)
 
-            # 1) Find candidates: expired TTL only, status active only
+            # 1) Candidates: expired TTL (always) + stale by usage (opt-in)
             params = {"owner_id": owner_id_normalized, "now_ms": now_ms}
             query = """
             MATCH (f:Fact)
             WHERE f.owner_id = $owner_id
               AND (f.status IS NULL OR f.status = 'active')
               AND (f.expires_at IS NOT NULL AND f.expires_at <= $now_ms)
-            RETURN id(f) as fact_id
+            RETURN f.uid as fact_id
             """
 
             try:
@@ -141,11 +125,51 @@ async def archive_old_facts(db: FalkorDBClient, config: MCPServerConfig) -> None
                 )
                 continue
 
-            if not result or len(result) <= 1 or not result[1]:
+            rows = result[1] if result and len(result) > 1 and result[1] else []
+            reason_by_id: Dict[str, str] = {
+                str(row[0]): "archived_by_cleanup_job" for row in rows if row
+            }
+
+            if config.job_archive_stale_enabled:
+                stale_cutoff_ms = (
+                    now_ms - int(config.stale_facts_days) * 24 * 3600 * 1000
+                )
+                stale_query = """
+                MATCH (f:Fact)
+                WHERE f.owner_id = $owner_id
+                  AND (f.status IS NULL OR f.status = 'active')
+                  AND coalesce(f.last_accessed_at, f.created_at) < $cutoff_ms
+                RETURN f.uid as fact_id
+                """
+                try:
+                    stale_result = await execute_query_with_retry(
+                        db,
+                        stale_query,
+                        {"owner_id": owner_id_normalized, "cutoff_ms": stale_cutoff_ms},
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.error(
+                        "Archive job: failed to query stale candidates (owner_id=%s): %s",
+                        owner_id,
+                        exc,
+                    )
+                    stale_result = None
+                stale_rows = (
+                    stale_result[1]
+                    if stale_result and len(stale_result) > 1 and stale_result[1]
+                    else []
+                )
+                for row in stale_rows:
+                    if row:
+                        reason_by_id.setdefault(
+                            str(row[0]), "archived_stale_by_cleanup_job"
+                        )
+
+            if not reason_by_id:
                 logger.info("Archive job: no candidates found (owner_id=%s)", owner_id)
                 continue
 
-            candidate_ids: List[int] = [row[0] for row in result[1] if row]
+            candidate_ids: List[str] = list(reason_by_id)
 
             archived_count = 0
             skipped_active_relations = 0
@@ -187,13 +211,15 @@ async def archive_old_facts(db: FalkorDBClient, config: MCPServerConfig) -> None
                 # 3) Ensure there are no "active relationships"
                 rel_query = """
                 MATCH (f:Fact)-[r]-(n)
-                WHERE id(f) = $raw_id
+                WHERE f.uid = $raw_id
                 RETURN labels(n) as n_labels, n.status as n_status
                 """
 
                 try:
                     rel_result = await execute_query_with_retry(
-                        db, rel_query, {"raw_id": raw_id}
+                        db,
+                        rel_query,
+                        {"raw_id": fact_id, "owner_id": owner_id_normalized},
                     )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(
@@ -245,7 +271,9 @@ async def archive_old_facts(db: FalkorDBClient, config: MCPServerConfig) -> None
                 # 4) Archive: set n.status = "archived"
                 reason = metadata.get("status_reason")
                 if not reason:
-                    metadata["status_reason"] = "archived_by_cleanup_job"
+                    metadata["status_reason"] = reason_by_id.get(
+                        fact_id, "archived_by_cleanup_job"
+                    )
 
                 try:
                     updated_result = mcp_handlers_nodes.update_node(

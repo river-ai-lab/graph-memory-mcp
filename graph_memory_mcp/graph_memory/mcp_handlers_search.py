@@ -8,20 +8,21 @@ from graph_memory_mcp.graph_memory.cache import hash_query
 from graph_memory_mcp.graph_memory.database import FalkorDBClient
 from graph_memory_mcp.graph_memory.owner_scoped_search import (
     SearchType,
+    build_metadata_filter_clauses,
     build_owner_scoped_similarity_query,
     normalize_search_type,
 )
 from graph_memory_mcp.graph_memory.utils import (
     ensure_text,
     error_response,
-    escape_value,
     execute_query,
-    format_vecf32,
     load_json,
     mcp_handler,
     normalize_owner_id,
     parse_embedding_value,
+    require_node_id,
     success_response,
+    touch_nodes,
 )
 
 logger = logging.getLogger(__name__)
@@ -40,11 +41,31 @@ def _vector_ann_k(
     return min(scaled, config.post_filter_ann_k_max)
 
 
-def _count_labeled_nodes(db: FalkorDBClient, node_type: str) -> int | None:
+_LABEL_COUNT_TTL_SECONDS = 60
+
+
+def _count_labeled_nodes(
+    db: FalkorDBClient, node_type: str, owner_id: str
+) -> int | None:
+    """Approximate label count for ANN sizing, cached per owner graph for 60s."""
+    import time as _time
+
+    cache: dict = getattr(db, "_label_count_cache", None) or {}
+    cache_key = f"{owner_id}:{node_type}"
+    cached = cache.get(cache_key)
+    now = _time.time()
+    if cached and now - cached[1] < _LABEL_COUNT_TTL_SECONDS:
+        return cached[0]
     try:
-        result = db.graph.query(f"MATCH (n:{node_type}) RETURN count(n)")
+        result = db.query(
+            f"MATCH (n:{node_type}) WHERE n.owner_id = $owner_id RETURN count(n)",
+            params={"owner_id": owner_id},
+        )
         if result and result.result_set:
-            return int(result.result_set[0][0])
+            count = int(result.result_set[0][0])
+            cache[cache_key] = (count, now)
+            setattr(db, "_label_count_cache", cache)
+            return count
     except Exception as exc:  # noqa: BLE001
         logger.debug("Could not count %s nodes for ANN sizing: %s", node_type, exc)
     return None
@@ -78,25 +99,35 @@ def _search_nodes_post_filter(
     owner_id: str,
     include_outdated: bool = False,
     status: Optional[str] = None,
+    metadata_filter: Optional[Dict] = None,
 ) -> List[Dict]:
     """post_filter: global ANN (queryNodes), then owner/status filters."""
 
+    params = {
+        "embedding": embedding,
+        "max_distance": float(max_distance),
+        "owner_id": owner_id,
+    }
     status_clause = ""
     if status:
-        status_clause = f" AND node.status = '{escape_value(status)}'"
+        status_clause = " AND node.status = $status"
+        params["status"] = status
     elif not include_outdated:
         status_clause = " AND (node.status IS NULL OR node.status = 'active')"
 
-    ann_k = _vector_ann_k(limit, _count_labeled_nodes(db, node_type), config)
+    ann_k = _vector_ann_k(limit, _count_labeled_nodes(db, node_type, owner_id), config)
 
     query = f"""
-    CALL db.idx.vector.queryNodes('{node_type}', 'embedding', {ann_k}, {format_vecf32(embedding)})
+    CALL db.idx.vector.queryNodes('{node_type}', 'embedding', {ann_k}, vecf32($embedding))
     YIELD node, score
-    WHERE score <= {max_distance}
-      AND node.owner_id = '{escape_value(owner_id)}'
+    WHERE score <= $max_distance
+      AND node.owner_id = $owner_id
     """
 
     query += status_clause
+    meta_clauses, meta_params = build_metadata_filter_clauses(metadata_filter)
+    query += meta_clauses
+    params.update(meta_params)
 
     if node_type == "Fact":
         if status == "active" or (status is None and not include_outdated):
@@ -104,17 +135,17 @@ def _search_nodes_post_filter(
 
     query += f"""
     RETURN
-        id(node) as node_id,
+        node.uid as node_id,
         '{node_type}' as node_type,
         node.text as text,
         node.status as status,
         node.created_at as created_at,
         node.metadata_str as metadata_str,
         score
-    LIMIT {limit}
+    LIMIT {int(limit)}
     """
 
-    return _rows_to_search_results(db.graph.query(query))
+    return _rows_to_search_results(db.query(query, params=params))
 
 
 def _search_nodes_pre_filter(
@@ -126,9 +157,10 @@ def _search_nodes_pre_filter(
     owner_id: str,
     include_outdated: bool = False,
     status: Optional[str] = None,
+    metadata_filter: Optional[Dict] = None,
 ) -> List[Dict]:
     """pre_filter: owner/status filters first, then exact vec.cosineDistance."""
-    query = build_owner_scoped_similarity_query(
+    query, params = build_owner_scoped_similarity_query(
         node_type=node_type,
         embedding=embedding,
         owner_id=owner_id,
@@ -136,8 +168,9 @@ def _search_nodes_pre_filter(
         max_distance=max_distance,
         include_outdated=include_outdated,
         status=status,
+        metadata_filter=metadata_filter,
     )
-    return _rows_to_search_results(db.graph.query(query))
+    return _rows_to_search_results(db.query(query, params=params))
 
 
 def _search_nodes_by_type(
@@ -152,6 +185,7 @@ def _search_nodes_by_type(
     search_type: SearchType,
     include_outdated: bool = False,
     status: Optional[str] = None,
+    metadata_filter: Optional[Dict] = None,
 ) -> List[Dict]:
     if search_type == "pre_filter":
         return _search_nodes_pre_filter(
@@ -163,6 +197,7 @@ def _search_nodes_by_type(
             owner_id,
             include_outdated,
             status,
+            metadata_filter,
         )
     return _search_nodes_post_filter(
         db,
@@ -174,6 +209,7 @@ def _search_nodes_by_type(
         owner_id,
         include_outdated,
         status,
+        metadata_filter,
     )
 
 
@@ -190,6 +226,7 @@ def search(
     similarity_threshold: Optional[float] = None,
     include_outdated: bool = False,
     search_type: Optional[str] = None,
+    metadata_filter: Optional[Dict] = None,
 ) -> Dict:
     """Search for nodes by semantic similarity."""
     owner_id = normalize_owner_id(owner_id)
@@ -197,6 +234,8 @@ def search(
         resolved_search_type = normalize_search_type(
             search_type if search_type is not None else config.default_search_type
         )
+        # Validate filter keys early (raises ValueError → validation error).
+        build_metadata_filter_clauses(metadata_filter)
     except ValueError as exc:
         return error_response(str(exc), code="memory_validation_error")
 
@@ -209,12 +248,13 @@ def search(
         similarity_threshold=similarity_threshold,
         include_outdated=include_outdated,
         search_type=resolved_search_type,
+        metadata_filter=metadata_filter,
     )
 
     if cached := db.cache.get_search(cache_key):
         return cached
 
-    limit = limit or config.default_search_limit
+    limit = max(1, min(limit or config.default_search_limit, config.max_search_limit))
     similarity_threshold = (
         similarity_threshold
         if similarity_threshold is not None
@@ -232,9 +272,9 @@ def search(
         if not node_types:
             node_types = ["Fact", "Entity"]
 
-    db.ensure_search_indexes_if_missing()
+    db.ensure_search_indexes_if_missing(owner_id=owner_id)
 
-    embedding = db.get_embedding(query)
+    embedding = db.get_embedding(query, kind="query")
     if not embedding:
         return success_response(results=[], facts=[], entities=[])
 
@@ -253,6 +293,7 @@ def search(
             search_type=resolved_search_type,
             include_outdated=include_outdated,
             status=status,
+            metadata_filter=metadata_filter,
         )
         results.extend(type_results)
 
@@ -265,6 +306,7 @@ def search(
     final_response = success_response(results=results, facts=facts, entities=entities)
 
     db.cache.set_search(cache_key, final_response)
+    touch_nodes(db, [r["node_id"] for r in results], owner_id)
 
     return final_response
 
@@ -281,7 +323,9 @@ def find_similar(
 ) -> Dict:
     """Find similar facts to a given fact."""
     owner_id = normalize_owner_id(owner_id)
-    db.ensure_vector_indexes_if_missing()
+    fact_id = require_node_id(fact_id, "fact_id")
+    limit = max(1, min(int(limit), config.max_search_limit))
+    db.ensure_vector_indexes_if_missing(owner_id=owner_id)
     similarity_threshold = (
         similarity_threshold
         if similarity_threshold is not None
@@ -290,13 +334,11 @@ def find_similar(
 
     get_query = """
     MATCH (n:Fact)
-    WHERE id(n) = $fact_id AND n.owner_id = $owner_id
+    WHERE n.uid = $fact_id AND n.owner_id = $owner_id
     RETURN n.embedding as embedding
     """
 
-    result = execute_query(
-        db, get_query, {"fact_id": int(fact_id), "owner_id": owner_id}
-    )
+    result = execute_query(db, get_query, {"fact_id": fact_id, "owner_id": owner_id})
     if not result:
         return error_response(f"Fact {fact_id} not found", code="memory_not_found")
 
@@ -304,27 +346,33 @@ def find_similar(
     if not embedding:
         return success_response(similar_facts=[])
 
-    max_distance = 1.0 - similarity_threshold
-
-    ann_k = _vector_ann_k(limit + 1, _count_labeled_nodes(db, "Fact"), config)
+    ann_k = _vector_ann_k(limit + 1, _count_labeled_nodes(db, "Fact", owner_id), config)
 
     similar_query = f"""
-    CALL db.idx.vector.queryNodes('Fact', 'embedding', {ann_k}, {format_vecf32(embedding)})
+    CALL db.idx.vector.queryNodes('Fact', 'embedding', {ann_k}, vecf32($embedding))
     YIELD node, score
-    WHERE score <= {max_distance}
-      AND node.owner_id = '{escape_value(owner_id)}'
-      AND id(node) <> {int(fact_id)}
+    WHERE score <= $max_distance
+      AND node.owner_id = $owner_id
+      AND node.uid <> $fact_id
     RETURN
-        id(node) as node_id,
+        node.uid as node_id,
         node.text as text,
         node.status as status,
         node.created_at as created_at,
         node.metadata_str as metadata_str,
         score
-    LIMIT {limit}
+    LIMIT {int(limit)}
     """
 
-    result = db.graph.query(similar_query)
+    result = db.query(
+        similar_query,
+        params={
+            "embedding": embedding,
+            "max_distance": 1.0 - similarity_threshold,
+            "owner_id": owner_id,
+            "fact_id": fact_id,
+        },
+    )
 
     similar_facts = []
     if result and hasattr(result, "result_set"):

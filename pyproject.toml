@@ -22,6 +22,7 @@ dependencies = [
   "uvicorn",
   "python-dotenv>=1.0.1",
   "cachetools>=5.5.0",
+  "prometheus-client>=0.25.0",
 ]
 
 [project.optional-dependencies]
@@ -40,7 +41,7 @@ graph-memory-mcp = "graph_memory_mcp.cli:main"
 graph-memory-explorer = "graph_memory_mcp.explorer.cli:main"
 
 [tool.setuptools.package-data]
-graph_memory_mcp = ["explorer/static/*"]
+graph_memory_mcp = ["explorer/static/*", "resources/*"]
 
 [tool.setuptools]
 include-package-data = true
@@ -58,10 +59,7 @@ markers = [
 ]
 
 [tool.basedpyright]
-# This repo root is the `graph_memory_mcp` package directory. For absolute imports
-# like `graph_memory_mcp.*` to resolve in the editor/typechecker, we need the
-# parent directory on the import path.
-extraPaths = [".."]
+# Standard layout: `graph_memory_mcp` package lives at the repo root.
 
 [tool.isort]
 profile = "black"

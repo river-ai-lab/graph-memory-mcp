@@ -11,7 +11,8 @@ services:
       - "6379:6379"
       - "3000:3000"
     environment:
-      REDIS_ARGS: "--requirepass falkordb123"
+      # AOF persistence: survive container crashes with at most ~1s of writes lost.
+      REDIS_ARGS: "--requirepass falkordb123 --appendonly yes --appendfsync everysec"
     volumes:
       - ./data:/var/lib/falkordb/data
     healthcheck:

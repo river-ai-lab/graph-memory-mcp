@@ -16,6 +16,8 @@ class MCPServerConfig(BaseSettings):
     model_config = SettingsConfigDict(
         case_sensitive=False,
         env_ignore_empty=False,
+        # Allow constructing with field names (not only env aliases), e.g. in tests.
+        populate_by_name=True,
         # If `.env` exists, it will be loaded; if not, defaults + process env vars are used.
         env_file=".env",
         env_file_encoding="utf-8",
@@ -26,6 +28,12 @@ class MCPServerConfig(BaseSettings):
 
     # MCP server (top-level)
     enabled: bool = Field(default=True, validation_alias="MCP_SERVER_ENABLED")
+    # Admin/agent separation: admin operations live on HTTP /admin/* routes.
+    # Set true to additionally expose them as MCP tools (legacy behavior).
+    mcp_expose_admin_tools: bool = Field(
+        default=False, validation_alias="MCP_EXPOSE_ADMIN_TOOLS"
+    )
+    admin_token: str = Field(default="", validation_alias="ADMIN_TOKEN")
     name: str = Field(default="memory", validation_alias="MCP_SERVER_NAME")
     description: str = Field(
         default="Memory MCP server for knowledge graph (FalkorDB)",
@@ -40,12 +48,21 @@ class MCPServerConfig(BaseSettings):
 
     # Embeddings
     embedding_model: str = "intfloat/multilingual-e5-base"
+    # Model prompt prefixes (e5-family: "query: " / "passage: "). Empty = none.
+    # Changing prefixes (like changing the model) requires re-embedding the corpus.
+    embedding_query_prefix: str = Field(
+        default="", validation_alias="EMBEDDING_QUERY_PREFIX"
+    )
+    embedding_passage_prefix: str = Field(
+        default="", validation_alias="EMBEDDING_PASSAGE_PREFIX"
+    )
 
     # Vector indexes (auto-creation)
     auto_create_indexes: bool = False  # opt-in: create indexes on startup
 
     # Search/graph defaults
     default_search_limit: int = 10
+    max_search_limit: int = 100  # hard cap for limit on search-like tools
     semantic_similarity_threshold: float = 0.55
     default_search_type: str = Field(
         default="pre_filter",
@@ -82,6 +99,17 @@ class MCPServerConfig(BaseSettings):
         default=0.7,
         validation_alias="RECALL_CONTEXT_HOP_DECAY",
     )
+    # Time-aware recall: score ×= (1-w) + w * 0.5^(age_days/half_life) and
+    # ×= (1-w) + w * usage. Weights 0 disable the corresponding factor.
+    recall_recency_weight: float = Field(
+        default=0.2, validation_alias="RECALL_RECENCY_WEIGHT"
+    )
+    recall_recency_half_life_days: float = Field(
+        default=30.0, validation_alias="RECALL_RECENCY_HALF_LIFE_DAYS"
+    )
+    recall_usage_weight: float = Field(
+        default=0.1, validation_alias="RECALL_USAGE_WEIGHT"
+    )
     duplicate_similarity_threshold: float = 0.85
     duplicate_max_group_size: int = 10
     duplicate_top_k: int = 100
@@ -104,6 +132,7 @@ class MCPServerConfig(BaseSettings):
 
     # Housekeeping
     cleanup_days_threshold: int = 90
+    stale_facts_days: int = 30  # get_brief: facts not recalled for N days
     log_ttl_days: int = 10
     log_cleanup_frequency: int = 10
 
@@ -124,11 +153,20 @@ class MCPServerConfig(BaseSettings):
     # Job: archive_old_facts
     job_archive_enabled: bool = False
     job_archive_cron: str = "0 3 * * 0"
+    # Also archive active facts not recalled for `stale_facts_days` (opt-in)
+    job_archive_stale_enabled: bool = Field(
+        default=False, validation_alias="JOB_ARCHIVE_STALE_ENABLED"
+    )
 
     # Job retry/backoff (shared)
     job_retry_max_attempts: int = 3
     job_retry_backoff_base: float = 2.0
     job_retry_backoff_max: float = 30.0
+
+    # Versioning: snapshot before update when the caller omits `versioning`
+    versioning_default: bool = Field(
+        default=False, validation_alias="VERSIONING_DEFAULT"
+    )
 
     # Validation limits (configurable via .env)
     max_text_length: int = 10_000  # Maximum text length in characters
