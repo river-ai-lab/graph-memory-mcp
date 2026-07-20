@@ -50,7 +50,10 @@ async def main():
             tools = await session.list_tools()
             print("Tools:", [t.name for t in tools.tools])
 
-            res = await session.call_tool("ensure_vector_indexes", arguments={})
+            # Indexes are created automatically on first search/write if missing.
+            # Admin ensure-indexes lives on HTTP /admin/ensure-indexes (or MCP when
+            # MCP_EXPOSE_ADMIN_TOOLS=true).
+            res = await session.call_tool("health_check", arguments={})
             dump_tool_result(res)
 
             res = await session.call_tool(
