@@ -1,5 +1,6 @@
 """Admin handlers for MCP Graph Memory (stats, health, summary)."""
 
+import hashlib
 import logging
 import time
 from typing import Any, Dict, Optional
@@ -226,7 +227,7 @@ def get_brief(
     )
 
 
-_EXPORT_LABELS = ("Fact", "Entity")
+_EXPORT_LABELS = ("Fact", "Entity", "FactVersion")
 
 
 @mcp_handler
@@ -278,9 +279,19 @@ def export_owner(
             if label == "FactVersion" and not include_versions:
                 continue
             props = dict(row[1] or {})
+            # Legacy FactVersion rows may lack uid — synthesize a stable one for import.
+            if label == "FactVersion" and not ensure_text(props.get("uid")):
+                fact_id = ensure_text(props.get("fact_id")) or ""
+                ts = props.get("version_timestamp") or ""
+                props["uid"] = hashlib.sha256(
+                    f"{fact_id}:{ts}".encode("utf-8")
+                ).hexdigest()[:32]
             embedding = props.pop("embedding", None)
             if include_embeddings and embedding is not None:
                 props["embedding"] = parse_embedding_value(embedding)
+            # FactVersion has no embedding corpus — never regenerate from text on import.
+            if label == "FactVersion":
+                props.pop("embedding", None)
             nodes.append({"label": label, "properties": props})
 
     relations = []
@@ -354,7 +365,7 @@ def import_owner(
             skipped += 1
             continue
         embedding = props.pop("embedding", None)
-        if (regenerate_embeddings or not embedding) and text:
+        if label != "FactVersion" and (regenerate_embeddings or not embedding) and text:
             embedding = db.get_embedding(text)
         props["owner_id"] = owner_id
         row = {"uid": uid, "props": props}

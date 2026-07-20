@@ -2,11 +2,15 @@
 
 Extraction stays with the agent (it is the LLM); the server provides a single
 reliable, idempotent write: source node, facts with provenance
-(`source.ref = "{document.ref}#{i}"`), EXTRACTED_FROM links, and triplets.
-Re-ingesting the same document updates facts in place instead of duplicating.
+(`source.ref = "{document.ref}#{fact.ref|hash(text)}"`), EXTRACTED_FROM links,
+and triplets. Re-ingesting the same fact ref updates in place instead of duplicating.
 """
 
+from __future__ import annotations
+
+import hashlib
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 from graph_memory_mcp.graph_memory.database import FalkorDBClient
@@ -27,6 +31,24 @@ logger = logging.getLogger(__name__)
 
 _INGEST_MAX_FACTS = 200
 _INGEST_MAX_TRIPLETS = 200
+_FACT_REF_RE = re.compile(r"^[a-zA-Z0-9_.:@/-]{1,128}$")
+
+
+def _fact_source_ref(doc_ref: str, fact: Dict[str, Any]) -> str:
+    """Stable provenance key: explicit fact.ref/id, else hash(text)."""
+    explicit = ensure_text(fact.get("ref") or fact.get("id"))
+    if explicit:
+        explicit = explicit.strip()
+        if explicit.startswith(f"{doc_ref}#"):
+            return explicit
+        if not _FACT_REF_RE.match(explicit):
+            raise ValueError(
+                "facts[].ref must be alphanumeric plus _.:@/- (or omit for hash)"
+            )
+        return f"{doc_ref}#{explicit}"
+    text = ensure_text(fact.get("text")) or ""
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+    return f"{doc_ref}#{digest}"
 
 
 @mcp_handler
@@ -43,8 +65,8 @@ def ingest_knowledge(
     """Persist knowledge extracted from one document/conversation.
 
     document: {ref (required), title?, uri?, type?}
-    facts: [{text (required), metadata?, ttl_days?, description?}]
-    triplets: [{subject, predicate, object (all required)}]
+    facts: [{text (required), ref?/id?, metadata?, ttl_days?, description?}]
+    triplets: [{subject, predicate, object (all required), metadata?}]
     """
     owner_id = normalize_owner_id(owner_id)
     facts = facts or []
@@ -104,11 +126,14 @@ def ingest_knowledge(
         return doc_result
     document_id = doc_result["node"]["node_id"]
 
-    # 2) Facts, idempotent by "{doc_ref}#{i}"; linked EXTRACTED_FROM -> document.
+    # 2) Facts, idempotent by stable ref; linked EXTRACTED_FROM -> document.
     fact_results: List[Dict[str, Any]] = []
     link_errors: List[Dict[str, Any]] = []
     for i, fact in enumerate(facts):
-        fact_ref = f"{doc_ref}#{i}"
+        try:
+            fact_ref = _fact_source_ref(doc_ref, fact)
+        except ValueError as exc:
+            return error_response(f"facts[{i}]: {exc}", code="memory_validation_error")
         result = upsert_node(
             db,
             config,

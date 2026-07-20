@@ -72,6 +72,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
         db = self.db_client
         mcp = self.mcp
         assert mcp is not None
+        default_owner = self.config.default_owner_id
 
         if self.config.mcp_expose_admin_tools:
 
@@ -90,7 +91,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
             description="Get graph statistics (node counts, etc.).",
             annotations=ToolAnnotations(readOnlyHint=True),
         )
-        def get_stats(owner_id: str = "default") -> dict:
+        def get_stats(owner_id: str = default_owner) -> dict:
             return mcp_handlers_admin.get_stats(db, owner_id=owner_id)
 
         @mcp.tool(
@@ -110,7 +111,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
             ),
             annotations=ToolAnnotations(readOnlyHint=True),
         )
-        def get_brief(owner_id: str = "default", limit: int = 10) -> dict:
+        def get_brief(owner_id: str = default_owner, limit: int = 10) -> dict:
             return mcp_handlers_admin.get_brief(db, owner_id=owner_id, limit=limit)
 
         if self.config.mcp_expose_admin_tools:
@@ -163,6 +164,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
         config = self.config
         mcp = self.mcp
         assert mcp is not None
+        default_owner = self.config.default_owner_id
 
         @mcp.tool(
             title="Create node",
@@ -183,7 +185,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
         def create_node(
             text: str,
             node_type: Literal["Fact", "Entity"] = "Fact",
-            owner_id: str = "default",
+            owner_id: str = default_owner,
             metadata: dict | None = None,
             source: dict | None = None,
             status: Literal["active", "outdated", "archived"] | None = None,
@@ -222,7 +224,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
             text: str,
             source: dict,
             node_type: Literal["Fact", "Entity"] = "Fact",
-            owner_id: str = "default",
+            owner_id: str = default_owner,
             metadata: dict | None = None,
             status: Literal["active", "outdated", "archived"] | None = None,
             ttl_days: float | None = None,
@@ -261,7 +263,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
         )
         def update_node(
             node_id: str,
-            owner_id: str = "default",
+            owner_id: str = default_owner,
             text: str | None = None,
             metadata: dict | None = None,
             source: dict | None = None,
@@ -295,24 +297,25 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
         config = self.config
         mcp = self.mcp
         assert mcp is not None
+        default_owner = self.config.default_owner_id
 
         @mcp.tool(
             title="Ingest knowledge",
             description=(
                 "Persist knowledge you extracted from one document/conversation in a "
                 "single call: creates a source node (document.ref required), facts "
-                "with provenance (source.ref = 'doc#N'), EXTRACTED_FROM links to the "
-                "source, and optional subject-predicate-object triplets. "
-                "Idempotent: re-ingesting the same document.ref updates facts in "
-                "place instead of duplicating. Extract first, then call once. "
-                "Check possible_duplicates in the response."
+                "with provenance (source.ref = 'doc#{fact.ref|hash(text)}'), "
+                "EXTRACTED_FROM links to the source, and optional triplets. "
+                "Prefer facts[].ref for stable ids across edits/reorders; omit ref "
+                "to key by text hash. Idempotent on fact ref. Extract first, then "
+                "call once. Check possible_duplicates in the response."
             ),
         )
         def ingest_knowledge(
             document: dict,
             facts: list[dict] | None = None,
             triplets: list[dict] | None = None,
-            owner_id: str = "default",
+            owner_id: str = default_owner,
             auto_link: bool = False,
         ) -> dict:
             return mcp_handlers_ingest.ingest_knowledge(
@@ -339,7 +342,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
         def create_nodes(
             items: list[dict],
             node_type: Literal["Fact", "Entity"] = "Fact",
-            owner_id: str = "default",
+            owner_id: str = default_owner,
         ) -> dict:
             return mcp_handlers_nodes.create_nodes(
                 db, config, items=items, node_type=node_type, owner_id=owner_id
@@ -357,7 +360,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
                 annotations=ToolAnnotations(readOnlyHint=True),
             )
             def export_owner(
-                owner_id: str = "default",
+                owner_id: str = default_owner,
                 include_embeddings: bool = True,
                 include_versions: bool = False,
                 offset: int = 0,
@@ -409,6 +412,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
         config = self.config
         mcp = self.mcp
         assert mcp is not None
+        default_owner = self.config.default_owner_id
 
         @mcp.tool(
             title="Search",
@@ -425,7 +429,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
         )
         def search(
             query: str,
-            owner_id: str = "default",
+            owner_id: str = default_owner,
             limit: int | None = None,
             node_types: list[str] | None = None,
             status: str | None = None,
@@ -458,7 +462,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
             annotations=ToolAnnotations(readOnlyHint=True),
         )
         def get_node(
-            node_id: str, owner_id: str = "default", as_of: int | None = None
+            node_id: str, owner_id: str = default_owner, as_of: int | None = None
         ) -> dict:
             return mcp_handlers_nodes.get_node(
                 db, node_id=node_id, owner_id=owner_id, as_of=as_of
@@ -472,7 +476,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
                 "For reversible removal of Facts, use mark_outdated instead."
             ),
         )
-        def delete_node(node_id: str, owner_id: str = "default") -> dict:
+        def delete_node(node_id: str, owner_id: str = default_owner) -> dict:
             return mcp_handlers_nodes.delete_node(
                 db, node_id=node_id, owner_id=owner_id
             )
@@ -487,7 +491,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
             ),
         )
         def mark_outdated(
-            fact_id: str, reason: str | None = None, owner_id: str = "default"
+            fact_id: str, reason: str | None = None, owner_id: str = default_owner
         ) -> dict:
             return mcp_handlers_nodes.mark_outdated(
                 db, fact_id=fact_id, reason=reason, owner_id=owner_id
@@ -502,7 +506,9 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
             ),
             annotations=ToolAnnotations(readOnlyHint=True),
         )
-        def get_node_change_history(node_id: str, owner_id: str = "default") -> dict:
+        def get_node_change_history(
+            node_id: str, owner_id: str = default_owner
+        ) -> dict:
             return mcp_handlers_nodes.get_node_change_history(
                 db, node_id=node_id, owner_id=owner_id
             )
@@ -521,6 +527,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
         config = self.config
         mcp = self.mcp
         assert mcp is not None
+        default_owner = self.config.default_owner_id
 
         @mcp.tool(
             title="Create triplet",
@@ -536,7 +543,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
             object_value: str,
             metadata: dict | None = None,
             fact_id: str | None = None,
-            owner_id: str = "default",
+            owner_id: str = default_owner,
         ) -> dict:
             return mcp_handlers_relations.create_triplet(
                 db,
@@ -561,7 +568,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
             subject: str | None = None,
             predicate: str | None = None,
             object_value: str | None = None,
-            owner_id: str = "default",
+            owner_id: str = default_owner,
             limit: int = 10,
         ) -> dict:
             return mcp_handlers_relations.search_triplets(
@@ -583,6 +590,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
         config = self.config
         mcp = self.mcp
         assert mcp is not None
+        default_owner = self.config.default_owner_id
 
         @mcp.tool(
             title="Create relation",
@@ -600,7 +608,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
             to_id: str,
             relation_type: str,
             properties: dict | None = None,
-            owner_id: str = "default",
+            owner_id: str = default_owner,
         ) -> dict:
             return mcp_handlers_relations.create_relation(
                 db,
@@ -623,7 +631,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
         def get_trace(
             from_id: str,
             to_id: str,
-            owner_id: str = "default",
+            owner_id: str = default_owner,
             max_depth: int = 5,
             directed: bool = True,
         ) -> dict:
@@ -648,7 +656,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
             from_id: str,
             to_id: str,
             relation_type: str | None = None,
-            owner_id: str = "default",
+            owner_id: str = default_owner,
         ) -> dict:
             return mcp_handlers_relations.unlink_facts(
                 db,
@@ -671,10 +679,11 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
         )
         def get_context(
             node_id: str,
-            owner_id: str = "default",
+            owner_id: str = default_owner,
             depth: int | None = None,
             max_nodes: int | None = None,
             offset: int = 0,
+            include_outdated: bool = False,
         ) -> dict:
             return mcp_handlers_graph.get_context(
                 db,
@@ -684,6 +693,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
                 depth=depth,
                 max_nodes=max_nodes,
                 offset=offset,
+                include_outdated=include_outdated,
             )
 
         @mcp.tool(
@@ -699,7 +709,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
         )
         def recall_context(
             query: str,
-            owner_id: str = "default",
+            owner_id: str = default_owner,
             depth: int | None = None,
             limit: int | None = None,
             max_nodes: int | None = None,
@@ -735,7 +745,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
         )
         def find_similar(
             fact_id: str,
-            owner_id: str = "default",
+            owner_id: str = default_owner,
             limit: int = 5,
             similarity_threshold: float | None = None,
         ) -> dict:
@@ -758,7 +768,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
         def create_summary_fact(
             fact_ids: list[str],
             summary_text: str,
-            owner_id: str = "default",
+            owner_id: str = default_owner,
             metadata: dict | None = None,
         ) -> dict:
             return mcp_handlers_admin.create_summary_fact(

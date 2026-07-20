@@ -31,13 +31,19 @@ def _doc_payload(ref: str) -> dict:
         "document": {"ref": ref, "title": "Planning meeting", "type": "conversation"},
         "facts": [
             {
+                "ref": "migration",
                 "text": "Client X migrates to PostgreSQL in Q3",
                 "metadata": {"tags": ["decision"]},
             },
-            {"text": "Budget for migration is approved"},
+            {"ref": "budget", "text": "Budget for migration is approved"},
         ],
         "triplets": [
-            {"subject": "Client X", "predicate": "USES", "object": "PostgreSQL"},
+            {
+                "subject": "Client X",
+                "predicate": "USES",
+                "object": "PostgreSQL",
+                "metadata": {"project": "GNN_", "created_by": "agent:test"},
+            },
         ],
     }
 
@@ -57,16 +63,21 @@ def test_ingest_knowledge_full_flow(db_client):
 
     # Facts carry provenance refs and are linked EXTRACTED_FROM -> document.
     fact_ids = [f["node_id"] for f in result["facts"]]
-    assert result["facts"][0]["ref"] == f"{doc_ref}#0"
+    assert result["facts"][0]["ref"] == f"{doc_ref}#migration"
+    assert result["facts"][1]["ref"] == f"{doc_ref}#budget"
     context = graph_mod.get_context(
         db_client, cfg, node_id=document_id, owner_id=owner, depth=1, max_nodes=20
     )
     extracted = [e for e in context["edges"] if e["relation_type"] == "EXTRACTED_FROM"]
     assert {e["from_id"] for e in extracted} == set(fact_ids)
 
-    # Triplet entities exist and are searchable.
+    # Triplet entities exist, carry metadata, and are searchable.
     triplets = rel.search_triplets(db_client, subject="Client X", owner_id=owner)
     assert len(triplets["triplets"]) == 1
+    subj = nodes.get_node(
+        db_client, node_id=triplets["triplets"][0]["subject_id"], owner_id=owner
+    )
+    assert subj["node"]["metadata"].get("project") == "GNN_"
 
 
 @pytest.mark.integration
@@ -348,6 +359,121 @@ def test_admin_owner_routes(db_client):
 
         pruned = client.post("/admin/prune-empty-owners")
         assert pruned.json()["success"] is True
+
+
+@pytest.mark.integration
+def test_ingest_hash_ref_stable_under_reorder(db_client):
+    """Without facts[].ref, key by hash(text) — reorder does not fork nodes."""
+    cfg = load_mcp_server_config()
+    owner = f"pytest_hashref_{uuid.uuid4().hex[:8]}"
+    doc_ref = f"doc-{uuid.uuid4().hex[:8]}"
+    facts_a = [
+        {"text": "Alpha durable fact"},
+        {"text": "Beta durable fact"},
+    ]
+    first = ingest_knowledge(
+        db_client,
+        cfg,
+        owner_id=owner,
+        document={"ref": doc_ref},
+        facts=facts_a,
+    )
+    second = ingest_knowledge(
+        db_client,
+        cfg,
+        owner_id=owner,
+        document={"ref": doc_ref},
+        facts=list(reversed(facts_a)),
+    )
+    assert {f["node_id"] for f in first["facts"]} == {
+        f["node_id"] for f in second["facts"]
+    }
+    assert all(f["operation"] == "updated" for f in second["facts"])
+
+
+@pytest.mark.integration
+def test_bfs_skips_outdated_neighbors_unless_flag(db_client):
+    cfg = load_mcp_server_config()
+    owner = f"pytest_bfs_od_{uuid.uuid4().hex[:8]}"
+    hub = nodes.create_node(
+        db_client, cfg, text="bfs hub", owner_id=owner, auto_link=False
+    )["node"]["node_id"]
+    active = nodes.create_node(
+        db_client, cfg, text="active neighbor", owner_id=owner, auto_link=False
+    )["node"]["node_id"]
+    stale = nodes.create_node(
+        db_client, cfg, text="outdated neighbor", owner_id=owner, auto_link=False
+    )["node"]["node_id"]
+    for nid in (active, stale):
+        rel.create_relation(
+            db_client,
+            from_id=hub,
+            to_id=nid,
+            relation_type="RELATED_TO",
+            owner_id=owner,
+            config=cfg,
+        )
+    nodes.mark_outdated(db_client, fact_id=stale, owner_id=owner, reason="test")
+
+    filtered = graph_mod.get_context(
+        db_client, cfg, node_id=hub, owner_id=owner, depth=1, max_nodes=20
+    )
+    ids = {n["node_id"] for n in filtered["nodes"]}
+    assert hub in ids and active in ids and stale not in ids
+
+    full = graph_mod.get_context(
+        db_client,
+        cfg,
+        node_id=hub,
+        owner_id=owner,
+        depth=1,
+        max_nodes=20,
+        include_outdated=True,
+    )
+    assert stale in {n["node_id"] for n in full["nodes"]}
+
+
+@pytest.mark.integration
+def test_export_import_fact_versions_roundtrip(db_client):
+    cfg = load_mcp_server_config()
+    src = f"pytest_verexp_{uuid.uuid4().hex[:8]}"
+    dst = f"{src}_copy"
+    created = nodes.create_node(
+        db_client, cfg, text="version one", owner_id=src, auto_link=False
+    )
+    node_id = created["node"]["node_id"]
+    nodes.update_node(
+        db_client,
+        node_id=node_id,
+        owner_id=src,
+        text="version two",
+        versioning=True,
+    )
+    snap_ts = int(
+        nodes.get_node_change_history(db_client, node_id=node_id, owner_id=src)[
+            "versions"
+        ][0]["version_timestamp"]
+    )
+    exported = admin.export_owner(db_client, owner_id=src, include_versions=True)
+    labels = {n["label"] for n in exported["nodes"]}
+    assert "FactVersion" in labels
+    assert all(
+        n["properties"].get("uid")
+        for n in exported["nodes"]
+        if n["label"] == "FactVersion"
+    )
+
+    imported = admin.import_owner(
+        db_client,
+        owner_id=dst,
+        nodes=exported["nodes"],
+        relations=exported["relations"],
+    )
+    assert imported["skipped"] == 0
+    assert imported["imported_nodes"] >= 2
+
+    past = nodes.get_node(db_client, node_id=node_id, owner_id=dst, as_of=snap_ts - 1)
+    assert past["success"] and "version one" in past["node"]["text"]
 
 
 @pytest.mark.integration

@@ -782,6 +782,7 @@ def update_node(
         MATCH (n:Fact)
         WHERE n.uid = $node_id AND n.owner_id = $owner_id
         CREATE (v:FactVersion {
+            uid: $version_uid,
             fact_id: n.uid,
             owner_id: n.owner_id,
             text: n.text,
@@ -795,9 +796,16 @@ def update_node(
             version_timestamp: timestamp(),
             original_created_at: n.created_at
         })
-        RETURN id(v) as version_id
+        RETURN v.uid as version_id
         """
-        db.query(version_query, params={"node_id": node_id, "owner_id": owner_id})
+        db.query(
+            version_query,
+            params={
+                "node_id": node_id,
+                "owner_id": owner_id,
+                "version_uid": new_uid(),
+            },
+        )
 
     # Build SET clauses
     set_clauses = ["n.updated_at = timestamp()"]

@@ -61,6 +61,7 @@ class GraphMemorySimpleMCP(GraphMemoryMCP):
         config = self.config
         mcp = self.mcp
         assert mcp is not None
+        default_owner = self.config.default_owner_id
 
         @mcp.tool(
             title="Create node",
@@ -82,7 +83,7 @@ class GraphMemorySimpleMCP(GraphMemoryMCP):
         def create_node(
             text: str,
             node_type: Literal["Fact", "Entity"] = "Fact",
-            owner_id: str = "default",
+            owner_id: str = default_owner,
             metadata: dict | None = None,
             ref: str | None = None,
             provenance_type: str | None = None,
@@ -135,7 +136,7 @@ class GraphMemorySimpleMCP(GraphMemoryMCP):
             text: str,
             ref: str,
             node_type: Literal["Fact", "Entity"] = "Fact",
-            owner_id: str = "default",
+            owner_id: str = default_owner,
             metadata: dict | None = None,
             provenance_type: str | None = None,
             uri: str | None = None,
@@ -189,7 +190,7 @@ class GraphMemorySimpleMCP(GraphMemoryMCP):
         )
         def update_node(
             node_id: str,
-            owner_id: str = "default",
+            owner_id: str = default_owner,
             text: str | None = None,
             metadata: dict | None = None,
             ref: str | None = None,

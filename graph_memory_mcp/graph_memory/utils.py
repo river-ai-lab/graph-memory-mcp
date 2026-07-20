@@ -17,18 +17,17 @@ def new_uid() -> str:
     return uuid.uuid4().hex
 
 
-def normalize_owner_id(owner_id: Optional[str]) -> str:
+def normalize_owner_id(owner_id: Optional[str], *, default: str = "default") -> str:
     """Normalize and validate owner_id; raises ValueError on invalid format."""
-    default_owner_id = "default"
     if owner_id is None:
-        return default_owner_id
+        return default
     if isinstance(owner_id, bytes):
         value = owner_id.decode("utf-8", errors="replace").strip()
     elif isinstance(owner_id, str):
         value = owner_id.strip()
     else:
         value = str(owner_id).strip()
-    value = value or default_owner_id
+    value = value or default
     if not _OWNER_ID_RE.match(value):
         raise ValueError("Invalid owner_id format (use alphanumeric, -, _, @)")
     return value

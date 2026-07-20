@@ -42,36 +42,36 @@ Defaults: `owner_id="default"` unless noted. Pass `owner_id` explicitly.
 
 ### Writes
 
-**`create_node`** — `text`; opt: `node_type`, `owner_id`, `metadata`, `description`, `status`, `ttl_days`, `source`, `entity_type`, `auto_link`, `semantic_threshold`, `links[{to_id,relation_type,properties?}]`.  
+**`create_node`** — `text`; opt: `node_type`, `owner_id`, `metadata`, `description`, `status`, `ttl_days`, `source`, `entity_type`, `auto_link`, `semantic_threshold`, `links[{to_id,relation_type,properties?}]`.
 → `{success, node, possible_duplicates?, link_errors?, link_warnings?}`
 
 **`upsert_node`** — `text`, `source.ref`; same opts + `versioning`. Redis-locked per `(owner_id,node_type,ref)`. → `{success, node, operation}`
 
 **`create_nodes`** — `items[{text,…}]` ≤200; opt `node_type`, `owner_id`. No auto_link / duplicates.
 
-**`ingest_knowledge`** — agent extracts; server writes. `document{ref,…}`; opt `facts[{text,…}]`, `triplets[{subject,predicate,object}]`, `owner_id`, `auto_link=false`. Idempotent on `document.ref` (≤200 facts/triplets).
+**`ingest_knowledge`** — agent extracts; server writes. `document{ref,…}`; opt `facts[{text, ref?,…}]`, `triplets[{subject,predicate,object,metadata?}]`, `owner_id`, `auto_link=false`. Fact key: `facts[].ref` or `hash(text)` → `doc#…` (≤200 facts/triplets).
 
-**`update_node`** — `node_id`; opt fields + `versioning` (default `VERSIONING_DEFAULT`).  
-**`delete_node`** — hard delete (+ FactVersion cascade).  
+**`update_node`** — `node_id`; opt fields + `versioning` (default `VERSIONING_DEFAULT`).
+**`delete_node`** — hard delete (+ FactVersion cascade).
 **`mark_outdated`** — `fact_id`, opt `reason`.
 
-**`create_relation`** / **`delete_relation`** — `from_id`, `to_id`, `relation_type` (delete: type optional).  
-**`create_triplet`** / **`search_triplets`** — entities merge by `name_norm`.  
+**`create_relation`** / **`delete_relation`** — `from_id`, `to_id`, `relation_type` (delete: type optional).
+**`create_triplet`** / **`search_triplets`** — entities merge by `name_norm`.
 **`create_summary_fact`** — `fact_ids`, `summary_text`.
 
 ### Reads
 
-**`get_node`** — `node_id`; opt `as_of` (unix ms, needs versioning snapshots).  
-**`get_node_change_history`** — `node_id`.  
-**`search`** — `query`; opt `limit` (cap `MAX_SEARCH_LIMIT`), `node_types`, `status`, `similarity_threshold`, `include_outdated`, `search_type` (`pre_filter`|`post_filter`), `metadata_filter` (`project`/`created_by`/`type`/`tags`/`confidence_min`). Bumps access counters.  
-**`find_similar`** — `fact_id`.  
-**`get_context`** — `node_id`; opt `depth`, `max_nodes`, `offset` (`offset>0` → paginated legacy path). Iterative BFS when `offset=0`.  
-**`recall_context`** — shortcut search+expand (small graphs). Opt `depth`, `limit`, `max_nodes`, `include_paths`, `metadata_filter`, time-aware ranking weights.  
-**`get_trace`** — `from_id`, `to_id`; opt `max_depth`, `directed` (default true).  
-**`get_brief`** — warm-up: top facts, `CONTRADICTS`, stale facts, stats.  
+**`get_node`** — `node_id`; opt `as_of` (unix ms, needs versioning snapshots).
+**`get_node_change_history`** — `node_id`.
+**`search`** — `query`; opt `limit` (cap `MAX_SEARCH_LIMIT`), `node_types`, `status`, `similarity_threshold`, `include_outdated`, `search_type` (`pre_filter`|`post_filter`), `metadata_filter` (`project`/`created_by`/`type`/`tags`/`confidence_min`). Bumps access counters.
+**`find_similar`** — `fact_id`.
+**`get_context`** — `node_id`; opt `depth`, `max_nodes`, `offset`, `include_outdated` (default false — skip outdated/expired neighbors). Iterative BFS when `offset=0`.
+**`recall_context`** — shortcut search+expand (small graphs). Opt `depth`, `limit`, `max_nodes`, `include_paths`, `metadata_filter`, time-aware ranking weights.
+**`get_trace`** — `from_id`, `to_id`; opt `max_depth`, `directed` (default true).
+**`get_brief`** — warm-up: top facts, `CONTRADICTS`, stale facts, stats.
 **`get_stats`** / **`health_check`** — Fact/Entity counts; component flags + `healthy`.
 
 ## Admin (HTTP; not MCP by default)
 
-See [admin.md](./admin.md): `/admin/health`, `/admin/ensure-indexes`, export/import, delete/prune owners, `/metrics`.  
+See [admin.md](./admin.md): `/admin/health`, `/admin/ensure-indexes`, export/import, delete/prune owners, `/metrics`.
 Set `MCP_EXPOSE_ADMIN_TOOLS=true` to also expose `test_connection`, `ensure_vector_indexes`, `export_owner`, `import_owner` as MCP tools.

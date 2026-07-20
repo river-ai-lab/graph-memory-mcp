@@ -11,7 +11,9 @@ class MCPServerConfig(BaseSettings):
     Memory MCP server configuration (single source of truth).
     """
 
-    default_owner_id: str = "default"
+    default_owner_id: str = Field(
+        default="default", validation_alias="DEFAULT_OWNER_ID"
+    )
 
     model_config = SettingsConfigDict(
         case_sensitive=False,

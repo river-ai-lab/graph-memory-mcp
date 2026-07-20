@@ -37,6 +37,11 @@ Owner-scoped memory hardening on top of 0.1.1. **Breaking:** one FalkorDB graph 
 - `delete_node` cascades `FactVersion`; jobs skip invalid owners / no owner_id interpolation
 - `health_check` aggregate `healthy`; `get_stats` counts only Fact/Entity
 - `recall_context` true `min_hop`; `include_paths` default `false`
+- MCP tool default `owner_id` respects `DEFAULT_OWNER_ID` / `default_owner_id`
+- `create_triplet` writes `metadata` (reserved keys on create; coalesce on match)
+- `get_context` / BFS skip outdated/expired neighbors unless `include_outdated=true`
+- `ingest_knowledge` fact keys: `facts[].ref` or `hash(text)` (not list index)
+- `import_owner` accepts `FactVersion`; versions get `uid` for round-trip
 
 ## [0.1.1] - 2026-06-06
 

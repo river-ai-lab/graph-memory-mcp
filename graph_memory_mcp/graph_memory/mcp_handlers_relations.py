@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional
 from graph_memory_mcp.graph_memory.database import FalkorDBClient
 from graph_memory_mcp.graph_memory.relation_policy import evaluate_relation_policy
 from graph_memory_mcp.graph_memory.utils import (
+    dump_json,
     ensure_text,
     error_response,
     execute_query,
@@ -117,8 +118,18 @@ def create_triplet(
 
     subj_emb_expr = "vecf32($subj_emb)" if subj_emb else "NULL"
     obj_emb_expr = "vecf32($obj_emb)" if obj_emb else "NULL"
+    # Lazy import: nodes ↔ relations would otherwise cycle at module load.
+    from graph_memory_mcp.graph_memory.mcp_handlers_nodes import metadata_promoted_props
+
+    try:
+        promoted = metadata_promoted_props(metadata)
+    except ValueError as exc:
+        return error_response(str(exc), code="memory_validation_error")
+    metadata_str = dump_json(metadata or {})
     # Entities are merged on normalized name so "Redis" and " redis " unify;
     # original casing is preserved in `text`.
+    # Metadata: full write on CREATE; on MATCH only fill reserved keys when provided
+    # (do not wipe existing free-form metadata_str).
     query = f"""
     MERGE (s:Entity {{name_norm: $subject_norm, owner_id: $owner_id}})
     ON CREATE SET
@@ -127,7 +138,18 @@ def create_triplet(
         s.created_at = timestamp(),
         s.embedding = {subj_emb_expr},
         s.status = 'active',
-        s.metadata_str = '{{}}'
+        s.metadata_str = $metadata_str,
+        s.project = $project,
+        s.created_by = $created_by,
+        s.tags = $tags,
+        s.meta_type = $meta_type,
+        s.confidence = $confidence
+    ON MATCH SET
+        s.project = CASE WHEN $project IS NULL THEN s.project ELSE $project END,
+        s.created_by = CASE WHEN $created_by IS NULL THEN s.created_by ELSE $created_by END,
+        s.tags = CASE WHEN $tags IS NULL THEN s.tags ELSE $tags END,
+        s.meta_type = CASE WHEN $meta_type IS NULL THEN s.meta_type ELSE $meta_type END,
+        s.confidence = CASE WHEN $confidence IS NULL THEN s.confidence ELSE $confidence END
     MERGE (o:Entity {{name_norm: $object_norm, owner_id: $owner_id}})
     ON CREATE SET
         o.uid = $obj_uid,
@@ -135,7 +157,18 @@ def create_triplet(
         o.created_at = timestamp(),
         o.embedding = {obj_emb_expr},
         o.status = 'active',
-        o.metadata_str = '{{}}'
+        o.metadata_str = $metadata_str,
+        o.project = $project,
+        o.created_by = $created_by,
+        o.tags = $tags,
+        o.meta_type = $meta_type,
+        o.confidence = $confidence
+    ON MATCH SET
+        o.project = CASE WHEN $project IS NULL THEN o.project ELSE $project END,
+        o.created_by = CASE WHEN $created_by IS NULL THEN o.created_by ELSE $created_by END,
+        o.tags = CASE WHEN $tags IS NULL THEN o.tags ELSE $tags END,
+        o.meta_type = CASE WHEN $meta_type IS NULL THEN o.meta_type ELSE $meta_type END,
+        o.confidence = CASE WHEN $confidence IS NULL THEN o.confidence ELSE $confidence END
     MERGE (s)-[r:{rel_type}]->(o)
     ON CREATE SET r.created_at = timestamp()
     RETURN s.uid as subject_id, o.uid as object_id, id(r) as relation_id
@@ -149,6 +182,8 @@ def create_triplet(
         "owner_id": owner_id,
         "subj_uid": new_uid(),
         "obj_uid": new_uid(),
+        "metadata_str": metadata_str,
+        **promoted,
     }
     if subj_emb:
         params["subj_emb"] = subj_emb

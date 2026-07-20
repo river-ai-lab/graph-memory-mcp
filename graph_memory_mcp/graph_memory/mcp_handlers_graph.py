@@ -66,6 +66,12 @@ _BFS_INIT_QUERY = """
            coalesce(n.updated_at, n.created_at), coalesce(n.access_count, 0)
 """
 
+# Neighbors only (seeds always loaded): active and not past expires_at.
+_ACTIVE_NEIGHBOR = (
+    "(coalesce(m.status, 'active') = 'active' "
+    "AND (m.expires_at IS NULL OR m.expires_at > timestamp()))"
+)
+
 
 def _bfs_expand(
     db: FalkorDBClient,
@@ -74,6 +80,7 @@ def _bfs_expand(
     seed_labels: Dict[str, Dict[str, int]],
     depth: int,
     budget: int,
+    include_outdated: bool = False,
 ) -> Dict[str, Dict[str, Any]]:
     """Iterative multi-source BFS with a total node budget.
 
@@ -97,6 +104,7 @@ def _bfs_expand(
             "seed_hops": dict(seed_labels.get(uid, {uid: 0})),
         }
 
+    status_filter = "" if include_outdated else f" AND {_ACTIVE_NEIGHBOR}"
     frontier = list(visited)
     for hop in range(1, depth + 1):
         remaining = budget - len(visited)
@@ -105,7 +113,7 @@ def _bfs_expand(
         step_query = f"""
     MATCH (n)-[r]-(m)
     WHERE n.uid IN $frontier AND m.owner_id = $owner_id
-      AND NOT m.uid IN $seen
+      AND NOT m.uid IN $seen{status_filter}
     WITH m, collect(DISTINCT n.uid) AS parents
     RETURN m.uid, labels(m)[0], m.text,
            coalesce(m.updated_at, m.created_at), coalesce(m.access_count, 0),
@@ -207,6 +215,7 @@ def get_context(
     depth: Optional[int] = None,
     max_nodes: Optional[int] = None,
     offset: int = 0,
+    include_outdated: bool = False,
 ) -> Dict:
     """Get subgraph context around a node."""
     owner_id = normalize_owner_id(owner_id)
@@ -221,6 +230,14 @@ def get_context(
 
     nodes: Dict[str, Dict[str, Any]] = {}
     edges: List[Dict] = []
+    neighbor_ok = (
+        "true"
+        if include_outdated
+        else (
+            "(coalesce(connected.status, 'active') = 'active'"
+            " AND (connected.expires_at IS NULL OR connected.expires_at > timestamp()))"
+        )
+    )
 
     if offset == 0:
         # Iterative BFS with a node budget — no [*0..depth] path explosion.
@@ -230,6 +247,7 @@ def get_context(
             seed_labels={node_id: {node_id: 0}},
             depth=depth,
             budget=effective_max_nodes,
+            include_outdated=include_outdated,
         )
         for uid, record in visited.items():
             nodes[uid] = {
@@ -245,6 +263,7 @@ def get_context(
     WHERE center.uid = $node_id
       AND center.owner_id = $owner_id
       AND connected.owner_id = $owner_id
+      AND (connected.uid = center.uid OR {neighbor_ok})
     WITH DISTINCT connected
     ORDER BY id(connected)
     SKIP {offset}
@@ -432,6 +451,7 @@ def recall_context(
         seed_labels={str(s["node_id"]): {str(s["node_id"]): 0} for s in seeds},
         depth=depth,
         budget=effective_max_nodes,
+        include_outdated=include_outdated,
     )
 
     expanded: List[Dict] = []
