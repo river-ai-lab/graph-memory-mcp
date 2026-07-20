@@ -2,11 +2,56 @@
 
 from __future__ import annotations
 
-from typing import List, Literal, Optional
-
-from graph_memory_mcp.graph_memory.utils import escape_value, format_vecf32
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 SearchType = Literal["pre_filter", "post_filter"]
+
+_METADATA_FILTER_KEYS = frozenset(
+    {"type", "tags", "confidence_min", "project", "created_by"}
+)
+
+
+def build_metadata_filter_clauses(
+    metadata_filter: Optional[Dict[str, Any]],
+    *,
+    node_alias: str = "node",
+    param_prefix: str = "mf_",
+) -> Tuple[str, Dict[str, Any]]:
+    """Cypher clauses over promoted metadata properties.
+
+    Supported: `project` / `created_by` / `type` (equality), `tags`
+    (membership, all must be present), `confidence_min` (>=).
+    Raises ValueError on unsupported keys. Runs natively in FalkorDB — no
+    client-side filtering.
+    """
+    if not metadata_filter:
+        return "", {}
+    unknown = set(metadata_filter) - _METADATA_FILTER_KEYS
+    if unknown:
+        raise ValueError(
+            f"Unsupported metadata_filter keys: {sorted(unknown)}; "
+            f"allowed: {sorted(_METADATA_FILTER_KEYS)}"
+        )
+    clauses: list[str] = []
+    params: Dict[str, Any] = {}
+    for key, prop in (
+        ("project", "project"),
+        ("created_by", "created_by"),
+        ("type", "meta_type"),
+    ):
+        if (value := metadata_filter.get(key)) is not None:
+            clauses.append(f" AND {node_alias}.{prop} = ${param_prefix}{key}")
+            params[f"{param_prefix}{key}"] = str(value)
+    tags = metadata_filter.get("tags")
+    if tags is not None:
+        tags = [tags] if isinstance(tags, str) else list(tags)
+        for i, tag in enumerate(tags):
+            clauses.append(f" AND ${param_prefix}tag{i} IN {node_alias}.tags")
+            params[f"{param_prefix}tag{i}"] = str(tag)
+    if (conf_min := metadata_filter.get("confidence_min")) is not None:
+        clauses.append(f" AND {node_alias}.confidence >= ${param_prefix}conf")
+        params[f"{param_prefix}conf"] = float(conf_min)
+    return "".join(clauses), params
 
 
 def normalize_search_type(
@@ -31,10 +76,12 @@ def _property_filter_clauses(
     include_outdated: bool,
     status: Optional[str],
     node_alias: str = "node",
-) -> str:
+) -> Tuple[str, Dict[str, Any]]:
     clauses: list[str] = []
+    params: Dict[str, Any] = {}
     if status:
-        clauses.append(f" AND {node_alias}.status = '{escape_value(status)}'")
+        clauses.append(f" AND {node_alias}.status = $status")
+        params["status"] = status
     elif not include_outdated:
         clauses.append(
             f" AND ({node_alias}.status IS NULL OR {node_alias}.status = 'active')"
@@ -45,7 +92,7 @@ def _property_filter_clauses(
             clauses.append(
                 f" AND ({node_alias}.expires_at IS NULL OR {node_alias}.expires_at > timestamp())"
             )
-    return "".join(clauses)
+    return "".join(clauses), params
 
 
 def build_owner_scoped_similarity_query(
@@ -57,27 +104,40 @@ def build_owner_scoped_similarity_query(
     max_distance: float,
     include_outdated: bool = False,
     status: Optional[str] = None,
-    exclude_node_id: Optional[int] = None,
-) -> str:
-    """Cypher: MATCH owner-scoped nodes, exact vec.cosineDistance, ORDER BY score."""
-    property_filters = _property_filter_clauses(
+    exclude_node_id: Optional[str] = None,
+    metadata_filter: Optional[Dict[str, Any]] = None,
+) -> Tuple[str, Dict[str, Any]]:
+    """Cypher + params: owner-scoped nodes, exact vec.cosineDistance, ORDER BY score."""
+    property_filters, params = _property_filter_clauses(
         node_type,
         include_outdated=include_outdated,
         status=status,
     )
+    meta_clauses, meta_params = build_metadata_filter_clauses(metadata_filter)
+    property_filters += meta_clauses
+    params.update(meta_params)
     exclude_clause = ""
     if exclude_node_id is not None:
-        exclude_clause = f" AND id(node) <> {int(exclude_node_id)}"
+        exclude_clause = " AND node.uid <> $exclude_uid"
+        params["exclude_uid"] = str(exclude_node_id)
 
-    return f"""
+    params.update(
+        {
+            "owner_id": owner_id,
+            "embedding": [float(v) for v in embedding],
+            "max_distance": float(max_distance),
+        }
+    )
+
+    query = f"""
     MATCH (node:{node_type})
-    WHERE node.owner_id = '{escape_value(owner_id)}'
+    WHERE node.owner_id = $owner_id
       AND node.embedding IS NOT NULL
     {property_filters}
-    WITH node, vec.cosineDistance(node.embedding, {format_vecf32(embedding)}) AS score
-    WHERE score <= {max_distance}{exclude_clause}
+    WITH node, vec.cosineDistance(node.embedding, vecf32($embedding)) AS score
+    WHERE score <= $max_distance{exclude_clause}
     RETURN
-        id(node) as node_id,
+        node.uid as node_id,
         '{node_type}' as node_type,
         node.text as text,
         node.status as status,
@@ -87,3 +147,4 @@ def build_owner_scoped_similarity_query(
     ORDER BY score ASC
     LIMIT {int(limit)}
     """
+    return query, params

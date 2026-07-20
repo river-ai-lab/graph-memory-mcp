@@ -203,9 +203,13 @@ All other tools (search, triplets, graph traversal, admin, jobs via config, etc.
   - optional `properties` or `metadata` (edge properties)
 
 **Response:** `{"success": true, "node": {...}}`
-May also include `link_errors` (policy/validation failures per link) and `link_warnings` (policy `warn` mode). The node is still created when inline links fail.
+May also include:
+- `possible_duplicates: [{node_id, text, similarity}]` — top similar active same-owner nodes above `DUPLICATE_SIMILARITY_THRESHOLD`; a server-side backstop for the "search before create" policy
+- `link_errors` (policy/validation failures per link) and `link_warnings` (policy `warn` mode). The node is still created when inline links fail.
 
 **Errors:** `memory_validation_error`, `memory_service_error`
+
+> **Node IDs**: all tools accept and return a stable opaque `node_id` (`uid` property, UUID hex). It never changes and is never reused after deletion. Legacy nodes get a `uid` backfilled automatically at server startup.
 
 #### ensure_vector_indexes
 **Required:** (none)
@@ -237,15 +241,54 @@ May also include `link_errors` (policy/validation failures per link) and `link_w
 May also include `link_errors` / `link_warnings` when inline `links` fail policy (node is still created or updated).
 **Errors:** `memory_validation_error`, `memory_service_error`
 
+#### ingest_knowledge
+Persist agent-extracted knowledge from one document/conversation in a single call. The **agent extracts** (facts, triplets); the server writes reliably and idempotently.
+
+**Required:**
+- `document: dict` — `{ref (required), title?, uri?, type?}`; a source Entity node is upserted by `ref`
+
+**Optional:**
+- `facts: list[dict]` — `{text (required), metadata?, ttl_days?, description?}`; each fact is upserted with `source.ref = "{document.ref}#{i}"` and linked `EXTRACTED_FROM` → document
+- `triplets: list[dict]` — `{subject, predicate, object}`; entities merge by normalized name
+- `owner_id: str = "default"`
+- `auto_link: bool = false`
+
+Re-ingesting the same `document.ref` **updates facts in place** (same node ids) instead of duplicating. Limits: ≤200 facts, ≤200 triplets per call.
+
+**Response:** `{"success": true, "document_id", "document_operation", "facts": [{node_id, ref, operation, possible_duplicates?}], "triplets": [...], "fact_count", "triplet_count", "link_errors"?}`
+**Errors:** `memory_validation_error`, `memory_service_error`
+
+#### create_nodes
+Bulk ingest: up to 200 nodes of one type in a single query with batched embeddings. No `auto_link` / `links` / `possible_duplicates` — link explicitly afterwards.
+
+**Required:**
+- `items: list[dict]` — each `{text, description?, metadata?, status?, ttl_days?}`
+
+**Optional:**
+- `node_type: str = "Fact"`
+- `owner_id: str = "default"`
+
+**Response:** `{"success": true, "nodes": [{node_id, text}], "count": int}`
+**Errors:** `memory_validation_error`, `memory_service_error`
+
+#### export_owner / import_owner
+Backup / migration of an owner scope. Export returns JSON-serializable `nodes` (`{label, properties}` incl. embeddings by default) and `relations` (`{from_id, relation_type, to_id, properties}`) — write list items as lines for JSONL. Import merges nodes by `uid` (idempotent); embeddings come from the payload or are recomputed when missing / `regenerate_embeddings=true`.
+
+**export_owner:** `owner_id`, `include_embeddings: bool = true`, `include_versions: bool = false`; pagination for large owners: `limit`, `offset`, `section: "nodes" | "relations"` — response then carries `has_more` / `next_offset` (page nodes first, then relations)
+**import_owner:** `owner_id` (required), `nodes` (required), `relations?`, `regenerate_embeddings: bool = false`; nodes/relations are merged in UNWIND batches of 200 (grouped by label / relation type)
+
+**Errors:** `memory_service_error`
+
 #### get_node
 **Required:**
 - `node_id: str`
 
 **Optional:**
 - `owner_id: str = "default"`
+- `as_of: int | None = None` — unix ms; returns the node state at that time using `FactVersion` snapshots (reliable only for updates made with `versioning=true`). Response then includes `as_of` and, when a snapshot applied, `node.snapshot_timestamp`.
 
 **Response:** `{"success": true, "node": {...}}`
-**Errors:** `memory_not_found`, `memory_service_error`
+**Errors:** `memory_not_found` (also when the node did not exist at `as_of`), `memory_service_error`
 
 #### update_node
 **Required:**
@@ -259,7 +302,7 @@ May also include `link_errors` / `link_warnings` when inline `links` fail policy
 - `status: str | None = None` — "active" | "outdated" | "archived"
 - `ttl_days: float | None = None`
 - `entity_type: str | None = None` (Entities only)
-- `versioning: bool = False` — stores a snapshot before update and auto-increments `source.version` if omitted
+- `versioning: bool | None = None` — stores a snapshot before update and auto-increments `source.version`; when omitted, falls back to config `VERSIONING_DEFAULT` (default false)
 
 **Response:** `{"success": true, "node": {...}}`
 **Errors:** `memory_validation_error`, `memory_not_found`, `memory_service_error`
@@ -287,7 +330,7 @@ May also include `link_errors` / `link_warnings` when inline `links` fail policy
 
 #### search
 
-Semantic similarity over Facts and Entities. See [memory_policies_for_LLM.md](./memory_policies_for_LLM.md) § “How to use search”. Two modes via `search_type`: **`pre_filter`** (filter by owner first — recommended for large / multi-tenant graphs) and **`post_filter`** (global ANN then filter — fine for small graphs). Server default: config `SEARCH_TYPE` (env), overridable per call. For `post_filter`, ANN candidate pool size: `POST_FILTER_ANN_K_MIN` / `POST_FILTER_ANN_K_MAX` (env).
+Semantic similarity over Facts and Entities. See [memory_policies_for_LLM.md](./memory_policies_for_LLM.md) § Recall. Two modes via `search_type`: **`pre_filter`** (exact scan inside the owner graph — fine up to ~10⁵ nodes) and **`post_filter`** (ANN inside the owner graph, then filter — preferred for large owner corpora). Server default: config `SEARCH_TYPE` (env), overridable per call. For `post_filter`, ANN candidate pool size: `POST_FILTER_ANN_K_MIN` / `POST_FILTER_ANN_K_MAX` (env).
 
 **Required:**
 - `query: str`
@@ -300,9 +343,14 @@ Semantic similarity over Facts and Entities. See [memory_policies_for_LLM.md](./
 - `similarity_threshold: float | None = None`
 - `include_outdated: bool = False`
 - `search_type: str | None = None` — `pre_filter` | `post_filter`; falls back to config `SEARCH_TYPE` when omitted
+- `metadata_filter: dict | None = None` — native (in-DB) filter over promoted metadata keys. Supported: `project` / `created_by` / `type` (equality), `tags` (str or list — every tag must be present in `metadata.tags`), `confidence_min` (float, `metadata.confidence >= x`). `limit` is capped by `MAX_SEARCH_LIMIT` (default 100).
 
 **Response:** `{"success": true, "results": [...], "facts": [...], "entities": [...]}`
-**Errors:** `memory_service_error`
+**Errors:** `memory_validation_error` (unknown filter keys), `memory_service_error`
+
+> **Reserved metadata keys** — typed, promoted to flat node properties at write time, filterable, indexed (`project` has a range index): `project` (soft partition inside an owner), `created_by` (attribution, `"user:<id>"` / `"agent:<id>"`), `tags`, `type`, `confidence`. Wrong types are rejected with `memory_validation_error`; all other metadata keys are free-form. Filters run inside the DB before vector scoring in `pre_filter` — no client-side filtering. Successful `search` / `recall_context` also bump `access_count` / `last_accessed_at` on returned nodes (see `get_brief.stale_facts`).
+>
+> Scoping model: `owner_id` = hard isolation (own graph) → `metadata.project` = filter inside owner → `metadata.created_by` = attribution. See [memory_policies_for_LLM.md](./memory_policies_for_LLM.md) § Scoping.
 
 #### find_similar
 **Required:**
@@ -413,7 +461,8 @@ When `offset > 0`, the response also includes:
 - `similarity_threshold: float | None = None`
 - `include_outdated: bool = false`
 - `search_type: str | None = None` — `pre_filter` | `post_filter` (server default when omitted)
-- `include_paths: bool = true` — shortest path between top two seeds when available
+- `include_paths: bool = false` — undirected shortest path between top two seeds when available
+- `metadata_filter: dict | None = None` — same semantics as `search` (applies to seed selection)
 
 **Response:**
 ```json
@@ -430,7 +479,7 @@ When `offset > 0`, the response also includes:
 }
 ```
 
-Nodes are ranked by `score = seed_similarity × RECALL_CONTEXT_HOP_DECAY^min_hop` (default decay `0.7`).
+Nodes are ranked by `score = seed_similarity × RECALL_CONTEXT_HOP_DECAY^min_hop` (default decay `0.7`), then multiplied by time-aware factors: recency `(1-w) + w·0.5^(age_days/half_life)` (`RECALL_RECENCY_WEIGHT`=0.2, `RECALL_RECENCY_HALF_LIFE_DAYS`=30) and usage `(1-w) + w·log-scaled(access_count)` (`RECALL_USAGE_WEIGHT`=0.1). Set weights to `0` to disable.
 
 **Errors:** `memory_validation_error`, `memory_service_error`
 
@@ -442,10 +491,11 @@ Nodes are ranked by `score = seed_similarity × RECALL_CONTEXT_HOP_DECAY^min_hop
 **Optional:**
 - `owner_id: str = "default"`
 - `max_depth: int = 5`
+- `directed: bool = true` — set `false` for an undirected shortest path (same semantics as `get_context` / `recall_context` expansion)
 
 **Response:** `{"success": true, "nodes": [...], "relations": [...], "message"?: str}`
 
-Uses a **directed** shortest path `(from)-[*]->(to)` — unlike `get_context`, which walks **undirected** hops. No path does not mean nodes are unrelated; edges may point the other way.
+By default uses a **directed** shortest path `(from)-[*]->(to)` — unlike `get_context`, which walks **undirected** hops. No directed path does not mean nodes are unrelated; retry with `directed=false`.
 
 If no path is found, `nodes` and `relations` are returned as empty arrays.
 **Errors:** `memory_service_error`
@@ -484,8 +534,37 @@ If no path is found, `nodes` and `relations` are returned as empty arrays.
 
 **Optional:** (none)
 
-**Response:** `{"success": true, "falkordb": bool, "embeddings": bool, "vector_index": bool, "cache": {...}}`
+**Response:** `{"success": true, "falkordb": bool, "embeddings": bool, "vector_index": bool, "healthy": bool, "cache": {...}}`
+Per-component flags report each component individually; `healthy` is the aggregate.
 **Errors:** (none)
+
+#### get_brief
+Session warm-up in one call.
+
+**Required:** (none)
+
+**Optional:**
+- `owner_id: str = "default"`
+- `limit: int = 10` — top facts count (max 50)
+
+**Response:** `{"success": true, "top_facts": [{node_id, text, degree, created_at}], "contradictions": [{from_id, from_text, to_id, to_text}], "stale_facts": [{node_id, text, last_accessed_at, access_count}], "stats": {...}}`
+Top facts are active facts ranked by connectivity (relation count), then recency. `contradictions` lists `CONTRADICTS` pairs within the owner scope. `stale_facts` are active facts not recalled for `STALE_FACTS_DAYS` (default 30) — candidates for archive/review. Recall usage is tracked automatically: `search` and `recall_context` bump `access_count` / `last_accessed_at` on returned nodes.
+**Errors:** `memory_service_error`
+
+#### /metrics (HTTP, not an MCP tool)
+Prometheus endpoint on the same HTTP server (`GET /metrics`): handler latency histograms (`graph_memory_handler_seconds`), invocation counters by success, cache hit/miss counters (`graph_memory_cache_ops_total`), and node counts by label (`graph_memory_nodes`).
+
+#### /admin/* (HTTP, operator endpoints)
+Admin operations are separated from the agent-facing MCP surface and live on plain HTTP routes (curl-friendly). Optional bearer auth via `ADMIN_TOKEN` (open when unset — trusted env).
+
+| Route | Method | Purpose |
+|-------|--------|---------|
+| `/admin/health` | GET | component health (FalkorDB, embeddings, vector index, cache) |
+| `/admin/ensure-indexes` | POST | create missing vector/uid indexes, report status |
+| `/admin/export/{owner_id}` | GET | export owner (`?include_embeddings=`, `?include_versions=`) |
+| `/admin/import` | POST | import payload `{owner_id, nodes, relations?, regenerate_embeddings?}` |
+
+`test_connection`, `ensure_vector_indexes`, `export_owner`, `import_owner` are **not** MCP tools by default; set `MCP_EXPOSE_ADMIN_TOOLS=true` to also expose them via MCP (e.g. for an admin agent that prefers MCP).
 
 ### Response Format
 
