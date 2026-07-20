@@ -1,14 +1,6 @@
 # Roadmap
 
-Living list. Agents: [memory_policies_for_LLM.md](./memory_policies_for_LLM.md). Ops: [admin.md](./admin.md).
-
-## Done (recent)
-
-- Graph-per-owner; stable `uid`; parametrized Cypher
-- Agent/admin split (`/admin/*`, `/metrics`); `ingest_knowledge`; bulk `create_nodes`
-- Scoping: `owner_id` → `metadata.project` → `metadata.created_by`
-- Iterative BFS (`get_context` / `recall_context`); time-aware recall; `as_of` on nodes
-- Export/import pagination; AOF + `scripts/backup.sh`; stale archive (opt-in); CI
+Agents: [memory_policies_for_LLM.md](./memory_policies_for_LLM.md). Ops: [admin.md](./admin.md).
 
 ## Next
 
