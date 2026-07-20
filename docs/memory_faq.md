@@ -48,7 +48,7 @@ Primary recall is **`text` embeddings** plus **graph traversal**. `metadata` hol
 - **`outdated`**: Soft-deleted (Facts). Hidden from default search; use `search(..., include_outdated=True)` or `status="outdated"` to include.
 - **`archived`**: Set by optional background job when TTL expires (same graph, not separate storage). Hidden from default search like `outdated`.
 
-Agent write/update rules: [memory_policies_for_LLM.md](../graph_memory_mcp/resources/memory_policies_for_LLM.md).
+Agent write/update rules: [memory_policies_for_LLM.md](./memory_policies_for_LLM.md).
 
 ## Metadata Schema
 

@@ -40,6 +40,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
+- `memory_policies_for_LLM.md` moved from `graph_memory_mcp/resources/` to `docs/` (canonical docs location for clone + uv); MCP resource still serves that file; prefer AGENTS.md / client rules over relying on `resources/read`
 - All Cypher queries parametrized (no string interpolation of values); embeddings passed as `vecf32($param)`
 - `create_relation` validates edge property keys (identifiers only)
 - `upsert_node` serialized per `(owner_id, node_type, source.ref)` via Redis lock — concurrent upserts no longer create duplicates
@@ -48,7 +49,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Version reported from package metadata (removed hardcoded "2.0.0")
 - `recall_context` `min_hop` is now the true minimal hop distance; `include_paths` defaults to `false`
 - Embedding cache honors `CACHE_EMBEDDINGS_*` config (was a fixed hidden LRU)
-- `memory_policies_for_LLM.md` moved into the package (`graph_memory_mcp/resources/`) so the MCP resource works for PyPI installs
 - `create_triplet` / `search_triplets` merge entities on normalized name (`name_norm`); original casing kept in `text`; legacy entities backfilled at startup
 - Repo layout normalized: root `__init__.py` removed; `server_simple` now only overrides node write tools (shared tools inherited)
 - ANN sizing count query cached per client for 60s; dedup marks duplicates with `merged_into`

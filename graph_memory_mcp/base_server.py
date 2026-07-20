@@ -21,9 +21,10 @@ from graph_memory_mcp.jobs.scheduler import shutdown_scheduler, start_scheduler
 logger = logging.getLogger(__name__)
 
 _AGENT_POLICIES_URI = "graph-memory://agent-policies"
-# Shipped inside the package so the MCP resource works for PyPI installs too.
+# Canonical copy lives in repo docs/ (clone + uv). MCP resource is optional;
+# agents should get policy via AGENTS.md / client rules.
 _AGENT_POLICIES_PATH = (
-    Path(__file__).resolve().parent / "resources" / "memory_policies_for_LLM.md"
+    Path(__file__).resolve().parent.parent / "docs" / "memory_policies_for_LLM.md"
 )
 
 # Shown to MCP clients at connect (see MCP spec: server instructions).

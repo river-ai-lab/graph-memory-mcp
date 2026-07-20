@@ -64,7 +64,7 @@ Typed relationship between nodes.
 
 **Vector indexes:** Created automatically when missing on first `search`, `find_similar`, or auto_link; optional `AUTO_CREATE_INDEXES=true` at startup; or call `ensure_vector_indexes`.
 
-Agent guidance: see [memory_policies_for_LLM.md](../graph_memory_mcp/resources/memory_policies_for_LLM.md). Operational FAQ: [memory_faq.md](./memory_faq.md).
+Agent guidance: see [memory_policies_for_LLM.md](./memory_policies_for_LLM.md). Operational FAQ: [memory_faq.md](./memory_faq.md).
 
 **Properties:**
 - `metadata`: edge metadata (dict, optional)
@@ -330,7 +330,7 @@ Backup / migration of an owner scope. Export returns JSON-serializable `nodes` (
 
 #### search
 
-Semantic similarity over Facts and Entities. See [memory_policies_for_LLM.md](../graph_memory_mcp/resources/memory_policies_for_LLM.md) § “How to use search”. Two modes via `search_type`: **`pre_filter`** (filter by owner first — recommended for large / multi-tenant graphs) and **`post_filter`** (global ANN then filter — fine for small graphs). Server default: config `SEARCH_TYPE` (env), overridable per call. For `post_filter`, ANN candidate pool size: `POST_FILTER_ANN_K_MIN` / `POST_FILTER_ANN_K_MAX` (env).
+Semantic similarity over Facts and Entities. See [memory_policies_for_LLM.md](./memory_policies_for_LLM.md) § Recall. Two modes via `search_type`: **`pre_filter`** (exact scan inside the owner graph — fine up to ~10⁵ nodes) and **`post_filter`** (ANN inside the owner graph, then filter — preferred for large owner corpora). Server default: config `SEARCH_TYPE` (env), overridable per call. For `post_filter`, ANN candidate pool size: `POST_FILTER_ANN_K_MIN` / `POST_FILTER_ANN_K_MAX` (env).
 
 **Required:**
 - `query: str`
@@ -350,7 +350,7 @@ Semantic similarity over Facts and Entities. See [memory_policies_for_LLM.md](..
 
 > **Reserved metadata keys** — typed, promoted to flat node properties at write time, filterable, indexed (`project` has a range index): `project` (soft partition inside an owner), `created_by` (attribution, `"user:<id>"` / `"agent:<id>"`), `tags`, `type`, `confidence`. Wrong types are rejected with `memory_validation_error`; all other metadata keys are free-form. Filters run inside the DB before vector scoring in `pre_filter` — no client-side filtering. Successful `search` / `recall_context` also bump `access_count` / `last_accessed_at` on returned nodes (see `get_brief.stale_facts`).
 >
-> Scoping model: `owner_id` = hard isolation (own graph) → `metadata.project` = filter inside owner → `metadata.created_by` = attribution. See [memory_policies_for_LLM.md](../graph_memory_mcp/resources/memory_policies_for_LLM.md) § Scoping.
+> Scoping model: `owner_id` = hard isolation (own graph) → `metadata.project` = filter inside owner → `metadata.created_by` = attribution. See [memory_policies_for_LLM.md](./memory_policies_for_LLM.md) § Scoping.
 
 #### find_similar
 **Required:**

@@ -41,7 +41,7 @@ Graph Memory MCP
 
 ## Agent policies
 
-Any LLM agent that reads or writes Graph Memory — single-agent or multi-agent — should have [`graph_memory_mcp/resources/memory_policies_for_LLM.md`](graph_memory_mcp/resources/memory_policies_for_LLM.md) in context **at the start of each session**. It defines what to store, `owner_id` rules, and how to link facts; without it, memory tends to get noisy or mis-scoped.
+Any LLM agent that reads or writes Graph Memory — single-agent or multi-agent — should load the memory ritual from client rules / `AGENTS.md` and keep [`docs/memory_policies_for_LLM.md`](docs/memory_policies_for_LLM.md) (or the shorter [`docs/memory_policy_cheatsheet.md`](docs/memory_policy_cheatsheet.md)) in context **at the start of each session**. That defines what to store, `owner_id` rules, and how to link facts; without it, memory tends to get noisy or mis-scoped. The same full policy is optionally exposed as MCP resource `graph-memory://agent-policies` (clients rarely auto-fetch it — prefer rules).
 
 ---
 
@@ -145,7 +145,7 @@ Key defaults live in `graph_memory_mcp/config.py` within the `MCPServerConfig` c
 
 - `RELATION_POLICY_ENFORCE` — `off` | `warn` (default) | `enforce`
 - `RELATION_ALLOWED_TYPES` — comma-separated allowlist for new edges
-- Agent link guidance: `graph_memory_mcp/resources/memory_policies_for_LLM.md`
+- Agent link guidance: `docs/memory_policies_for_LLM.md`
 
 ## Running FalkorDB
 
@@ -232,7 +232,7 @@ MCP Graph Memory is designed for **multi-agent systems** where multiple agents n
 
 ### Example: Multi-Agent Setup
 
-Use `owner_id` to isolate knowledge between agents/tenants. Values must be alphanumeric plus `-`, `_`, and `@` (see [`graph_memory_mcp/resources/memory_policies_for_LLM.md`](graph_memory_mcp/resources/memory_policies_for_LLM.md)). For example:
+Use `owner_id` to isolate knowledge between agents/tenants. Values must be alphanumeric plus `-`, `_`, and `@` (see [`docs/memory_policies_for_LLM.md`](docs/memory_policies_for_LLM.md)). For example:
 
 - Agent A writes to `owner_id="team_platform"`
 - Agent B searches within `owner_id="team_platform"` (shared) or `owner_id="agent_codegen"` (isolated)
@@ -245,7 +245,7 @@ Isolation is **physical**: every `owner_id` lives in its own FalkorDB graph (`{F
 
 All MCP tools support `owner_id` parameter (defaults to `"default"`). Agents should pass `owner_id` explicitly rather than relying on the default.
 
-See [`graph_memory_mcp/resources/memory_policies_for_LLM.md`](graph_memory_mcp/resources/memory_policies_for_LLM.md) and [`docs/memory_faq.md`](docs/memory_faq.md) for operational guidance.
+See [`docs/memory_policies_for_LLM.md`](docs/memory_policies_for_LLM.md) and [`docs/memory_faq.md`](docs/memory_faq.md) for operational guidance.
 
 ## Development
 

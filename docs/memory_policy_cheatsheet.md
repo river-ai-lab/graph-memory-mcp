@@ -20,4 +20,4 @@ Constants from your operator (apply, never invent): `<OWNER_ID>` required — pa
 | Document/conversation → knowledge | extract, then one `ingest_knowledge(document={"ref": ...}, facts=[...], triplets=[...])` — re-ingest updates in place |
 | Link nodes | `create_relation(from_id, to_id, RELATED_TO \| MENTIONS \| SUMMARIZES \| FOLLOWS_FROM \| CONTRADICTS)` |
 
-Full policy: [`memory_policies_for_LLM.md`](../graph_memory_mcp/resources/memory_policies_for_LLM.md) (MCP resource `graph-memory://agent-policies`).
+Full policy: [`memory_policies_for_LLM.md`](./memory_policies_for_LLM.md) (also exposed as MCP resource `graph-memory://agent-policies`).
