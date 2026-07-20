@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "graph-memory-mcp"
-version = "0.1.1"
+version = "0.2.0"
 description = "Standalone MCP server for graph-based long-term memory (FalkorDB)"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -14,26 +14,17 @@ dependencies = [
   "mcp>=1.3.0",
   "redis>=5.2.1",
   "falkordb>=1.0.9",
-  "torch",
+  "torch>=2.12.0",
   "sentence-transformers>=3.3.1",
+  "numpy>=2.0.0",
+  "httpx>=0.28.0",
   "pydantic>=2",
   "pydantic-settings>=2",
-  "apscheduler",
-  "uvicorn",
+  "apscheduler>=3.11.0",
+  "uvicorn>=0.40.0",
   "python-dotenv>=1.0.1",
   "cachetools>=5.5.0",
   "prometheus-client>=0.25.0",
-]
-
-[project.optional-dependencies]
-embeddings = [
-  "numpy",
-  "sentence-transformers",
-]
-dev = [
-  "pytest",
-  "pytest-asyncio",
-  "httpx",
 ]
 
 [project.scripts]
@@ -82,5 +73,5 @@ dev = [
     "pre-commit>=4.5.1",
     "pytest",
     "pytest-asyncio",
-    "httpx",
+    "httpx>=0.28.0",
 ]
