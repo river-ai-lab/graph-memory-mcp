@@ -26,7 +26,7 @@ Owner-scoped memory hardening on top of 0.1.1. **Breaking:** one FalkorDB graph 
 - Dedup job uses ANN + union-find; entity merge via `name_norm`
 - `memory_policies_for_LLM.md` lives in `docs/` (MCP resource still serves it; prefer AGENTS.md / client rules)
 - `docs/roadmap.md` — unfinished items only
-- Docs refreshed laconic (README, features, FAQ, admin, jobs, comparison); smoke example uses `health_check`
+- Docs refreshed laconic (features, FAQ, admin, jobs); README + comparison keep fuller positioning; smoke example uses `health_check`
 - Repo layout: root `__init__.py` removed; policy moved out of package `resources/`
 
 ### Fixed
