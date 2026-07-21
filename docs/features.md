@@ -38,7 +38,7 @@ Same tools/handlers; provenance is flat (`ref`, `provenance_type`, …) instead 
 
 ## Agent tools
 
-Defaults: `owner_id="default"` unless noted. Pass `owner_id` explicitly.
+Defaults: `owner_id` from `DEFAULT_OWNER_ID` (env, default `"default"`). Pass `owner_id` explicitly in agent rules.
 
 ### Writes
 
@@ -56,7 +56,7 @@ Defaults: `owner_id="default"` unless noted. Pass `owner_id` explicitly.
 **`mark_outdated`** — `fact_id`, opt `reason`.
 
 **`create_relation`** / **`delete_relation`** — `from_id`, `to_id`, `relation_type` (delete: type optional).
-**`create_triplet`** / **`search_triplets`** — entities merge by `name_norm`.
+**`create_triplet`** / **`search_triplets`** — entities merge by `name_norm`; opt `metadata` on create (reserved keys coalesce on match).
 **`create_summary_fact`** — `fact_ids`, `summary_text`.
 
 ### Reads
@@ -66,12 +66,12 @@ Defaults: `owner_id="default"` unless noted. Pass `owner_id` explicitly.
 **`search`** — `query`; opt `limit` (cap `MAX_SEARCH_LIMIT`), `node_types`, `status`, `similarity_threshold`, `include_outdated`, `search_type` (`pre_filter`|`post_filter`), `metadata_filter` (`project`/`created_by`/`type`/`tags`/`confidence_min`). Bumps access counters.
 **`find_similar`** — `fact_id`.
 **`get_context`** — `node_id`; opt `depth`, `max_nodes`, `offset`, `include_outdated` (default false — skip outdated/expired neighbors). Iterative BFS when `offset=0`.
-**`recall_context`** — shortcut search+expand (small graphs). Opt `depth`, `limit`, `max_nodes`, `include_paths`, `metadata_filter`, time-aware ranking weights.
+**`recall_context`** — shortcut search+expand (small graphs). Opt `depth`, `limit`, `max_nodes`, `include_outdated`, `include_paths`, `metadata_filter`, time-aware ranking weights.
 **`get_trace`** — `from_id`, `to_id`; opt `max_depth`, `directed` (default true).
 **`get_brief`** — warm-up: top facts, `CONTRADICTS`, stale facts, stats.
 **`get_stats`** / **`health_check`** — Fact/Entity counts; component flags + `healthy`.
 
 ## Admin (HTTP; not MCP by default)
 
-See [admin.md](./admin.md): `/admin/health`, `/admin/ensure-indexes`, export/import, delete/prune owners, `/metrics`.
+See [admin.md](./admin.md): `/admin/health`, `/admin/ensure-indexes`, export/import (incl. `FactVersion` when `include_versions=true`), delete/prune owners, `/metrics`.
 Set `MCP_EXPOSE_ADMIN_TOOLS=true` to also expose `test_connection`, `ensure_vector_indexes`, `export_owner`, `import_owner` as MCP tools.

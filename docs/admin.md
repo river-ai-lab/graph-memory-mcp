@@ -6,8 +6,8 @@ Same process as `/mcp`. Auth: `ADMIN_TOKEN` → `Authorization: Bearer …` (ope
 |-------|--------|---------|
 | `/admin/health` | GET | FalkorDB, embeddings, indexes (≤20 owners), cache |
 | `/admin/ensure-indexes` | POST | vector/range indexes per owner graph |
-| `/admin/export/{owner_id}` | GET | nodes+relations; `?limit=&offset=&section=nodes\|relations` |
-| `/admin/import` | POST | `{owner_id, nodes, relations?, regenerate_embeddings?}` merge by `uid` |
+| `/admin/export/{owner_id}` | GET | nodes+relations; `?include_versions=&limit=&offset=&section=nodes\|relations` |
+| `/admin/import` | POST | `{owner_id, nodes, relations?, regenerate_embeddings?}` merge by `uid` (Fact/Entity/FactVersion) |
 | `/admin/owners/{owner_id}` | DELETE | drop owner graph |
 | `/admin/prune-empty-owners` | POST | drop empty owner graphs |
 | `/metrics` | GET | Prometheus (handlers, cache, jobs, node/owner gauges) |

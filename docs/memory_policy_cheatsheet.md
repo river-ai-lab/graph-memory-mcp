@@ -17,7 +17,7 @@ Constants from your operator (apply, never invent): `<OWNER_ID>` required — pa
 | Path between two known IDs | `get_trace(from_id, to_id)` (directed; retry `directed=false`) |
 | Quick one-call recall | `recall_context(query, depth=1)` |
 | Store a fact | `create_node(text, owner_id, metadata)` |
-| Document/conversation → knowledge | extract, then one `ingest_knowledge(document={"ref": ...}, facts=[...], triplets=[...])` — re-ingest updates in place |
+| Document/conversation → knowledge | extract → `ingest_knowledge(document={"ref": ...}, facts=[{text, ref?, ...}, ...], triplets=[...])` — prefer `facts[].ref`; re-ingest updates in place |
 | Link nodes | `create_relation(from_id, to_id, RELATED_TO \| MENTIONS \| SUMMARIZES \| FOLLOWS_FROM \| CONTRADICTS)` |
 
 Full policy: [`memory_policies_for_LLM.md`](./memory_policies_for_LLM.md). Prefer client rules / AGENTS.md over MCP `resources/read`.

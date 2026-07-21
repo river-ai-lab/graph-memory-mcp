@@ -2,7 +2,7 @@
 
 ## Recall
 
-- **About X?** → `search(query="X")` → `get_context` on best hits. `recall_context` only on small/sparse graphs.
+- **About X?** → `search(query="X")` → `get_context` on best hits (skips outdated/expired neighbors unless `include_outdated=true`). `recall_context` only on small/sparse graphs.
 - **X ↔ Y?** → `search` both → `get_trace(from_id, to_id)` (`directed=false` if empty).
 
 ## Forget
@@ -23,7 +23,7 @@ Fact + Entity vector indexes: auto on first `search` / `find_similar` / Fact `au
 
 ## Isolation
 
-Each `owner_id` = own FalkorDB graph. Same `owner_id` → shared memory. Soft split inside owner: `metadata.project`. Always pass `owner_id` explicitly.
+Each `owner_id` = own FalkorDB graph. Same `owner_id` → shared memory. Soft split inside owner: `metadata.project`. Always pass `owner_id` explicitly (server default: `DEFAULT_OWNER_ID`, usually `"default"`).
 
 ## Lifecycle
 

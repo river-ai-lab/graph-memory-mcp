@@ -29,7 +29,7 @@ You have access to **Graph Memory MCP** — a long-term knowledge base shared ac
 | Relation between two known IDs | `get_trace(from_id, to_id)` — directed; retry `directed=false` if empty |
 | Quick one-call recall | `recall_context(query, depth=1)` — search + expansion; shortcut, not the primary API |
 
-`search` notes: results are active-only by default (`include_outdated=true` to include others); `similarity_threshold` and `limit` tune noise; omit `search_type` (server default).
+`search` / `get_context` / `recall_context`: active-only by default (`include_outdated=true` for outdated/expired/archived neighbors too); `similarity_threshold` and `limit` tune noise; omit `search_type` (server default).
 
 ## Write: situation → tool
 
@@ -38,9 +38,9 @@ You have access to **Graph Memory MCP** — a long-term knowledge base shared ac
 | Store one fact | `search` first → `create_node(text, owner_id, metadata)` |
 | Sync from an external system | `upsert_node(text, source={"ref": <stable key>})` — idempotent |
 | Many facts at once | `create_nodes(items=[...])` (bulk, no auto_link) |
-| Read a document/conversation | extract facts/triplets yourself → **one** `ingest_knowledge(document={"ref": ...}, facts=[...], triplets=[...])`; re-ingest of the same ref updates in place |
+| Read a document/conversation | extract → **one** `ingest_knowledge(document={"ref": ...}, facts=[{text, ref?, metadata?}, …], triplets=[…])`; prefer `facts[].ref` (else key=`hash(text)`); same ref updates in place |
 | Link two nodes | `create_relation(from_id, to_id, relation_type)` |
-| Subject–predicate–object | `create_triplet(subject, predicate, object_value)` — entities dedupe by normalized name |
+| Subject–predicate–object | `create_triplet(..., metadata={project, created_by, …})` — entities dedupe by normalized name; metadata on both entities |
 
 ## Relations
 

@@ -243,7 +243,7 @@ Isolation is **physical**: every `owner_id` lives in its own FalkorDB graph (`{F
 - **Isolate agents**: Each agent/team has its own `owner_id` (= its own graph)
 - **Share knowledge**: Use the same `owner_id` for shared knowledge base
 
-All MCP tools support `owner_id` parameter (defaults to `"default"`). Agents should pass `owner_id` explicitly rather than relying on the default.
+All MCP tools support `owner_id` (default from `DEFAULT_OWNER_ID`, usually `"default"`). Agents should pass `owner_id` explicitly rather than relying on the default.
 
 See [`docs/memory_policies_for_LLM.md`](docs/memory_policies_for_LLM.md) and [`docs/memory_faq.md`](docs/memory_faq.md) for operational guidance.
 
