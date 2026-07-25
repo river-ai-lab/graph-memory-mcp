@@ -75,6 +75,16 @@ def test_explorer_api_with_mock_client():
         assert 'id="btn-recall"' in page.text
         assert 'id="btn-trace"' in page.text
         assert 'id="search-status"' in page.text
+        assert 'id="layout-mode"' in page.text
+        assert 'id="btn-layout"' in page.text
+        assert 'id="btn-rotate-cw"' in page.text
+        assert 'id="btn-rotate-ccw"' in page.text
+        assert 'id="btn-fit"' in page.text
+        assert 'id="btn-lock"' in page.text
+        assert 'id="btn-png"' in page.text
+        assert 'id="include-outdated"' in page.text
+        assert 'id="view-fact"' in page.text
+        assert 'id="btn-history"' in page.text
 
         static = client.get("/static/explorer.js")
         assert static.status_code == 200
@@ -83,6 +93,12 @@ def test_explorer_api_with_mock_client():
         assert "get_trace" in static.text
         assert "recall_context" in static.text
         assert "edge-contradicts" in static.text
+        assert "rotateGraph" in static.text
+        assert "runLayout" in static.text
+        assert "applyViewFilters" in static.text
+        assert "get_node_change_history" in static.text
+        assert "concentric" in static.text
+        assert "breadthfirst" in static.text
 
 
 @pytest.mark.integration

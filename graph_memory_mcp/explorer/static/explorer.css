@@ -17,7 +17,7 @@
 
 body {
   margin: 0;
-  font-family: system-ui, -apple-system, sans-serif;
+  font-family: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
   background: var(--bg);
   color: var(--text);
   height: 100vh;
@@ -31,13 +31,14 @@ body {
   gap: 1rem;
   padding: 0.5rem 1rem;
   border-bottom: 1px solid var(--border);
-  background: var(--panel);
+  background: linear-gradient(180deg, #1c2738 0%, var(--panel) 100%);
 }
 
 .topbar h1 {
   margin: 0;
   font-size: 1.1rem;
   font-weight: 600;
+  letter-spacing: -0.02em;
 }
 
 .badge {
@@ -79,6 +80,7 @@ body {
   border-right: 1px solid var(--border);
   overflow-y: auto;
   font-size: 0.85rem;
+  background: radial-gradient(120% 80% at 0% 0%, #1e2a3d 0%, var(--panel) 45%);
 }
 
 .panel-right {
@@ -146,15 +148,59 @@ button.secondary {
   background: var(--border);
 }
 
+button.active-lock {
+  background: #b45309;
+}
+
 .graph-wrap {
   position: relative;
   min-height: 0;
+  background:
+    radial-gradient(ellipse at 30% 20%, rgba(59, 130, 246, 0.08), transparent 50%),
+    radial-gradient(ellipse at 80% 80%, rgba(168, 85, 247, 0.06), transparent 45%),
+    #111820;
+}
+
+.graph-toolbar {
+  position: absolute;
+  z-index: 15;
+  top: 0.6rem;
+  left: 0.6rem;
+  right: 0.6rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(26, 35, 50, 0.92);
+  backdrop-filter: blur(6px);
+}
+
+.graph-toolbar select {
+  width: auto;
+  min-width: 7.5rem;
+}
+
+.graph-toolbar .tb-hint {
+  margin-left: auto;
+  font-size: 0.7rem;
+  white-space: nowrap;
 }
 
 #cy {
   width: 100%;
   height: 100%;
-  background: #111820;
+  background: transparent;
+}
+
+#cy.space-pan {
+  cursor: grab;
+}
+
+#cy.rotating {
+  cursor: grabbing;
 }
 
 .hover-plus {
@@ -189,19 +235,27 @@ button.secondary {
   color: var(--muted);
 }
 
-#detail-text {
+#detail-text,
+.meta-box {
   white-space: pre-wrap;
   word-break: break-word;
   background: var(--bg);
   border: 1px solid var(--border);
   padding: 0.5rem;
   border-radius: 4px;
-  max-height: 200px;
+  max-height: 160px;
   overflow-y: auto;
   font-size: 0.8rem;
 }
 
-#detail-edges {
+.meta-box {
+  max-height: 100px;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+#detail-edges,
+#detail-history {
   margin: 0;
   padding-left: 1.2rem;
   font-size: 0.75rem;
@@ -349,4 +403,18 @@ select {
 .swatch-path {
   background: #fbbf24;
   height: 4px;
+}
+
+@media (max-width: 1100px) {
+  .layout {
+    grid-template-columns: 260px 1fr;
+  }
+
+  .panel-right {
+    display: none;
+  }
+
+  .graph-toolbar .tb-hint {
+    display: none;
+  }
 }

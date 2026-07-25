@@ -95,9 +95,27 @@
           <input id="max-nodes" type="number" value="10" min="1" max="50" />
         </div>
         <div class="row">
+          <label class="inline chk"><input id="include-outdated" type="checkbox" /> include outdated</label>
+        </div>
+        <div class="row">
           <button id="btn-context" type="button">Context</button>
           <button id="btn-hop" type="button">+1 hop</button>
           <button id="btn-clear" type="button" class="secondary">Clear graph</button>
+        </div>
+      </section>
+
+      <section>
+        <label>View filters (in canvas)</label>
+        <div class="row filters">
+          <label class="inline chk"><input id="view-fact" type="checkbox" checked /> Fact</label>
+          <label class="inline chk"><input id="view-entity" type="checkbox" checked /> Entity</label>
+          <label class="inline chk"><input id="view-active" type="checkbox" checked /> active</label>
+          <label class="inline chk"><input id="view-outdated" type="checkbox" checked /> outdated</label>
+          <label class="inline chk"><input id="view-archived" type="checkbox" checked /> archived</label>
+        </div>
+        <div class="row filters">
+          <label class="inline chk"><input id="view-edge-labels" type="checkbox" checked /> edge labels</label>
+          <label class="inline chk"><input id="view-node-labels" type="checkbox" checked /> node labels</label>
         </div>
       </section>
 
@@ -119,6 +137,24 @@
     </aside>
 
     <main class="graph-wrap">
+      <div class="graph-toolbar" id="graph-toolbar">
+        <select id="layout-mode" title="Layout">
+          <option value="cose">Force</option>
+          <option value="circle">Circle</option>
+          <option value="concentric">Radial</option>
+          <option value="breadthfirst">Hierarchy</option>
+          <option value="grid">Grid</option>
+          <option value="cose-bilkent-fallback">Dense force</option>
+        </select>
+        <button id="btn-layout" type="button" title="Re-run layout">Layout</button>
+        <button id="btn-rotate-ccw" type="button" class="secondary" title="Rotate −15°">↺</button>
+        <button id="btn-rotate-cw" type="button" class="secondary" title="Rotate +15°">↻</button>
+        <button id="btn-fit" type="button" class="secondary" title="Fit">Fit</button>
+        <button id="btn-center-sel" type="button" class="secondary" title="Center selection">Center</button>
+        <button id="btn-lock" type="button" class="secondary" title="Lock / unlock node drag">🔓</button>
+        <button id="btn-png" type="button" class="secondary" title="Export PNG">PNG</button>
+        <span class="tb-hint muted">drag · scroll zoom · space+pan · alt+drag rotate · [ ] · dblclick expand</span>
+      </div>
       <div id="cy"></div>
       <div id="hover-plus" class="hover-plus" title="Load 10 neighbors">+</div>
     </main>
@@ -133,10 +169,15 @@
         <p><strong>Similarity</strong> <span id="detail-sim"></span></p>
         <label>Text</label>
         <pre id="detail-text"></pre>
+        <label>Metadata</label>
+        <pre id="detail-meta" class="meta-box"></pre>
         <label>Edges</label>
         <ul id="detail-edges"></ul>
+        <label>History</label>
+        <ul id="detail-history"></ul>
         <button id="btn-set-anchor" type="button">Set as anchor</button>
         <button id="btn-neighbors" type="button">+10 neighbors</button>
+        <button id="btn-history" type="button" class="secondary">Load history</button>
         <button id="btn-trace-from" type="button" class="secondary">Trace from</button>
         <button id="btn-trace-to" type="button" class="secondary">Trace to</button>
       </div>

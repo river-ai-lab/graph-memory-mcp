@@ -1,4 +1,4 @@
-/* Graph Memory Explorer — client-side graph merge + Cytoscape */
+/* Graph Memory Explorer — multi-layout viz + Cytoscape controls */
 
 const KNOWN_EDGE_TYPES = new Set([
   "RELATED_TO",
@@ -19,6 +19,11 @@ const state = {
   selectedId: null,
   hoverId: null,
   pathEdgeKeys: new Set(),
+  nodesLocked: false,
+  spacePan: false,
+  layoutName: localStorage.getItem("gm_layout") || "cose",
+  /** @type {{ active: boolean, cx: number, cy: number, lastAngle: number } | null} */
+  rotateDrag: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -81,7 +86,6 @@ function searchFilters() {
   const entity = $("type-entity").checked;
   if (fact && !entity) extra.node_types = ["Fact"];
   else if (entity && !fact) extra.node_types = ["Entity"];
-  // both or neither → omit (server default)
 
   const project = $("filter-project").value.trim();
   const tagsRaw = $("filter-tags").value.trim();
@@ -110,6 +114,7 @@ function mergeNodes(nodes, meta = {}) {
       status: n.status ?? prev.status,
       similarity: meta.similarity ?? n.similarity ?? n.score ?? prev.similarity,
       metadata: n.metadata ?? prev.metadata,
+      degree: n.degree ?? prev.degree,
       _fresh: meta.fresh !== false,
     });
   }
@@ -173,9 +178,10 @@ function nodeElementDef(n) {
       id: n.node_id,
       label: preview(n.text, 36),
       nodeType: n.node_type,
-      status: n.status,
+      status: n.status || "active",
       fullText: n.text || "",
       similarity: n.similarity,
+      degree: n.degree || 0,
     },
     classes: n._fresh ? "fresh" : "",
   };
@@ -221,8 +227,116 @@ function placeNearNode(originId, index) {
   };
 }
 
+function layoutOptions(name) {
+  const common = {
+    animate: true,
+    animationDuration: 280,
+    fit: true,
+    padding: 48,
+  };
+  const root = state.anchorId || state.selectedId;
+  switch (name) {
+    case "circle":
+      return { name: "circle", ...common };
+    case "concentric":
+      return {
+        name: "concentric",
+        ...common,
+        concentric: (n) => {
+          if (root && n.id() === root) return 1000;
+          return n.degree();
+        },
+        levelWidth: () => 2,
+        minNodeSpacing: 28,
+      };
+    case "breadthfirst":
+      return {
+        name: "breadthfirst",
+        ...common,
+        directed: true,
+        roots: root ? `#${CSS.escape(root)}` : undefined,
+        spacingFactor: 1.15,
+      };
+    case "grid":
+      return { name: "grid", ...common, condense: true };
+    case "cose-bilkent-fallback":
+      return {
+        name: "cose",
+        ...common,
+        nodeRepulsion: 8000,
+        idealEdgeLength: 90,
+        gravity: 0.2,
+        numIter: 900,
+      };
+    case "cose":
+    default:
+      return {
+        name: "cose",
+        ...common,
+        nodeRepulsion: 4500,
+        idealEdgeLength: 70,
+        gravity: 0.25,
+        numIter: 600,
+      };
+  }
+}
+
+function runLayout(name = state.layoutName) {
+  state.layoutName = name;
+  localStorage.setItem("gm_layout", name);
+  $("layout-mode").value = name;
+  if (cy.nodes().length < 2) {
+    cy.fit(undefined, 40);
+    return;
+  }
+  cy.layout(layoutOptions(name)).run();
+  log(`layout: ${name}`);
+}
+
+function graphCenterModel() {
+  const nodes = cy.nodes(":visible");
+  if (nodes.empty()) return viewportCenter();
+  const bb = nodes.boundingBox();
+  return { x: (bb.x1 + bb.x2) / 2, y: (bb.y1 + bb.y2) / 2 };
+}
+
+function rotateGraphAround(degrees, cx, cy0) {
+  const nodes = cy.nodes(":visible");
+  if (nodes.empty()) return;
+  const rad = (degrees * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  nodes.positions((ele) => {
+    const p = ele.position();
+    const dx = p.x - cx;
+    const dy = p.y - cy0;
+    return {
+      x: cx + dx * cos - dy * sin,
+      y: cy0 + dx * sin + dy * cos,
+    };
+  });
+}
+
+function rotateGraph(degrees) {
+  const c = graphCenterModel();
+  rotateGraphAround(degrees, c.x, c.y);
+  log(`rotate ${degrees > 0 ? "+" : ""}${degrees}°`);
+}
+
+function renderedToModel(renderedX, renderedY) {
+  const pan = cy.pan();
+  const zoom = cy.zoom();
+  return {
+    x: (renderedX - pan.x) / zoom,
+    y: (renderedY - pan.y) / zoom,
+  };
+}
+
+function angleFromCenter(modelX, modelY, cx, cy0) {
+  return Math.atan2(modelY - cy0, modelX - cx);
+}
+
 function syncGraph({ fullLayout = false, originNodeId = null } = {}) {
-  const addedNodes = [];
   let newIndex = 0;
 
   for (const n of state.nodes.values()) {
@@ -236,12 +350,12 @@ function syncGraph({ fullLayout = false, originNodeId = null } = {}) {
         def.position = placeNearNode(originNodeId, newIndex++);
       }
       ele = cy.add(def);
-      addedNodes.push(ele);
     } else {
       ele.data("label", preview(n.text, 36));
       ele.data("nodeType", n.node_type);
-      ele.data("status", n.status);
+      ele.data("status", n.status || "active");
       ele.data("fullText", n.text || "");
+      ele.data("degree", n.degree || ele.degree());
       if (n._fresh) ele.addClass("fresh");
       else ele.removeClass("fresh");
     }
@@ -251,26 +365,78 @@ function syncGraph({ fullLayout = false, originNodeId = null } = {}) {
     const def = edgeElementDef(e, key);
     let ele = cy.getElementById(def.data.id);
     if (ele.empty()) {
-      cy.add(def);
+      if (cy.getElementById(e.from_id).nonempty() && cy.getElementById(e.to_id).nonempty()) {
+        cy.add(def);
+      }
     } else {
-      ele.removeClass("edge-contradicts edge-summarizes edge-triplet edge-default edge-path");
+      ele.removeClass(
+        "edge-contradicts edge-summarizes edge-triplet edge-default edge-path",
+      );
       ele.addClass(def.classes);
     }
   }
 
   applyNodeColors();
+  applyViewFilters();
+  applyLabelVisibility();
+  cy.nodes().forEach((n) => n.lock(state.nodesLocked));
 
-  if (fullLayout && cy.nodes().length > 1) {
-    cy.layout({
-      name: "cose",
-      animate: true,
-      padding: 40,
-      animationDuration: 250,
-      fit: true,
-    }).run();
+  if (fullLayout && cy.nodes(":visible").length > 1) {
+    runLayout(state.layoutName);
   }
 
   for (const n of state.nodes.values()) n._fresh = false;
+}
+
+function applyNodeColors() {
+  cy.nodes().forEach((ele) => {
+    const st = nodeStyle(ele.data("nodeType"), ele.data("status"));
+    ele.style({ backgroundColor: st.background, shape: st.shape });
+  });
+}
+
+function applyViewFilters() {
+  const showFact = $("view-fact").checked;
+  const showEntity = $("view-entity").checked;
+  const showActive = $("view-active").checked;
+  const showOutdated = $("view-outdated").checked;
+  const showArchived = $("view-archived").checked;
+
+  cy.batch(() => {
+    cy.nodes().forEach((ele) => {
+      const type = ele.data("nodeType") || "Fact";
+      const status = ele.data("status") || "active";
+      const typeOk =
+        (type === "Fact" && showFact) || (type === "Entity" && showEntity);
+      const statusOk =
+        (status === "active" && showActive) ||
+        (status === "outdated" && showOutdated) ||
+        (status === "archived" && showArchived) ||
+        (!["active", "outdated", "archived"].includes(status) && showActive);
+      if (typeOk && statusOk) ele.removeClass("filtered-out");
+      else ele.addClass("filtered-out");
+    });
+    cy.edges().forEach((ele) => {
+      const src = ele.source();
+      const tgt = ele.target();
+      if (src.hasClass("filtered-out") || tgt.hasClass("filtered-out")) {
+        ele.addClass("filtered-out");
+      } else {
+        ele.removeClass("filtered-out");
+      }
+    });
+  });
+}
+
+function applyLabelVisibility() {
+  const nodeLabels = $("view-node-labels").checked;
+  const edgeLabels = $("view-edge-labels").checked;
+  cy.style()
+    .selector("node")
+    .style("label", nodeLabels ? "data(label)" : "")
+    .selector("edge")
+    .style("label", edgeLabels ? "data(label)" : "")
+    .update();
 }
 
 function centerViewOnNode(nodeId) {
@@ -279,9 +445,17 @@ function centerViewOnNode(nodeId) {
   cy.animate({ center: { eles: node }, duration: 200 });
 }
 
+function updateStats() {
+  const vis = cy.nodes(":visible").length;
+  $("stats-bar").textContent = `${state.nodes.size} nodes · ${state.edges.size} edges · ${vis} visible · ${state.layoutName}`;
+}
+
 let cy = cytoscape({
   container: $("cy"),
   elements: [],
+  wheelSensitivity: 0.25,
+  minZoom: 0.15,
+  maxZoom: 3.5,
   style: [
     {
       selector: "node",
@@ -291,10 +465,14 @@ let cy = cytoscape({
         color: "#e2e8f0",
         "text-valign": "bottom",
         "text-margin-y": 4,
+        "text-wrap": "ellipsis",
+        "text-max-width": 90,
         width: 28,
         height: 28,
         "border-width": 2,
         "border-color": "#334155",
+        "transition-property": "border-color, border-width, opacity",
+        "transition-duration": "120ms",
       },
     },
     {
@@ -304,6 +482,10 @@ let cy = cytoscape({
     {
       selector: "node:selected",
       style: { "border-color": "#fbbf24", "border-width": 3 },
+    },
+    {
+      selector: "node.filtered-out",
+      style: { display: "none" },
     },
     {
       selector: "edge",
@@ -316,6 +498,8 @@ let cy = cytoscape({
         label: "data(label)",
         "font-size": 8,
         color: "#94a3b8",
+        "text-rotation": "autorotate",
+        opacity: 0.95,
       },
     },
     {
@@ -354,20 +538,13 @@ let cy = cytoscape({
         "line-style": "solid",
       },
     },
+    {
+      selector: "edge.filtered-out",
+      style: { display: "none" },
+    },
   ],
   layout: { name: "preset", animate: false },
 });
-
-function applyNodeColors() {
-  cy.nodes().forEach((ele) => {
-    const st = nodeStyle(ele.data("nodeType"), ele.data("status"));
-    ele.style({ backgroundColor: st.background, shape: st.shape });
-  });
-}
-
-function updateStats() {
-  $("stats-bar").textContent = `${state.nodes.size} nodes · ${state.edges.size} edges`;
-}
 
 async function loadNodeDetail(nodeId) {
   const data = await callTool("get_node", ownerArgs({ node_id: nodeId }));
@@ -387,6 +564,9 @@ function showDetail(nodeId, nodeOverride) {
   $("detail-sim").textContent =
     n.similarity != null ? Number(n.similarity).toFixed(3) : "—";
   $("detail-text").textContent = n.text || "(no text)";
+  const meta = n.metadata;
+  $("detail-meta").textContent =
+    meta && Object.keys(meta).length ? JSON.stringify(meta, null, 2) : "(none)";
 
   const related = [];
   for (const e of state.edges.values()) {
@@ -396,6 +576,25 @@ function showDetail(nodeId, nodeOverride) {
   $("detail-edges").innerHTML = related.length
     ? related.map((x) => `<li>${x}</li>`).join("")
     : "<li class='muted'>none in view</li>";
+}
+
+async function loadHistory() {
+  const id = state.selectedId;
+  if (!id) return;
+  const data = await callTool(
+    "get_node_change_history",
+    ownerArgs({ node_id: id }),
+  );
+  const versions = data.versions || [];
+  $("detail-history").innerHTML = versions.length
+    ? versions
+        .map(
+          (v) =>
+            `<li>${preview(v.text, 40)} <span class="muted">@${v.version_timestamp}</span></li>`,
+        )
+        .join("")
+    : "<li class='muted'>no versions</li>";
+  log(`history ${id}: ${versions.length}`);
 }
 
 async function loadAnchor(nodeId) {
@@ -415,6 +614,7 @@ async function loadContext(nodeId, opts = {}) {
     node_id: nodeId,
     depth,
     max_nodes: maxNodes,
+    include_outdated: $("include-outdated").checked,
   });
 
   if (opts.resetOffset) {
@@ -436,6 +636,7 @@ async function loadNeighbors(nodeId, pageSize = 10) {
     node_id: nodeId,
     depth: 1,
     max_nodes: pageSize,
+    include_outdated: $("include-outdated").checked,
   });
   if (off > 0) args.offset = off;
 
@@ -476,13 +677,18 @@ async function findSimilar() {
 
   const ctx = await callTool(
     "get_context",
-    ownerArgs({ node_id: anchor, depth: 2, max_nodes: 50 }),
+    ownerArgs({
+      node_id: anchor,
+      depth: 2,
+      max_nodes: 50,
+      include_outdated: $("include-outdated").checked,
+    }),
   );
   const filteredEdges = (ctx.edges || []).filter(
     (e) => ids.has(e.from_id) && ids.has(e.to_id),
   );
   mergeEdges(filteredEdges);
-  syncGraph({ originNodeId: anchor });
+  syncGraph({ originNodeId: anchor, fullLayout: true });
   log(`similar ${sim.similar_facts?.length || 0} facts + edges among them`);
 }
 
@@ -494,7 +700,10 @@ async function textSearch() {
     "search",
     ownerArgs({ query, limit, ...searchFilters() }),
   );
-  mergeToolResult(data, { fresh: true }, { originNodeId: state.anchorId || null });
+  mergeToolResult(data, { fresh: true }, {
+    originNodeId: state.anchorId || null,
+    fullLayout: cy.nodes().length < 2,
+  });
   log(`search "${query}" → ${data.results?.length || 0}`);
 }
 
@@ -512,9 +721,9 @@ async function recallContext() {
     depth,
     max_nodes: maxNodes,
     include_paths: true,
+    include_outdated: $("include-outdated").checked || !!filters.include_outdated,
   });
   if (filters.metadata_filter) args.metadata_filter = filters.metadata_filter;
-  if (filters.include_outdated) args.include_outdated = true;
   const data = await callTool("recall_context", args);
   mergeToolResult(data, { fresh: true }, { fullLayout: true });
   const seed = data.seeds?.[0]?.node_id;
@@ -535,12 +744,9 @@ function renderOverview(data) {
   if (stats.total_entities != null) parts.push(`${stats.total_entities} entities`);
   if (stats.total_relations != null) parts.push(`${stats.total_relations} rels`);
   if (stats.active_facts != null) parts.push(`${stats.active_facts} active`);
-  $("overview-stats").textContent = parts.length
-    ? parts.join(" · ")
-    : "no stats";
+  $("overview-stats").textContent = parts.length ? parts.join(" · ") : "no stats";
 
   const blocks = [];
-
   const top = data.top_facts || [];
   if (top.length) {
     blocks.push(`<div class="ov-block"><h3>Top facts</h3><ul class="ov-list">
@@ -589,11 +795,7 @@ function renderOverview(data) {
 async function loadBrief() {
   const data = await callTool("get_brief", ownerArgs({ limit: 10 }));
   renderOverview(data);
-  // seed graph with top + contradict endpoints for click targets
-  const seedNodes = [
-    ...(data.top_facts || []),
-    ...(data.stale_facts || []),
-  ];
+  const seedNodes = [...(data.top_facts || []), ...(data.stale_facts || [])];
   for (const c of data.contradictions || []) {
     seedNodes.push(
       { node_id: c.from_id, text: c.from_text },
@@ -601,12 +803,13 @@ async function loadBrief() {
     );
   }
   mergeNodes(seedNodes, { fresh: true });
-  const contraEdges = (data.contradictions || []).map((c) => ({
-    from_id: c.from_id,
-    to_id: c.to_id,
-    relation_type: "CONTRADICTS",
-  }));
-  mergeEdges(contraEdges);
+  mergeEdges(
+    (data.contradictions || []).map((c) => ({
+      from_id: c.from_id,
+      to_id: c.to_id,
+      relation_type: "CONTRADICTS",
+    })),
+  );
   syncGraph({ fullLayout: cy.nodes().length === 0 && seedNodes.length > 1 });
   updateStats();
   log(
@@ -655,7 +858,26 @@ function clearGraph() {
   updateStats();
   $("detail").hidden = true;
   $("detail-empty").hidden = false;
+  $("detail-history").innerHTML = "";
   log("graph cleared");
+}
+
+function exportPng() {
+  const png = cy.png({ full: true, scale: 2, bg: "#111820" });
+  const a = document.createElement("a");
+  a.href = png;
+  a.download = `graph-memory-${Date.now()}.png`;
+  a.click();
+  log("exported PNG");
+}
+
+function toggleLock() {
+  state.nodesLocked = !state.nodesLocked;
+  cy.nodes().forEach((n) => n.lock(state.nodesLocked));
+  const btn = $("btn-lock");
+  btn.textContent = state.nodesLocked ? "🔒" : "🔓";
+  btn.classList.toggle("active-lock", state.nodesLocked);
+  log(state.nodesLocked ? "nodes locked" : "nodes unlocked");
 }
 
 const hoverPlus = $("hover-plus");
@@ -699,6 +921,11 @@ cy.on("tap", "node", (evt) => {
   loadNodeDetail(id).catch((e) => log(`detail error: ${e.message}`));
 });
 
+cy.on("dbltap", "node", (evt) => {
+  const id = evt.target.id();
+  loadNeighbors(id, 10).catch((err) => log(`expand: ${err.message}`));
+});
+
 cy.on("mouseover", "node", (evt) => {
   showHoverPlus(evt.target);
 });
@@ -732,7 +959,88 @@ hoverPlus.addEventListener("click", (e) => {
   loadNeighbors(id, 10).catch((err) => log(`neighbors: ${err.message}`));
 });
 
+function isTypingTarget(el) {
+  if (!el || el === document.body) return false;
+  const tag = el.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el.isContentEditable;
+}
+
+// Space+drag pan · Alt+drag rotate · [ ] rotate · f fit · r re-layout
+window.addEventListener("keydown", (e) => {
+  if (isTypingTarget(e.target)) return;
+  if (e.code === "Space") {
+    e.preventDefault();
+    state.spacePan = true;
+    cy.userPanningEnabled(true);
+    cy.boxSelectionEnabled(false);
+    cy.container().classList.add("space-pan");
+  }
+  if (e.key === "f" && !e.metaKey && !e.ctrlKey) {
+    cy.fit(undefined, 40);
+  }
+  if (e.key === "r" && !e.metaKey && !e.ctrlKey) {
+    runLayout(state.layoutName);
+  }
+  if (e.key === "[" && !e.metaKey && !e.ctrlKey) {
+    rotateGraph(-15);
+  }
+  if (e.key === "]" && !e.metaKey && !e.ctrlKey) {
+    rotateGraph(15);
+  }
+});
+
+window.addEventListener("keyup", (e) => {
+  if (e.code === "Space") {
+    state.spacePan = false;
+    cy.boxSelectionEnabled(true);
+    cy.container().classList.remove("space-pan");
+  }
+});
+
+cy.on("mousedown", (evt) => {
+  if (!evt.originalEvent?.altKey) return;
+  if (evt.target !== cy) return; // only on background
+  const c = graphCenterModel();
+  const m = renderedToModel(evt.renderedPosition.x, evt.renderedPosition.y);
+  state.rotateDrag = {
+    active: true,
+    cx: c.x,
+    cy: c.y,
+    lastAngle: angleFromCenter(m.x, m.y, c.x, c.y),
+  };
+  cy.userPanningEnabled(false);
+  cy.userZoomingEnabled(false);
+  cy.container().classList.add("rotating");
+});
+
+cy.on("mousemove", (evt) => {
+  const rd = state.rotateDrag;
+  if (!rd?.active) return;
+  const m = renderedToModel(evt.renderedPosition.x, evt.renderedPosition.y);
+  const ang = angleFromCenter(m.x, m.y, rd.cx, rd.cy);
+  let delta = ang - rd.lastAngle;
+  // unwrap jumps across ±π
+  if (delta > Math.PI) delta -= 2 * Math.PI;
+  if (delta < -Math.PI) delta += 2 * Math.PI;
+  rd.lastAngle = ang;
+  rotateGraphAround((delta * 180) / Math.PI, rd.cx, rd.cy);
+});
+
+function endRotateDrag() {
+  if (!state.rotateDrag?.active) return;
+  state.rotateDrag = null;
+  cy.userPanningEnabled(true);
+  cy.userZoomingEnabled(true);
+  cy.container().classList.remove("rotating");
+  log("rotated (alt+drag)");
+}
+
+cy.on("mouseup", endRotateDrag);
+window.addEventListener("mouseup", endRotateDrag);
+
 $("owner-id").value = state.ownerId;
+$("layout-mode").value = state.layoutName;
+
 $("owner-id").addEventListener("change", () => {
   state.ownerId = $("owner-id").value.trim() || "default";
   localStorage.setItem("gm_owner_id", state.ownerId);
@@ -782,7 +1090,9 @@ $("btn-similar").addEventListener("click", () => {
 $("btn-context").addEventListener("click", () => {
   const id = state.anchorId || $("node-id").value.trim();
   if (!id) return;
-  loadContext(id, { originNodeId: id }).catch((e) => log(`context: ${e.message}`));
+  loadContext(id, { originNodeId: id, fullLayout: true }).catch((e) =>
+    log(`context: ${e.message}`),
+  );
 });
 
 $("btn-hop").addEventListener("click", () => {
@@ -790,9 +1100,11 @@ $("btn-hop").addEventListener("click", () => {
   $("depth").value = String(Math.min(3, d + 1));
   const id = state.anchorId || $("node-id").value.trim();
   if (!id) return;
-  loadContext(id, { depth: Number($("depth").value), originNodeId: id }).catch((e) =>
-    log(`hop: ${e.message}`),
-  );
+  loadContext(id, {
+    depth: Number($("depth").value),
+    originNodeId: id,
+    fullLayout: true,
+  }).catch((e) => log(`hop: ${e.message}`));
 });
 
 $("btn-clear").addEventListener("click", clearGraph);
@@ -806,6 +1118,10 @@ $("btn-neighbors").addEventListener("click", () => {
   loadNeighbors(state.selectedId, 10).catch((e) => log(e.message));
 });
 
+$("btn-history").addEventListener("click", () => {
+  loadHistory().catch((e) => log(`history: ${e.message}`));
+});
+
 $("btn-trace-from").addEventListener("click", () => {
   if (state.selectedId) $("trace-from").value = state.selectedId;
 });
@@ -813,6 +1129,42 @@ $("btn-trace-from").addEventListener("click", () => {
 $("btn-trace-to").addEventListener("click", () => {
   if (state.selectedId) $("trace-to").value = state.selectedId;
 });
+
+$("btn-layout").addEventListener("click", () => {
+  runLayout($("layout-mode").value);
+});
+
+$("layout-mode").addEventListener("change", () => {
+  runLayout($("layout-mode").value);
+});
+
+$("btn-rotate-cw").addEventListener("click", () => rotateGraph(15));
+$("btn-rotate-ccw").addEventListener("click", () => rotateGraph(-15));
+$("btn-fit").addEventListener("click", () => cy.fit(undefined, 40));
+$("btn-center-sel").addEventListener("click", () => {
+  const sel = cy.$(":selected");
+  if (sel.nonempty()) cy.animate({ center: { eles: sel }, duration: 200 });
+  else if (state.selectedId) centerViewOnNode(state.selectedId);
+  else cy.fit(undefined, 40);
+});
+$("btn-lock").addEventListener("click", toggleLock);
+$("btn-png").addEventListener("click", exportPng);
+
+[
+  "view-fact",
+  "view-entity",
+  "view-active",
+  "view-outdated",
+  "view-archived",
+].forEach((id) => {
+  $(id).addEventListener("change", () => {
+    applyViewFilters();
+    updateStats();
+  });
+});
+
+$("view-node-labels").addEventListener("change", applyLabelVisibility);
+$("view-edge-labels").addEventListener("change", applyLabelVisibility);
 
 async function checkHealth() {
   const badge = $("status-badge");
@@ -835,4 +1187,6 @@ async function checkHealth() {
 
 checkHealth();
 updateStats();
-log("ready — Brief loads overview; Search / Recall / Trace explore");
+log(
+  "ready — layouts: Force/Circle/Radial/Hierarchy/Grid · rotate · fit · dblclick expand",
+);
