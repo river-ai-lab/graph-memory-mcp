@@ -1,5 +1,14 @@
 /* Graph Memory Explorer — client-side graph merge + Cytoscape */
 
+const KNOWN_EDGE_TYPES = new Set([
+  "RELATED_TO",
+  "MENTIONS",
+  "SUMMARIZES",
+  "FOLLOWS_FROM",
+  "CONTRADICTS",
+  "EXTRACTED_FROM",
+]);
+
 const state = {
   ownerId: localStorage.getItem("gm_owner_id") || "default",
   anchorId: null,
@@ -9,6 +18,7 @@ const state = {
   neighborOffset: new Map(),
   selectedId: null,
   hoverId: null,
+  pathEdgeKeys: new Set(),
 };
 
 const $ = (id) => document.getElementById(id);
@@ -52,6 +62,41 @@ function nodeStyle(nodeType, status) {
   return base;
 }
 
+function edgeClass(relationType) {
+  const t = relationType || "RELATED";
+  if (t === "CONTRADICTS") return "edge-contradicts";
+  if (t === "SUMMARIZES") return "edge-summarizes";
+  if (!KNOWN_EDGE_TYPES.has(t)) return "edge-triplet";
+  return "edge-default";
+}
+
+function searchFilters() {
+  const extra = {};
+  const status = $("search-status").value;
+  if (status) {
+    extra.status = status;
+    if (status !== "active") extra.include_outdated = true;
+  }
+  const fact = $("type-fact").checked;
+  const entity = $("type-entity").checked;
+  if (fact && !entity) extra.node_types = ["Fact"];
+  else if (entity && !fact) extra.node_types = ["Entity"];
+  // both or neither → omit (server default)
+
+  const project = $("filter-project").value.trim();
+  const tagsRaw = $("filter-tags").value.trim();
+  const mf = {};
+  if (project) mf.project = project;
+  if (tagsRaw) {
+    mf.tags = tagsRaw
+      .split(",")
+      .map((t) => t.trim())
+      .filter(Boolean);
+  }
+  if (Object.keys(mf).length) extra.metadata_filter = mf;
+  return extra;
+}
+
 function mergeNodes(nodes, meta = {}) {
   for (const n of nodes || []) {
     const id = n.node_id;
@@ -63,14 +108,14 @@ function mergeNodes(nodes, meta = {}) {
       node_type: n.node_type || prev.node_type || "Fact",
       text: n.text ?? prev.text,
       status: n.status ?? prev.status,
-      similarity: meta.similarity ?? n.similarity ?? prev.similarity,
+      similarity: meta.similarity ?? n.similarity ?? n.score ?? prev.similarity,
       metadata: n.metadata ?? prev.metadata,
       _fresh: meta.fresh !== false,
     });
   }
 }
 
-function mergeEdges(edges) {
+function mergeEdges(edges, { path = false } = {}) {
   for (const e of edges || []) {
     const from = e.from_id;
     const to = e.to_id;
@@ -81,7 +126,27 @@ function mergeEdges(edges) {
       to_id: to,
       relation_type: e.relation_type || "RELATED",
     });
+    if (path) state.pathEdgeKeys.add(key);
   }
+}
+
+function edgesFromTrace(nodes, relations) {
+  const edges = [];
+  for (let i = 0; i < (relations || []).length; i++) {
+    const a = nodes[i];
+    const b = nodes[i + 1];
+    if (!a?.node_id || !b?.node_id) continue;
+    edges.push({
+      from_id: a.node_id,
+      to_id: b.node_id,
+      relation_type: relations[i].relation_type || "RELATED",
+    });
+  }
+  return edges;
+}
+
+function clearPathHighlight() {
+  state.pathEdgeKeys.clear();
 }
 
 function mergeToolResult(data, meta = {}, syncOpts = {}) {
@@ -90,8 +155,13 @@ function mergeToolResult(data, meta = {}, syncOpts = {}) {
   mergeNodes(data.results, meta);
   mergeNodes(data.facts, meta);
   mergeNodes(data.entities, meta);
+  mergeNodes(data.seeds, meta);
   if (data.node) mergeNodes([data.node], meta);
   mergeEdges(data.edges);
+  for (const p of data.paths || []) {
+    mergeNodes(p.nodes, { fresh: true });
+    mergeEdges(edgesFromTrace(p.nodes || [], p.relations || []), { path: true });
+  }
   syncGraph(syncOpts);
   updateStats();
 }
@@ -111,8 +181,12 @@ function nodeElementDef(n) {
   };
 }
 
-function edgeElementDef(e) {
+function edgeElementDef(e, key) {
   const id = `${e.from_id}-${e.relation_type}-${e.to_id}`;
+  const classes = [edgeClass(e.relation_type)];
+  if (state.pathEdgeKeys.has(key || `${e.from_id}|${e.relation_type}|${e.to_id}`)) {
+    classes.push("edge-path");
+  }
   return {
     group: "edges",
     data: {
@@ -121,6 +195,7 @@ function edgeElementDef(e) {
       target: e.to_id,
       label: e.relation_type,
     },
+    classes: classes.join(" "),
   };
 }
 
@@ -172,10 +247,14 @@ function syncGraph({ fullLayout = false, originNodeId = null } = {}) {
     }
   }
 
-  for (const e of state.edges.values()) {
-    const def = edgeElementDef(e);
-    if (cy.getElementById(def.data.id).empty()) {
+  for (const [key, e] of state.edges) {
+    const def = edgeElementDef(e, key);
+    let ele = cy.getElementById(def.data.id);
+    if (ele.empty()) {
       cy.add(def);
+    } else {
+      ele.removeClass("edge-contradicts edge-summarizes edge-triplet edge-default edge-path");
+      ele.addClass(def.classes);
     }
   }
 
@@ -237,6 +316,42 @@ let cy = cytoscape({
         label: "data(label)",
         "font-size": 8,
         color: "#94a3b8",
+      },
+    },
+    {
+      selector: "edge.edge-contradicts",
+      style: {
+        width: 2.5,
+        "line-color": "#ef4444",
+        "target-arrow-color": "#ef4444",
+        color: "#fca5a5",
+      },
+    },
+    {
+      selector: "edge.edge-summarizes",
+      style: {
+        width: 2,
+        "line-color": "#22d3ee",
+        "target-arrow-color": "#22d3ee",
+        color: "#a5f3fc",
+      },
+    },
+    {
+      selector: "edge.edge-triplet",
+      style: {
+        width: 2,
+        "line-color": "#f59e0b",
+        "target-arrow-color": "#f59e0b",
+        color: "#fcd34d",
+      },
+    },
+    {
+      selector: "edge.edge-path",
+      style: {
+        width: 3.5,
+        "line-color": "#fbbf24",
+        "target-arrow-color": "#fbbf24",
+        "line-style": "solid",
       },
     },
   ],
@@ -375,9 +490,159 @@ async function textSearch() {
   const query = $("search-query").value.trim();
   if (!query) return;
   const limit = Number($("search-limit").value) || 10;
-  const data = await callTool("search", ownerArgs({ query, limit }));
+  const data = await callTool(
+    "search",
+    ownerArgs({ query, limit, ...searchFilters() }),
+  );
   mergeToolResult(data, { fresh: true }, { originNodeId: state.anchorId || null });
   log(`search "${query}" → ${data.results?.length || 0}`);
+}
+
+async function recallContext() {
+  const query = $("search-query").value.trim();
+  if (!query) return;
+  const limit = Number($("search-limit").value) || 10;
+  const depth = Number($("depth").value) || 1;
+  const maxNodes = Number($("max-nodes").value) || 10;
+  clearPathHighlight();
+  const filters = searchFilters();
+  const args = ownerArgs({
+    query,
+    limit,
+    depth,
+    max_nodes: maxNodes,
+    include_paths: true,
+  });
+  if (filters.metadata_filter) args.metadata_filter = filters.metadata_filter;
+  if (filters.include_outdated) args.include_outdated = true;
+  const data = await callTool("recall_context", args);
+  mergeToolResult(data, { fresh: true }, { fullLayout: true });
+  const seed = data.seeds?.[0]?.node_id;
+  if (seed) {
+    state.anchorId = seed;
+    $("node-id").value = seed;
+    centerViewOnNode(seed);
+  }
+  log(
+    `recall "${query}" → ${data.nodes?.length || 0} nodes, ${data.seeds?.length || 0} seeds`,
+  );
+}
+
+function renderOverview(data) {
+  const stats = data.stats || {};
+  const parts = [];
+  if (stats.total_facts != null) parts.push(`${stats.total_facts} facts`);
+  if (stats.total_entities != null) parts.push(`${stats.total_entities} entities`);
+  if (stats.total_relations != null) parts.push(`${stats.total_relations} rels`);
+  if (stats.active_facts != null) parts.push(`${stats.active_facts} active`);
+  $("overview-stats").textContent = parts.length
+    ? parts.join(" · ")
+    : "no stats";
+
+  const blocks = [];
+
+  const top = data.top_facts || [];
+  if (top.length) {
+    blocks.push(`<div class="ov-block"><h3>Top facts</h3><ul class="ov-list">
+      ${top
+        .map(
+          (f) =>
+            `<li data-id="${f.node_id}" title="${f.node_id}">${preview(f.text, 56)}${f.degree != null ? ` <span class="muted">·${f.degree}</span>` : ""}</li>`,
+        )
+        .join("")}
+    </ul></div>`);
+  }
+
+  const contra = data.contradictions || [];
+  if (contra.length) {
+    blocks.push(`<div class="ov-block"><h3>Contradicts</h3><ul class="ov-list">
+      ${contra
+        .map(
+          (c) =>
+            `<li class="contradict" data-from="${c.from_id}" data-to="${c.to_id}">
+              <span data-id="${c.from_id}">${preview(c.from_text, 28)}</span>
+              <span class="sep">⚡</span>
+              <span data-id="${c.to_id}">${preview(c.to_text, 28)}</span>
+            </li>`,
+        )
+        .join("")}
+    </ul></div>`);
+  }
+
+  const stale = data.stale_facts || [];
+  if (stale.length) {
+    blocks.push(`<div class="ov-block"><h3>Stale</h3><ul class="ov-list">
+      ${stale
+        .map(
+          (f) =>
+            `<li data-id="${f.node_id}" title="${f.node_id}">${preview(f.text, 56)}</li>`,
+        )
+        .join("")}
+    </ul></div>`);
+  }
+
+  $("overview").innerHTML = blocks.length
+    ? blocks.join("")
+    : `<p class="muted">empty owner</p>`;
+}
+
+async function loadBrief() {
+  const data = await callTool("get_brief", ownerArgs({ limit: 10 }));
+  renderOverview(data);
+  // seed graph with top + contradict endpoints for click targets
+  const seedNodes = [
+    ...(data.top_facts || []),
+    ...(data.stale_facts || []),
+  ];
+  for (const c of data.contradictions || []) {
+    seedNodes.push(
+      { node_id: c.from_id, text: c.from_text },
+      { node_id: c.to_id, text: c.to_text },
+    );
+  }
+  mergeNodes(seedNodes, { fresh: true });
+  const contraEdges = (data.contradictions || []).map((c) => ({
+    from_id: c.from_id,
+    to_id: c.to_id,
+    relation_type: "CONTRADICTS",
+  }));
+  mergeEdges(contraEdges);
+  syncGraph({ fullLayout: cy.nodes().length === 0 && seedNodes.length > 1 });
+  updateStats();
+  log(
+    `brief: top=${data.top_facts?.length || 0} contra=${data.contradictions?.length || 0} stale=${data.stale_facts?.length || 0}`,
+  );
+}
+
+async function runTrace() {
+  const fromId = $("trace-from").value.trim();
+  const toId = $("trace-to").value.trim();
+  if (!fromId || !toId) {
+    log("trace needs from_id and to_id");
+    return;
+  }
+  const maxDepth = Number($("trace-depth").value) || 5;
+  const directed = !$("trace-undirected").checked;
+  clearPathHighlight();
+  const data = await callTool(
+    "get_trace",
+    ownerArgs({
+      from_id: fromId,
+      to_id: toId,
+      max_depth: maxDepth,
+      directed,
+    }),
+  );
+  const nodes = data.nodes || [];
+  if (!nodes.length) {
+    log(data.message || "no path");
+    return;
+  }
+  mergeNodes(nodes, { fresh: true });
+  mergeEdges(edgesFromTrace(nodes, data.relations || []), { path: true });
+  syncGraph({ fullLayout: true, originNodeId: fromId });
+  centerViewOnNode(fromId);
+  log(`trace ${fromId} → ${toId}: ${nodes.length} nodes`);
 }
 
 function clearGraph() {
@@ -385,6 +650,7 @@ function clearGraph() {
   state.nodes.clear();
   state.edges.clear();
   state.neighborOffset.clear();
+  state.pathEdgeKeys.clear();
   state.selectedId = null;
   updateStats();
   $("detail").hidden = true;
@@ -396,7 +662,6 @@ const hoverPlus = $("hover-plus");
 let hidePlusTimer = null;
 
 function positionHoverPlus(node) {
-  // Body only — ignore label width/height so + stays on the node shape
   const bb = node.renderedBoundingBox({
     includeLabels: false,
     includeOverlays: false,
@@ -471,6 +736,25 @@ $("owner-id").value = state.ownerId;
 $("owner-id").addEventListener("change", () => {
   state.ownerId = $("owner-id").value.trim() || "default";
   localStorage.setItem("gm_owner_id", state.ownerId);
+  loadBrief().catch((e) => log(`brief: ${e.message}`));
+});
+
+$("btn-brief").addEventListener("click", () => {
+  loadBrief().catch((e) => log(`brief: ${e.message}`));
+});
+
+$("overview").addEventListener("click", (e) => {
+  const idEl = e.target.closest("[data-id]");
+  if (idEl?.dataset.id) {
+    loadAnchor(idEl.dataset.id).catch((err) => log(err.message));
+    return;
+  }
+  const pair = e.target.closest("[data-from][data-to]");
+  if (pair) {
+    $("trace-from").value = pair.dataset.from;
+    $("trace-to").value = pair.dataset.to;
+    runTrace().catch((err) => log(`trace: ${err.message}`));
+  }
 });
 
 $("btn-load-node").addEventListener("click", () => {
@@ -481,6 +765,14 @@ $("btn-load-node").addEventListener("click", () => {
 
 $("btn-search").addEventListener("click", () => {
   textSearch().catch((e) => log(`search: ${e.message}`));
+});
+
+$("btn-recall").addEventListener("click", () => {
+  recallContext().catch((e) => log(`recall: ${e.message}`));
+});
+
+$("btn-trace").addEventListener("click", () => {
+  runTrace().catch((e) => log(`trace: ${e.message}`));
 });
 
 $("btn-similar").addEventListener("click", () => {
@@ -514,6 +806,14 @@ $("btn-neighbors").addEventListener("click", () => {
   loadNeighbors(state.selectedId, 10).catch((e) => log(e.message));
 });
 
+$("btn-trace-from").addEventListener("click", () => {
+  if (state.selectedId) $("trace-from").value = state.selectedId;
+});
+
+$("btn-trace-to").addEventListener("click", () => {
+  if (state.selectedId) $("trace-to").value = state.selectedId;
+});
+
 async function checkHealth() {
   const badge = $("status-badge");
   try {
@@ -522,6 +822,7 @@ async function checkHealth() {
     if (data.ready) {
       badge.textContent = "FalkorDB connected";
       badge.className = "badge badge-ok";
+      loadBrief().catch((e) => log(`brief: ${e.message}`));
     } else {
       badge.textContent = "FalkorDB offline";
       badge.className = "badge badge-err";
@@ -534,4 +835,4 @@ async function checkHealth() {
 
 checkHealth();
 updateStats();
-log("ready — enter owner_id and anchor node ID, then Load");
+log("ready — Brief loads overview; Search / Recall / Trace explore");

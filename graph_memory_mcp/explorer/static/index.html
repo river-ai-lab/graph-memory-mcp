@@ -18,24 +18,60 @@
     <aside class="panel panel-left">
       <section>
         <label>owner_id</label>
-        <input id="owner-id" type="text" value="default" placeholder="default" />
+        <div class="row">
+          <input id="owner-id" type="text" value="default" placeholder="default" />
+          <button id="btn-brief" type="button">Brief</button>
+        </div>
+      </section>
+
+      <section id="overview-section">
+        <label>Overview</label>
+        <p id="overview-stats" class="muted">Load brief to see top facts.</p>
+        <div id="overview"></div>
       </section>
 
       <section>
         <label>Anchor node ID</label>
         <div class="row">
-          <input id="node-id" type="text" placeholder="e.g. 12345" />
+          <input id="node-id" type="text" placeholder="e.g. uuid hex" />
           <button id="btn-load-node" type="button">Load</button>
         </div>
       </section>
 
       <section>
-        <label>Semantic search (text)</label>
+        <label>Search / recall</label>
         <input id="search-query" type="text" placeholder="query…" />
         <div class="row">
           <label class="inline">limit</label>
           <input id="search-limit" type="number" value="10" min="1" max="50" />
           <button id="btn-search" type="button">Search</button>
+          <button id="btn-recall" type="button">Recall</button>
+        </div>
+        <div class="row filters">
+          <select id="search-status" title="status">
+            <option value="">status: any</option>
+            <option value="active">active</option>
+            <option value="outdated">outdated</option>
+            <option value="archived">archived</option>
+          </select>
+          <label class="inline chk"><input id="type-fact" type="checkbox" checked /> Fact</label>
+          <label class="inline chk"><input id="type-entity" type="checkbox" checked /> Entity</label>
+        </div>
+        <div class="row">
+          <input id="filter-project" type="text" placeholder="project" />
+          <input id="filter-tags" type="text" placeholder="tags (a, b)" />
+        </div>
+      </section>
+
+      <section>
+        <label>Trace A → B</label>
+        <input id="trace-from" type="text" placeholder="from_id" />
+        <input id="trace-to" type="text" placeholder="to_id" />
+        <div class="row">
+          <label class="inline">depth</label>
+          <input id="trace-depth" type="number" value="5" min="1" max="10" />
+          <label class="inline chk"><input id="trace-undirected" type="checkbox" /> undirected</label>
+          <button id="btn-trace" type="button">Trace</button>
         </div>
       </section>
 
@@ -65,6 +101,17 @@
         </div>
       </section>
 
+      <section class="legend">
+        <label>Edge legend</label>
+        <ul class="legend-list">
+          <li><span class="swatch swatch-contradicts"></span> CONTRADICTS</li>
+          <li><span class="swatch swatch-summarizes"></span> SUMMARIZES</li>
+          <li><span class="swatch swatch-triplet"></span> triplet / other</li>
+          <li><span class="swatch swatch-default"></span> RELATED / MENTIONS…</li>
+          <li><span class="swatch swatch-path"></span> path (trace)</li>
+        </ul>
+      </section>
+
       <section id="log-section">
         <label>Log</label>
         <pre id="log"></pre>
@@ -90,6 +137,8 @@
         <ul id="detail-edges"></ul>
         <button id="btn-set-anchor" type="button">Set as anchor</button>
         <button id="btn-neighbors" type="button">+10 neighbors</button>
+        <button id="btn-trace-from" type="button" class="secondary">Trace from</button>
+        <button id="btn-trace-to" type="button" class="secondary">Trace to</button>
       </div>
     </aside>
   </div>

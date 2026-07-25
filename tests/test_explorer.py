@@ -71,10 +71,18 @@ def test_explorer_api_with_mock_client():
         page = client.get("/")
         assert page.status_code == 200
         assert "Graph Memory Explorer" in page.text
+        assert 'id="btn-brief"' in page.text
+        assert 'id="btn-recall"' in page.text
+        assert 'id="btn-trace"' in page.text
+        assert 'id="search-status"' in page.text
 
         static = client.get("/static/explorer.js")
         assert static.status_code == 200
         assert "callTool" in static.text
+        assert "get_brief" in static.text
+        assert "get_trace" in static.text
+        assert "recall_context" in static.text
+        assert "edge-contradicts" in static.text
 
 
 @pytest.mark.integration
