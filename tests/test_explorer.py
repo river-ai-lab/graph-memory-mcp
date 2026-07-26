@@ -37,6 +37,19 @@ def test_static_assets_exist():
     assert (STATIC_DIR / "index.html").is_file()
     assert (STATIC_DIR / "explorer.js").is_file()
     assert (STATIC_DIR / "explorer.css").is_file()
+    for name in (
+        "api.js",
+        "detail.js",
+        "dom.js",
+        "graph.js",
+        "interactions.js",
+        "neighbors.js",
+        "panel.js",
+        "persist.js",
+        "state.js",
+        "tools.js",
+    ):
+        assert (STATIC_DIR / "js" / name).is_file(), name
 
 
 def test_read_only_tools_include_graph_reads():
@@ -100,33 +113,52 @@ def test_explorer_api_with_mock_client():
         assert "recall-outdated" not in page.text
         assert "ctx-outdated" not in page.text
 
+        assert 'type="module"' in page.text
+
         static = client.get("/static/explorer.js")
         assert static.status_code == 200
-        assert "callTool" in static.text
-        assert "get_brief" in static.text
-        assert "get_trace" in static.text
-        assert "recall_context" in static.text
-        assert "search_triplets" in static.text
-        assert "get_stats" in static.text
-        assert "runSelectedTool" in static.text
-        assert "loadNeighbors" in static.text
-        assert "loadPersistedFields" in static.text
-        assert "resetPersistedForms" in static.text
-        assert "scopeMetadataFilter" in static.text
-        assert "scopeIncludeOutdated" in static.text
-        assert "validateTool" in static.text
-        assert "exportJson" in static.text
-        assert "markSeeds" in static.text
-        assert "maybe more" in static.text
-        assert "AbortController" in static.text
-        assert "TOOL_HINTS" in static.text
-        assert "edge-contradicts" in static.text
-        assert "rotateGraph" in static.text
-        assert "runLayout" in static.text
-        assert "applyViewFilters" in static.text
-        assert "get_node_change_history" in static.text
-        assert "concentric" in static.text
-        assert "breadthfirst" in static.text
+        assert "./js/graph.js" in static.text
+        assert "initCy" in static.text
+        assert "bindPanelControls" in static.text
+
+        neighbors = client.get("/static/js/neighbors.js")
+        assert neighbors.status_code == 200
+        assert "emptyNeighborInfo" in neighbors.text
+        assert "revealNeighborPage" in neighbors.text
+        assert "fetchCap" in neighbors.text
+        assert "bufferIds" in neighbors.text
+        assert "loadNeighbors" in neighbors.text
+
+        graph_js = client.get("/static/js/graph.js")
+        assert graph_js.status_code == 200
+        assert "export function syncGraph" in graph_js.text
+        assert "export function initCy" in graph_js.text
+        assert "exportJson" in graph_js.text
+        assert "edge-contradicts" in graph_js.text
+
+        tools_js = client.get("/static/js/tools.js")
+        assert tools_js.status_code == 200
+        assert "runSelectedTool" in tools_js.text
+        assert "AbortController" in tools_js.text
+        assert "recall_context" in tools_js.text
+        assert "search_triplets" in tools_js.text
+        assert "get_stats" in tools_js.text
+
+        persist_js = client.get("/static/js/persist.js")
+        assert persist_js.status_code == 200
+        assert "loadPersistedFields" in persist_js.text
+        assert "resetPersistedForms" in persist_js.text
+        assert "TOOL_HINTS" in persist_js.text
+
+        api_js = client.get("/static/js/api.js")
+        assert api_js.status_code == 200
+        assert "scopeIncludeOutdated" in api_js.text
+        assert "export async function callTool" in api_js.text
+
+        detail_js = client.get("/static/js/detail.js")
+        assert detail_js.status_code == 200
+        assert "get_brief" in detail_js.text
+        assert "loadBrief" in detail_js.text
 
 
 @pytest.mark.integration

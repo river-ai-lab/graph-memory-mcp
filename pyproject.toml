@@ -32,7 +32,7 @@ graph-memory-mcp = "graph_memory_mcp.cli:main"
 graph-memory-explorer = "graph_memory_mcp.explorer.cli:main"
 
 [tool.setuptools.package-data]
-graph_memory_mcp = ["explorer/static/*"]
+graph_memory_mcp = ["explorer/static/*", "explorer/static/js/*"]
 
 [tool.setuptools]
 include-package-data = true
