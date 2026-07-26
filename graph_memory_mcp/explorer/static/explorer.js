@@ -83,9 +83,9 @@ function parseTags(raw) {
     .filter(Boolean);
 }
 
-function metadataFilterFrom(projectEl, tagsEl) {
-  const project = $(projectEl).value.trim();
-  const tags = parseTags($(tagsEl).value.trim());
+function scopeMetadataFilter() {
+  const project = $("scope-project").value.trim();
+  const tags = parseTags($("scope-tags").value.trim());
   const mf = {};
   if (project) mf.project = project;
   if (tags.length) mf.tags = tags;
@@ -103,9 +103,92 @@ function searchFilters() {
   const entity = $("type-entity").checked;
   if (fact && !entity) extra.node_types = ["Fact"];
   else if (entity && !fact) extra.node_types = ["Entity"];
-  const mf = metadataFilterFrom("filter-project", "filter-tags");
+  const mf = scopeMetadataFilter();
   if (mf) extra.metadata_filter = mf;
   return extra;
+}
+
+const TOOL_HINTS = {
+  recall_context:
+    "Semantic search + expand around seeds. Closest to “ask the memory a question”.",
+  get_trace:
+    "Shortest path between two node uids. Highlighted as gold path edges.",
+  get_context:
+    "Subgraph around one node. offset>0 enables paginated neighbor loading.",
+  search:
+    "Return ranked hits only (no expansion). Scope project/tags apply as filters.",
+  find_similar:
+    "Embedding-near facts for a given fact_id. Then draws edges among them.",
+};
+
+const PERSIST_FIELDS = [
+  { id: "owner-id", key: "gm_owner_id", type: "text", fallback: "default" },
+  { id: "scope-project", key: "gm_scope_project", type: "text" },
+  { id: "scope-tags", key: "gm_scope_tags", type: "text" },
+  { id: "llm-tool", key: "gm_llm_tool", type: "text", fallback: "recall_context" },
+  { id: "tool-replace", key: "gm_tool_replace", type: "checkbox", fallback: true },
+  { id: "recall-query", key: "gm_recall_query", type: "text" },
+  { id: "recall-limit", key: "gm_recall_limit", type: "text", fallback: "8" },
+  { id: "recall-depth", key: "gm_recall_depth", type: "text", fallback: "1" },
+  { id: "recall-max-nodes", key: "gm_recall_max_nodes", type: "text", fallback: "30" },
+  { id: "recall-threshold", key: "gm_recall_threshold", type: "text" },
+  { id: "recall-paths", key: "gm_recall_paths", type: "checkbox", fallback: false },
+  { id: "recall-outdated", key: "gm_recall_outdated", type: "checkbox", fallback: false },
+  { id: "trace-from", key: "gm_trace_from", type: "text" },
+  { id: "trace-to", key: "gm_trace_to", type: "text" },
+  { id: "trace-depth", key: "gm_trace_depth", type: "text", fallback: "5" },
+  { id: "trace-undirected", key: "gm_trace_undirected", type: "checkbox", fallback: false },
+  { id: "ctx-node-id", key: "gm_ctx_node_id", type: "text" },
+  { id: "ctx-depth", key: "gm_ctx_depth", type: "text", fallback: "1" },
+  { id: "ctx-max-nodes", key: "gm_ctx_max_nodes", type: "text", fallback: "20" },
+  { id: "ctx-offset", key: "gm_ctx_offset", type: "text", fallback: "0" },
+  { id: "ctx-outdated", key: "gm_ctx_outdated", type: "checkbox", fallback: false },
+  { id: "search-query", key: "gm_search_query", type: "text" },
+  { id: "search-limit", key: "gm_search_limit", type: "text", fallback: "10" },
+  { id: "search-status", key: "gm_search_status", type: "text" },
+  { id: "type-fact", key: "gm_type_fact", type: "checkbox", fallback: true },
+  { id: "type-entity", key: "gm_type_entity", type: "checkbox", fallback: true },
+  { id: "similar-fact-id", key: "gm_similar_fact_id", type: "text" },
+  { id: "similar-limit", key: "gm_similar_limit", type: "text", fallback: "5" },
+  { id: "similar-threshold", key: "gm_similar_threshold", type: "text", fallback: "0.55" },
+  { id: "neighbor-page-size", key: "gm_neighbor_page", type: "text", fallback: "10" },
+  { id: "layout-mode", key: "gm_layout", type: "text", fallback: "cose" },
+];
+
+function loadPersistedFields() {
+  for (const f of PERSIST_FIELDS) {
+    const el = $(f.id);
+    if (!el) continue;
+    const raw = localStorage.getItem(f.key);
+    if (f.type === "checkbox") {
+      if (raw === null) el.checked = !!f.fallback;
+      else el.checked = raw === "1";
+    } else if (raw !== null) {
+      el.value = raw;
+    } else if (f.fallback != null) {
+      el.value = String(f.fallback);
+    }
+  }
+  state.ownerId = $("owner-id").value.trim() || "default";
+  state.layoutName = $("layout-mode").value || "cose";
+}
+
+function persistField(id) {
+  const f = PERSIST_FIELDS.find((x) => x.id === id);
+  const el = $(id);
+  if (!f || !el) return;
+  if (f.type === "checkbox") localStorage.setItem(f.key, el.checked ? "1" : "0");
+  else localStorage.setItem(f.key, el.value);
+}
+
+function bindPersistence() {
+  for (const f of PERSIST_FIELDS) {
+    const el = $(f.id);
+    if (!el) continue;
+    const ev = f.type === "checkbox" || el.tagName === "SELECT" ? "change" : "input";
+    el.addEventListener(ev, () => persistField(f.id));
+    el.addEventListener("change", () => persistField(f.id));
+  }
 }
 
 function setTool(tool) {
@@ -113,6 +196,9 @@ function setTool(tool) {
   for (const el of document.querySelectorAll(".tool-params")) {
     el.hidden = el.id !== `params-${tool}`;
   }
+  const hint = $("tool-hint");
+  if (hint) hint.textContent = TOOL_HINTS[tool] || "";
+  persistField("llm-tool");
 }
 
 function showToolResult(tool, args, data) {
@@ -150,7 +236,7 @@ function buildToolCall(tool) {
       });
       const thr = $("recall-threshold").value;
       if (thr !== "") args.similarity_threshold = Number(thr);
-      const mf = metadataFilterFrom("recall-project", "recall-tags");
+      const mf = scopeMetadataFilter();
       if (mf) args.metadata_filter = mf;
       return args;
     }
@@ -831,6 +917,8 @@ async function focusNode(nodeId, { loadDetail = true } = {}) {
   state.anchorId = nodeId;
   $("ctx-node-id").value = nodeId;
   $("similar-fact-id").value = nodeId;
+  persistField("ctx-node-id");
+  persistField("similar-fact-id");
   if (loadDetail) await loadNodeDetail(nodeId);
   showDetail(nodeId);
   const ele = cy.getElementById(nodeId);
@@ -1190,13 +1278,13 @@ function endRotateDrag() {
 cy.on("mouseup", endRotateDrag);
 window.addEventListener("mouseup", endRotateDrag);
 
-$("owner-id").value = state.ownerId;
-$("layout-mode").value = state.layoutName;
-setTool($("llm-tool").value);
+loadPersistedFields();
+bindPersistence();
+setTool($("llm-tool").value || "recall_context");
 
 $("owner-id").addEventListener("change", () => {
   state.ownerId = $("owner-id").value.trim() || "default";
-  localStorage.setItem("gm_owner_id", state.ownerId);
+  persistField("owner-id");
   loadBrief().catch((e) => log(`brief: ${e.message}`));
 });
 
@@ -1253,6 +1341,7 @@ $("btn-set-anchor").addEventListener("click", () => {
   if (!state.selectedId) return;
   setTool("get_context");
   $("ctx-node-id").value = state.selectedId;
+  persistField("ctx-node-id");
   log(`filled get_context node_id=${state.selectedId}`);
 });
 
@@ -1293,12 +1382,14 @@ $("btn-trace-from").addEventListener("click", () => {
   if (!state.selectedId) return;
   setTool("get_trace");
   $("trace-from").value = state.selectedId;
+  persistField("trace-from");
 });
 
 $("btn-trace-to").addEventListener("click", () => {
   if (!state.selectedId) return;
   setTool("get_trace");
   $("trace-to").value = state.selectedId;
+  persistField("trace-to");
 });
 
 $("btn-layout").addEventListener("click", () => {

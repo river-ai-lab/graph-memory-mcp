@@ -76,6 +76,10 @@ def test_explorer_api_with_mock_client():
         assert 'id="btn-run-tool"' in page.text
         assert 'id="params-recall_context"' in page.text
         assert 'id="params-get_trace"' in page.text
+        assert 'id="scope-project"' in page.text
+        assert 'id="scope-tags"' in page.text
+        assert 'id="tool-hint"' in page.text
+        assert "field-hint" in page.text
         assert 'id="btn-neighbors"' in page.text
         assert 'id="btn-neighbors-more"' in page.text
         assert 'id="sel-action"' in page.text
@@ -95,6 +99,9 @@ def test_explorer_api_with_mock_client():
         assert "recall_context" in static.text
         assert "runSelectedTool" in static.text
         assert "loadNeighbors" in static.text
+        assert "loadPersistedFields" in static.text
+        assert "scopeMetadataFilter" in static.text
+        assert "TOOL_HINTS" in static.text
         assert "edge-contradicts" in static.text
         assert "rotateGraph" in static.text
         assert "runLayout" in static.text

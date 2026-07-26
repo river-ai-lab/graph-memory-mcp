@@ -195,6 +195,50 @@ button.active-lock {
   line-height: 1.35;
 }
 
+.scope-section {
+  padding-bottom: 0.25rem;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 1rem;
+}
+
+.field {
+  margin-top: 0.45rem;
+}
+
+.field.compact {
+  flex: 0 0 auto;
+  min-width: 4.2rem;
+  margin-top: 0.25rem;
+}
+
+.field.compact.grow {
+  flex: 1 1 8rem;
+  min-width: 7rem;
+}
+
+.field-label {
+  display: block;
+  margin: 0 0 0.15rem;
+  color: var(--text);
+  font-size: 0.72rem;
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 600;
+}
+
+.field-hint {
+  display: block;
+  margin-top: 0.15rem;
+  color: var(--muted);
+  font-size: 0.68rem;
+  line-height: 1.3;
+}
+
+.field-hint code {
+  font-size: 0.65rem;
+  color: #93c5fd;
+}
+
 .tool-call select,
 .tool-call textarea,
 .tool-call input[type="text"] {
