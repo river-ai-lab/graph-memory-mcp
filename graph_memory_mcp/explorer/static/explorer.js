@@ -332,12 +332,16 @@ async function runSelectedTool() {
       null;
     if (seed) {
       state.anchorId = seed;
-      if (tool === "get_context") $("ctx-node-id").value = seed;
+      if (tool === "get_context") {
+        $("ctx-node-id").value = seed;
+        persistField("ctx-node-id");
+      }
       centerViewOnNode(seed);
     }
   }
 
   showToolResult(tool, args, data);
+  persistField("tool-replace");
   log(`ran ${tool}`);
   return data;
 }
