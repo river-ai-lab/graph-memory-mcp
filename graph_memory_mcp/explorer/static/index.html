@@ -37,9 +37,15 @@
             title="Optional metadata_filter.tags (comma-separated)" />
           <span class="field-hint">Optional. Comma-separated → <code>metadata_filter.tags</code>.</span>
         </div>
+        <div class="row" style="margin-top:0.45rem">
+          <label class="inline chk" title="Include outdated / expired nodes in reads that support it">
+            <input id="scope-outdated" type="checkbox" /> include_outdated
+          </label>
+        </div>
         <div class="row">
           <button id="btn-brief" type="button" title="Load owner overview (top facts, contradictions)">Brief</button>
           <button id="btn-clear" type="button" class="secondary" title="Clear canvas only — scope params stay">Clear graph</button>
+          <button id="btn-reset-forms" type="button" class="secondary" title="Reset saved scope + tool form values">Reset forms</button>
         </div>
       </section>
 
@@ -52,6 +58,8 @@
           <option value="get_context">get_context — expand around a node</option>
           <option value="search">search — semantic / text hits</option>
           <option value="find_similar">find_similar — near a fact</option>
+          <option value="search_triplets">search_triplets — entity–rel–entity</option>
+          <option value="get_stats">get_stats — owner counts</option>
         </select>
         <p id="tool-hint" class="hint muted"></p>
 
@@ -92,9 +100,6 @@
             </div>
             <label class="inline chk" title="Also return a path hint between top two seeds">
               <input id="recall-paths" type="checkbox" /> include_paths
-            </label>
-            <label class="inline chk" title="Include outdated / expired nodes">
-              <input id="recall-outdated" type="checkbox" /> include_outdated
             </label>
           </div>
         </div>
@@ -152,11 +157,6 @@
               <span class="field-hint">Skip N (paging)</span>
             </div>
           </div>
-          <div class="row">
-            <label class="inline chk" title="Include outdated / expired neighbors">
-              <input id="ctx-outdated" type="checkbox" /> include_outdated
-            </label>
-          </div>
         </div>
 
         <div class="tool-params" id="params-search" hidden>
@@ -181,7 +181,7 @@
                 <option value="outdated">outdated</option>
                 <option value="archived">archived</option>
               </select>
-              <span class="field-hint">Non-active forces include_outdated</span>
+              <span class="field-hint">Non-active also sets include_outdated</span>
             </div>
           </div>
           <div class="row filters">
@@ -213,15 +213,55 @@
           </div>
         </div>
 
+        <div class="tool-params" id="params-search_triplets" hidden>
+          <div class="field">
+            <label class="field-label" for="trip-subject">subject</label>
+            <input id="trip-subject" type="text" placeholder="entity name (optional)"
+              title="Subject entity name (normalized match)" />
+            <span class="field-hint">Optional. Entity name on the left of the triplet.</span>
+          </div>
+          <div class="field">
+            <label class="field-label" for="trip-predicate">predicate</label>
+            <input id="trip-predicate" type="text" placeholder="e.g. WORKS_AT (optional)"
+              title="Relation type filter" />
+            <span class="field-hint">Optional. Relation type between entities.</span>
+          </div>
+          <div class="field">
+            <label class="field-label" for="trip-object">object</label>
+            <input id="trip-object" type="text" placeholder="entity name (optional)"
+              title="Object entity name (normalized match)" />
+            <span class="field-hint">Optional. Entity name on the right of the triplet.</span>
+          </div>
+          <div class="row">
+            <div class="field compact">
+              <label class="field-label" for="trip-limit">limit</label>
+              <input id="trip-limit" type="number" value="10" min="1" max="50"
+                title="Max triplets to return" />
+              <span class="field-hint">Results</span>
+            </div>
+          </div>
+          <p class="hint muted">At least one of subject / predicate / object is recommended.</p>
+        </div>
+
+        <div class="tool-params" id="params-get_stats" hidden>
+          <p class="hint muted">Uses current <code>owner_id</code> from Scope. No graph merge — counts only.</p>
+        </div>
+
         <div class="row tool-actions">
           <label class="inline chk" title="Clear canvas before merging the new result">
             <input id="tool-replace" type="checkbox" checked /> replace graph
           </label>
-          <button id="btn-run-tool" type="button" title="Call the selected MCP tool">Run tool</button>
+          <button id="btn-run-tool" type="button" title="Call the selected MCP tool">
+            <span class="btn-spinner" aria-hidden="true"></span>
+            <span class="btn-label">Run tool</span>
+          </button>
         </div>
         <div id="tool-summary" class="tool-summary muted">No call yet.</div>
         <details id="tool-raw-wrap" class="tool-raw-wrap">
-          <summary>Raw response</summary>
+          <summary>
+            Raw response
+            <button id="btn-copy-raw" type="button" class="linkish" title="Copy raw JSON">Copy</button>
+          </summary>
           <pre id="tool-raw"></pre>
         </details>
       </section>
@@ -248,8 +288,9 @@
       </section>
 
       <section class="legend">
-        <label>Edge legend</label>
+        <label>Legend</label>
         <ul class="legend-list">
+          <li><span class="swatch swatch-seed"></span> seed (recall)</li>
           <li><span class="swatch swatch-contradicts"></span> CONTRADICTS</li>
           <li><span class="swatch swatch-summarizes"></span> SUMMARIZES</li>
           <li><span class="swatch swatch-triplet"></span> triplet / other</li>
@@ -281,8 +322,10 @@
         <button id="btn-center-sel" type="button" class="secondary" title="Center selection">Center</button>
         <button id="btn-lock" type="button" class="secondary" title="Lock / unlock node drag">🔓</button>
         <button id="btn-png" type="button" class="secondary" title="Export PNG">PNG</button>
+        <button id="btn-json" type="button" class="secondary" title="Export current graph as JSON">JSON</button>
         <span class="tb-hint muted">drag · zoom · space+pan · alt+drag rotate · click node → neighbors</span>
       </div>
+      <div id="busy-banner" class="busy-banner" hidden>Calling tool…</div>
       <div id="cy"></div>
       <div id="sel-action" class="sel-action" hidden>
         <button id="btn-sel-neighbors" type="button">1-hop neighbors</button>
@@ -296,7 +339,11 @@
       <h2>Node detail</h2>
       <p id="detail-empty" class="muted">Click a node to inspect it and load 1-hop neighbors.</p>
       <div id="detail" hidden>
-        <p><strong>ID</strong> <span id="detail-id"></span></p>
+        <p class="id-row">
+          <strong>ID</strong>
+          <span id="detail-id" class="mono"></span>
+          <button id="btn-copy-id" type="button" class="linkish" title="Copy node id">Copy</button>
+        </p>
         <p><strong>Type</strong> <span id="detail-type"></span></p>
         <p><strong>Status</strong> <span id="detail-status"></span></p>
         <p><strong>Similarity</strong> <span id="detail-sim"></span></p>

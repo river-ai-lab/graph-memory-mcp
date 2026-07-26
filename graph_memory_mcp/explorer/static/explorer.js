@@ -14,8 +14,9 @@ const state = {
   anchorId: null,
   nodes: new Map(),
   edges: new Map(),
-  /** @type {Map<string, { offset: number, pageSize: number, hasMore: boolean, loaded: number, batchIds: string[] }>} */
+  /** @type {Map<string, { offset: number, pageSize: number, more: 'yes'|'maybe'|'no', loaded: number, batchIds: string[] }>} */
   neighborState: new Map(),
+  seedIds: new Set(),
   selectedId: null,
   hoverId: null,
   pathEdgeKeys: new Set(),
@@ -23,6 +24,9 @@ const state = {
   spacePan: false,
   layoutName: localStorage.getItem("gm_layout") || "cose",
   lastToolResponse: null,
+  busy: false,
+  toolRunId: 0,
+  toolAbort: null,
   /** @type {{ active: boolean, cx: number, cy: number, lastAngle: number } | null} */
   rotateDrag: null,
 };
@@ -35,17 +39,82 @@ function log(msg) {
   el.textContent = `${line}\n${el.textContent}`.slice(0, 4000);
 }
 
-async function callTool(tool, arguments_) {
-  const res = await fetch("/api/tool", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ tool, arguments: arguments_ }),
-  });
-  const data = await res.json();
-  if (!res.ok || data.success === false) {
-    throw new Error(data.error || `HTTP ${res.status}`);
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function scopeIncludeOutdated() {
+  return !!$("scope-outdated")?.checked;
+}
+
+async function callTool(tool, arguments_, { signal, retries = 3 } = {}) {
+  let lastErr = null;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    if (signal?.aborted) {
+      throw new DOMException("Aborted", "AbortError");
+    }
+    let res;
+    try {
+      res = await fetch("/api/tool", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tool, arguments: arguments_ }),
+        signal,
+      });
+    } catch (err) {
+      if (err?.name === "AbortError") throw err;
+      lastErr = err;
+      if (attempt < retries) {
+        await sleep(400 * 2 ** attempt);
+        continue;
+      }
+      throw err;
+    }
+
+    if (res.status === 503 && attempt < retries) {
+      log(`MCP not ready (503) — retry ${attempt + 1}/${retries}…`);
+      await sleep(500 * 2 ** attempt);
+      continue;
+    }
+
+    let data;
+    try {
+      data = await res.json();
+    } catch {
+      throw new Error(`HTTP ${res.status}: invalid JSON`);
+    }
+    if (!res.ok || data.success === false) {
+      const msg = data.error || `HTTP ${res.status}`;
+      if (res.status === 503 && attempt < retries) {
+        log(`MCP not ready — retry ${attempt + 1}/${retries}…`);
+        await sleep(500 * 2 ** attempt);
+        continue;
+      }
+      throw new Error(msg);
+    }
+    return data;
   }
-  return data;
+  throw lastErr || new Error("request failed");
+}
+
+async function copyText(text, okMsg = "copied") {
+  const value = String(text || "");
+  if (!value) {
+    log("nothing to copy");
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(value);
+    log(okMsg);
+  } catch {
+    const ta = document.createElement("textarea");
+    ta.value = value;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    ta.remove();
+    log(okMsg);
+  }
 }
 
 function ownerArgs(extra = {}) {
@@ -98,6 +167,8 @@ function searchFilters() {
   if (status) {
     extra.status = status;
     if (status !== "active") extra.include_outdated = true;
+  } else if (scopeIncludeOutdated()) {
+    extra.include_outdated = true;
   }
   const fact = $("type-fact").checked;
   const entity = $("type-entity").checked;
@@ -119,12 +190,17 @@ const TOOL_HINTS = {
     "Return ranked hits only (no expansion). Scope project/tags apply as filters.",
   find_similar:
     "Embedding-near facts for a given fact_id. Then draws edges among them.",
+  search_triplets:
+    "Find Entity–relation–Entity triplets. Drawn as amber edges between entities.",
+  get_stats:
+    "Owner-level counts only. Does not change the canvas (replace ignored).",
 };
 
 const PERSIST_FIELDS = [
   { id: "owner-id", key: "gm_owner_id", type: "text", fallback: "default" },
   { id: "scope-project", key: "gm_scope_project", type: "text" },
   { id: "scope-tags", key: "gm_scope_tags", type: "text" },
+  { id: "scope-outdated", key: "gm_scope_outdated", type: "checkbox", fallback: false },
   { id: "llm-tool", key: "gm_llm_tool", type: "text", fallback: "recall_context" },
   { id: "tool-replace", key: "gm_tool_replace", type: "checkbox", fallback: true },
   { id: "recall-query", key: "gm_recall_query", type: "text" },
@@ -133,7 +209,6 @@ const PERSIST_FIELDS = [
   { id: "recall-max-nodes", key: "gm_recall_max_nodes", type: "text", fallback: "30" },
   { id: "recall-threshold", key: "gm_recall_threshold", type: "text" },
   { id: "recall-paths", key: "gm_recall_paths", type: "checkbox", fallback: false },
-  { id: "recall-outdated", key: "gm_recall_outdated", type: "checkbox", fallback: false },
   { id: "trace-from", key: "gm_trace_from", type: "text" },
   { id: "trace-to", key: "gm_trace_to", type: "text" },
   { id: "trace-depth", key: "gm_trace_depth", type: "text", fallback: "5" },
@@ -142,7 +217,6 @@ const PERSIST_FIELDS = [
   { id: "ctx-depth", key: "gm_ctx_depth", type: "text", fallback: "1" },
   { id: "ctx-max-nodes", key: "gm_ctx_max_nodes", type: "text", fallback: "20" },
   { id: "ctx-offset", key: "gm_ctx_offset", type: "text", fallback: "0" },
-  { id: "ctx-outdated", key: "gm_ctx_outdated", type: "checkbox", fallback: false },
   { id: "search-query", key: "gm_search_query", type: "text" },
   { id: "search-limit", key: "gm_search_limit", type: "text", fallback: "10" },
   { id: "search-status", key: "gm_search_status", type: "text" },
@@ -151,11 +225,24 @@ const PERSIST_FIELDS = [
   { id: "similar-fact-id", key: "gm_similar_fact_id", type: "text" },
   { id: "similar-limit", key: "gm_similar_limit", type: "text", fallback: "5" },
   { id: "similar-threshold", key: "gm_similar_threshold", type: "text", fallback: "0.55" },
+  { id: "trip-subject", key: "gm_trip_subject", type: "text" },
+  { id: "trip-predicate", key: "gm_trip_predicate", type: "text" },
+  { id: "trip-object", key: "gm_trip_object", type: "text" },
+  { id: "trip-limit", key: "gm_trip_limit", type: "text", fallback: "10" },
   { id: "neighbor-page-size", key: "gm_neighbor_page", type: "text", fallback: "10" },
   { id: "layout-mode", key: "gm_layout", type: "text", fallback: "cose" },
 ];
 
 function loadPersistedFields() {
+  // migrate old per-tool outdated flags into shared scope once
+  if (localStorage.getItem("gm_scope_outdated") === null) {
+    if (
+      localStorage.getItem("gm_recall_outdated") === "1" ||
+      localStorage.getItem("gm_ctx_outdated") === "1"
+    ) {
+      localStorage.setItem("gm_scope_outdated", "1");
+    }
+  }
   for (const f of PERSIST_FIELDS) {
     const el = $(f.id);
     if (!el) continue;
@@ -171,6 +258,86 @@ function loadPersistedFields() {
   }
   state.ownerId = $("owner-id").value.trim() || "default";
   state.layoutName = $("layout-mode").value || "cose";
+}
+
+function resetPersistedForms() {
+  for (const f of PERSIST_FIELDS) localStorage.removeItem(f.key);
+  localStorage.removeItem("gm_recall_outdated");
+  localStorage.removeItem("gm_ctx_outdated");
+  for (const f of PERSIST_FIELDS) {
+    const el = $(f.id);
+    if (!el) continue;
+    if (f.type === "checkbox") el.checked = !!f.fallback;
+    else el.value = f.fallback != null ? String(f.fallback) : "";
+  }
+  state.ownerId = "default";
+  state.layoutName = "cose";
+  clearFieldErrors();
+  setTool("recall_context");
+  $("tool-summary").textContent = "Forms reset to defaults (browser storage cleared).";
+  $("tool-summary").classList.add("muted");
+  $("tool-raw").textContent = "";
+  log("forms reset");
+}
+
+function clearFieldErrors() {
+  document.querySelectorAll(".field-error").forEach((el) => el.remove());
+  document.querySelectorAll(".has-error").forEach((el) => el.classList.remove("has-error"));
+}
+
+function setFieldError(inputId, message) {
+  const el = $(inputId);
+  if (!el) return;
+  el.classList.add("has-error");
+  const host = el.closest(".field") || el.parentElement;
+  if (!host) return;
+  const existing = host.querySelector(".field-error");
+  if (existing) {
+    existing.textContent = message;
+    return;
+  }
+  const err = document.createElement("span");
+  err.className = "field-error";
+  err.textContent = message;
+  host.appendChild(err);
+}
+
+function validateTool(tool) {
+  clearFieldErrors();
+  let ok = true;
+  const need = (id, msg) => {
+    const v = $(id)?.value?.trim?.() ?? "";
+    if (!v) {
+      setFieldError(id, msg);
+      ok = false;
+    }
+  };
+  if (tool === "recall_context") need("recall-query", "Required — the question / query text.");
+  if (tool === "get_trace") {
+    need("trace-from", "Required — start node uid.");
+    need("trace-to", "Required — end node uid.");
+  }
+  if (tool === "get_context") need("ctx-node-id", "Required — center node uid.");
+  if (tool === "search") need("search-query", "Required — search text.");
+  if (tool === "find_similar") {
+    const fact =
+      $("similar-fact-id").value.trim() || state.selectedId || state.anchorId || "";
+    if (!fact) {
+      setFieldError("similar-fact-id", "Required — fact uid, or select a node first.");
+      ok = false;
+    }
+  }
+  if (tool === "search_triplets") {
+    const any =
+      $("trip-subject").value.trim() ||
+      $("trip-predicate").value.trim() ||
+      $("trip-object").value.trim();
+    if (!any) {
+      setFieldError("trip-subject", "Provide at least subject, predicate, or object.");
+      ok = false;
+    }
+  }
+  return ok;
 }
 
 function persistField(id) {
@@ -203,36 +370,102 @@ function setTool(tool) {
 
 function showToolResult(tool, args, data) {
   state.lastToolResponse = { tool, args, data };
-  const nodes = data.nodes?.length || 0;
-  const edges = data.edges?.length || 0;
-  const seeds = data.seeds?.length || 0;
-  const paths = data.paths?.length || 0;
-  const parts = [`${tool}`, `${nodes} nodes`, `${edges} edges`];
-  if (seeds) parts.push(`${seeds} seeds`);
-  if (paths) parts.push(`${paths} paths`);
+  const parts = [tool];
+  if (data.nodes) parts.push(`${data.nodes.length} nodes`);
+  if (data.edges) parts.push(`${data.edges.length} edges`);
+  if (data.seeds) parts.push(`${data.seeds.length} seeds`);
+  if (data.paths) parts.push(`${data.paths.length} paths`);
+  if (data.results) parts.push(`${data.results.length} results`);
+  if (data.triplets) parts.push(`${data.triplets.length} triplets`);
+  if (data.similar_facts) parts.push(`${data.similar_facts.length} similar`);
+  if (data.stats) {
+    const s = data.stats;
+    const bits = [];
+    if (s.total_facts != null) bits.push(`${s.total_facts} facts`);
+    if (s.total_entities != null) bits.push(`${s.total_entities} entities`);
+    if (s.total_relations != null) bits.push(`${s.total_relations} rels`);
+    if (bits.length) parts.push(bits.join(", "));
+  }
   if (data.message) parts.push(data.message);
   if (data.has_more != null) parts.push(data.has_more ? "has_more" : "end");
   $("tool-summary").textContent = parts.join(" · ");
   $("tool-summary").classList.remove("muted");
-  $("tool-raw").textContent = JSON.stringify({ tool, arguments: args, response: data }, null, 2);
+  $("tool-raw").textContent = JSON.stringify(
+    { tool, arguments: args, response: data },
+    null,
+    2,
+  );
 }
 
-async function beginToolRun() {
-  if ($("tool-replace").checked) clearGraph({ quiet: true });
+function setBusy(busy, label = "Calling tool…") {
+  state.busy = busy;
+  const btn = $("btn-run-tool");
+  if (btn) {
+    btn.disabled = busy;
+    btn.classList.toggle("is-busy", busy);
+  }
+  const banner = $("busy-banner");
+  if (banner) {
+    banner.hidden = !busy;
+    banner.textContent = label;
+  }
+}
+
+function markSeeds(seedList) {
+  state.seedIds.clear();
+  for (const s of seedList || []) {
+    const id = s?.node_id || s;
+    if (id) state.seedIds.add(String(id));
+  }
+}
+
+function applySeedClasses() {
+  cy.nodes().forEach((ele) => {
+    if (state.seedIds.has(ele.id())) ele.addClass("seed");
+    else ele.removeClass("seed");
+  });
+}
+
+function mergeTriplets(triplets) {
+  const nodes = [];
+  const edges = [];
+  for (const t of triplets || []) {
+    if (t.subject_id) {
+      nodes.push({
+        node_id: t.subject_id,
+        node_type: "Entity",
+        text: t.subject || t.subject_id,
+      });
+    }
+    if (t.object_id) {
+      nodes.push({
+        node_id: t.object_id,
+        node_type: "Entity",
+        text: t.object || t.object_id,
+      });
+    }
+    if (t.subject_id && t.object_id) {
+      edges.push({
+        from_id: t.subject_id,
+        to_id: t.object_id,
+        relation_type: t.predicate || "RELATED",
+      });
+    }
+  }
+  mergeNodes(nodes, { fresh: true });
+  mergeEdges(edges);
 }
 
 function buildToolCall(tool) {
   switch (tool) {
     case "recall_context": {
-      const query = $("recall-query").value.trim();
-      if (!query) throw new Error("recall_context needs query");
       const args = ownerArgs({
-        query,
+        query: $("recall-query").value.trim(),
         limit: Number($("recall-limit").value) || 8,
         depth: Number($("recall-depth").value) || 0,
         max_nodes: Number($("recall-max-nodes").value) || 30,
         include_paths: $("recall-paths").checked,
-        include_outdated: $("recall-outdated").checked,
+        include_outdated: scopeIncludeOutdated(),
       });
       const thr = $("recall-threshold").value;
       if (thr !== "") args.similarity_threshold = Number(thr);
@@ -240,50 +473,53 @@ function buildToolCall(tool) {
       if (mf) args.metadata_filter = mf;
       return args;
     }
-    case "get_trace": {
-      const from_id = $("trace-from").value.trim();
-      const to_id = $("trace-to").value.trim();
-      if (!from_id || !to_id) throw new Error("get_trace needs from_id and to_id");
+    case "get_trace":
       return ownerArgs({
-        from_id,
-        to_id,
+        from_id: $("trace-from").value.trim(),
+        to_id: $("trace-to").value.trim(),
         max_depth: Number($("trace-depth").value) || 5,
         directed: !$("trace-undirected").checked,
       });
-    }
-    case "get_context": {
-      const node_id = $("ctx-node-id").value.trim();
-      if (!node_id) throw new Error("get_context needs node_id");
+    case "get_context":
       return ownerArgs({
-        node_id,
+        node_id: $("ctx-node-id").value.trim(),
         depth: Number($("ctx-depth").value) || 0,
         max_nodes: Number($("ctx-max-nodes").value) || 20,
         offset: Number($("ctx-offset").value) || 0,
-        include_outdated: $("ctx-outdated").checked,
+        include_outdated: scopeIncludeOutdated(),
       });
-    }
-    case "search": {
-      const query = $("search-query").value.trim();
-      if (!query) throw new Error("search needs query");
+    case "search":
       return ownerArgs({
-        query,
+        query: $("search-query").value.trim(),
         limit: Number($("search-limit").value) || 10,
         ...searchFilters(),
       });
-    }
     case "find_similar": {
       const fact_id =
         $("similar-fact-id").value.trim() ||
         state.selectedId ||
         state.anchorId ||
         "";
-      if (!fact_id) throw new Error("find_similar needs fact_id");
       return ownerArgs({
         fact_id,
         limit: Number($("similar-limit").value) || 5,
         similarity_threshold: Number($("similar-threshold").value) || 0.55,
       });
     }
+    case "search_triplets": {
+      const args = ownerArgs({
+        limit: Number($("trip-limit").value) || 10,
+      });
+      const subject = $("trip-subject").value.trim();
+      const predicate = $("trip-predicate").value.trim();
+      const object_value = $("trip-object").value.trim();
+      if (subject) args.subject = subject;
+      if (predicate) args.predicate = predicate;
+      if (object_value) args.object_value = object_value;
+      return args;
+    }
+    case "get_stats":
+      return ownerArgs({});
     default:
       throw new Error(`unknown tool: ${tool}`);
   }
@@ -291,59 +527,130 @@ function buildToolCall(tool) {
 
 async function runSelectedTool() {
   const tool = $("llm-tool").value;
-  const args = buildToolCall(tool);
-  await beginToolRun();
-  clearPathHighlight();
-  const data = await callTool(tool, args);
-
-  if (tool === "get_trace") {
-    const nodes = data.nodes || [];
-    if (!nodes.length) {
-      showToolResult(tool, args, data);
-      log(data.message || "no path");
-      return data;
-    }
-    mergeNodes(nodes, { fresh: true });
-    mergeEdges(edgesFromTrace(nodes, data.relations || []), { path: true });
-    syncGraph({ fullLayout: true, originNodeId: args.from_id });
-    centerViewOnNode(args.from_id);
-  } else if (tool === "find_similar") {
-    const anchor = args.fact_id;
-    const ids = new Set([
-      anchor,
-      ...(data.similar_facts || []).map((f) => f.node_id),
-    ]);
-    mergeNodes(data.similar_facts, { fresh: true });
-    mergeNodes([{ node_id: anchor }], {});
-    const ctx = await callTool(
-      "get_context",
-      ownerArgs({ node_id: anchor, depth: 2, max_nodes: 50 }),
-    );
-    mergeEdges(
-      (ctx.edges || []).filter((e) => ids.has(e.from_id) && ids.has(e.to_id)),
-    );
-    syncGraph({ originNodeId: anchor, fullLayout: true });
-  } else {
-    mergeToolResult(data, { fresh: true }, { fullLayout: true });
-    const seed =
-      data.seeds?.[0]?.node_id ||
-      data.results?.[0]?.node_id ||
-      args.node_id ||
-      null;
-    if (seed) {
-      state.anchorId = seed;
-      if (tool === "get_context") {
-        $("ctx-node-id").value = seed;
-        persistField("ctx-node-id");
-      }
-      centerViewOnNode(seed);
-    }
+  if (!validateTool(tool)) {
+    $("tool-summary").textContent = "Fix highlighted fields, then Run again.";
+    $("tool-summary").classList.add("muted");
+    return null;
   }
 
-  showToolResult(tool, args, data);
-  persistField("tool-replace");
-  log(`ran ${tool}`);
-  return data;
+  // Abort / ignore previous in-flight Run
+  if (state.toolAbort) state.toolAbort.abort();
+  const abort = new AbortController();
+  state.toolAbort = abort;
+  const runId = ++state.toolRunId;
+  const args = buildToolCall(tool);
+
+  setBusy(true, `Calling ${tool}…`);
+  try {
+    if ($("tool-replace").checked && tool !== "get_stats") {
+      clearGraph({ quiet: true });
+    }
+    if (tool !== "get_stats") clearPathHighlight();
+
+    const data = await callTool(tool, args, { signal: abort.signal });
+    if (runId !== state.toolRunId) {
+      log(`ignored stale ${tool} response`);
+      return null;
+    }
+
+    if (tool === "get_stats") {
+      const s = data.stats || {};
+      const bits = [];
+      if (s.total_facts != null) bits.push(`${s.total_facts} facts`);
+      if (s.total_entities != null) bits.push(`${s.total_entities} entities`);
+      if (s.total_relations != null) bits.push(`${s.total_relations} rels`);
+      if (s.active_facts != null) bits.push(`${s.active_facts} active`);
+      if (bits.length) $("overview-stats").textContent = bits.join(" · ");
+      showToolResult(tool, args, data);
+      log(`ran ${tool}`);
+      return data;
+    }
+
+    if (tool === "get_trace") {
+      const nodes = data.nodes || [];
+      if (!nodes.length) {
+        showToolResult(tool, args, data);
+        log(data.message || "no path");
+        return data;
+      }
+      markSeeds([]);
+      mergeNodes(nodes, { fresh: true });
+      mergeEdges(edgesFromTrace(nodes, data.relations || []), { path: true });
+      syncGraph({ fullLayout: true, originNodeId: args.from_id });
+      centerViewOnNode(args.from_id);
+    } else if (tool === "find_similar") {
+      const anchor = args.fact_id;
+      markSeeds([anchor]);
+      const ids = new Set([
+        anchor,
+        ...(data.similar_facts || []).map((f) => f.node_id),
+      ]);
+      mergeNodes(data.similar_facts, { fresh: true });
+      mergeNodes([{ node_id: anchor }], {});
+      const ctx = await callTool(
+        "get_context",
+        ownerArgs({
+          node_id: anchor,
+          depth: 2,
+          max_nodes: 50,
+          include_outdated: scopeIncludeOutdated(),
+        }),
+        { signal: abort.signal },
+      );
+      if (runId !== state.toolRunId) {
+        log("ignored stale find_similar follow-up");
+        return null;
+      }
+      mergeEdges(
+        (ctx.edges || []).filter((e) => ids.has(e.from_id) && ids.has(e.to_id)),
+      );
+      syncGraph({ originNodeId: anchor, fullLayout: true });
+    } else if (tool === "search_triplets") {
+      markSeeds([]);
+      mergeTriplets(data.triplets || []);
+      syncGraph({ fullLayout: true });
+    } else if (tool === "recall_context") {
+      markSeeds(data.seeds || []);
+      mergeToolResult(data, { fresh: true }, { fullLayout: true });
+      const seed = data.seeds?.[0]?.node_id;
+      if (seed) {
+        state.anchorId = seed;
+        centerViewOnNode(seed);
+      }
+    } else {
+      markSeeds(data.seeds || data.results || []);
+      mergeToolResult(data, { fresh: true }, { fullLayout: true });
+      const seed =
+        data.seeds?.[0]?.node_id ||
+        data.results?.[0]?.node_id ||
+        args.node_id ||
+        null;
+      if (seed) {
+        state.anchorId = seed;
+        if (tool === "get_context") {
+          $("ctx-node-id").value = seed;
+          persistField("ctx-node-id");
+        }
+        centerViewOnNode(seed);
+      }
+    }
+
+    showToolResult(tool, args, data);
+    persistField("tool-replace");
+    log(`ran ${tool}`);
+    return data;
+  } catch (err) {
+    if (err?.name === "AbortError") {
+      log(`cancelled ${tool}`);
+      return null;
+    }
+    throw err;
+  } finally {
+    if (runId === state.toolRunId) {
+      setBusy(false);
+      if (state.toolAbort === abort) state.toolAbort = null;
+    }
+  }
 }
 
 function mergeNodes(nodes, meta = {}) {
@@ -604,6 +911,8 @@ function syncGraph({ fullLayout = false, originNodeId = null } = {}) {
       if (n._fresh) ele.addClass("fresh");
       else ele.removeClass("fresh");
     }
+    if (state.seedIds.has(id)) ele.addClass("seed");
+    else ele.removeClass("seed");
   }
 
   for (const [key, e] of state.edges) {
@@ -622,6 +931,7 @@ function syncGraph({ fullLayout = false, originNodeId = null } = {}) {
   }
 
   applyNodeColors();
+  applySeedClasses();
   applyViewFilters();
   applyLabelVisibility();
   cy.nodes().forEach((n) => n.lock(state.nodesLocked));
@@ -725,8 +1035,22 @@ let cy = cytoscape({
       style: { "border-color": "#3b82f6", "border-width": 3 },
     },
     {
+      selector: "node.seed",
+      style: {
+        "border-color": "#f472b6",
+        "border-width": 4,
+        width: 34,
+        height: 34,
+        "background-blacken": -0.05,
+      },
+    },
+    {
       selector: "node:selected",
       style: { "border-color": "#fbbf24", "border-width": 3 },
+    },
+    {
+      selector: "node.seed:selected",
+      style: { "border-color": "#fbbf24", "border-width": 4 },
     },
     {
       selector: "node.filtered-out",
@@ -802,11 +1126,15 @@ function neighborInfo(nodeId) {
     state.neighborState.get(nodeId) || {
       offset: 0,
       pageSize: Number($("neighbor-page-size")?.value) || 10,
-      hasMore: true,
+      more: "maybe",
       loaded: 0,
       batchIds: [],
     }
   );
+}
+
+function neighborCanLoadMore(info) {
+  return info.more === "yes" || info.more === "maybe";
 }
 
 function updateNeighborUi(nodeId) {
@@ -825,15 +1153,23 @@ function updateNeighborUi(nodeId) {
     selMore.hidden = true;
     selStatus.textContent = "";
   } else {
-    status.textContent = info.hasMore
-      ? `Loaded ${info.loaded} · next offset ${info.offset} · more available`
-      : `Loaded ${info.loaded} · no more pages`;
+    let moreText = "end of pages";
+    if (info.more === "yes") moreText = `more available · next offset ${info.offset}`;
+    else if (info.more === "maybe") {
+      moreText =
+        `maybe more · next offset ${info.offset} (API omits has_more on first page)`;
+    }
+    status.textContent = `Loaded ${info.loaded} · ${moreText}`;
     loadBtn.textContent = "Reload from start";
-    moreBtn.hidden = !info.hasMore;
-    selMore.hidden = !info.hasMore;
-    selStatus.textContent = info.hasMore
-      ? `${info.loaded} loaded · more`
-      : `${info.loaded} loaded`;
+    const canMore = neighborCanLoadMore(info);
+    moreBtn.hidden = !canMore;
+    selMore.hidden = !canMore;
+    selStatus.textContent =
+      info.more === "yes"
+        ? `${info.loaded} · more`
+        : info.more === "maybe"
+          ? `${info.loaded} · maybe more`
+          : `${info.loaded} · done`;
   }
 
   const list = $("neighbor-list");
@@ -842,7 +1178,8 @@ function updateNeighborUi(nodeId) {
     ? ids
         .map((id) => {
           const n = state.nodes.get(id);
-          return `<li data-id="${id}" title="${id}">${preview(n?.text || id, 42)}</li>`;
+          const seed = state.seedIds.has(id) ? " · seed" : "";
+          return `<li data-id="${id}" title="${id}">${preview(n?.text || id, 42)}${seed}</li>`;
         })
         .join("")
     : "<li class='muted'>none in last page</li>";
@@ -936,14 +1273,13 @@ async function focusNode(nodeId, { loadDetail = true } = {}) {
 }
 
 async function loadNeighbors(nodeId, { reset = false, pageSize } = {}) {
-  const size =
-    pageSize || Number($("neighbor-page-size").value) || 10;
+  const size = pageSize || Number($("neighbor-page-size").value) || 10;
   let info = neighborInfo(nodeId);
   if (reset || !state.neighborState.has(nodeId)) {
     info = {
       offset: 0,
       pageSize: size,
-      hasMore: true,
+      more: "maybe",
       loaded: 0,
       batchIds: [],
     };
@@ -955,7 +1291,7 @@ async function loadNeighbors(nodeId, { reset = false, pageSize } = {}) {
     node_id: nodeId,
     depth: 1,
     max_nodes: info.pageSize,
-    include_outdated: $("ctx-outdated")?.checked || false,
+    include_outdated: scopeIncludeOutdated(),
   });
   if (info.offset > 0) args.offset = info.offset;
 
@@ -968,19 +1304,21 @@ async function loadNeighbors(nodeId, { reset = false, pageSize } = {}) {
   const newCount = batchIds.filter((id) => !before.has(id)).length;
   const returned = data.nodes?.length || 0;
 
-  // offset=0 uses BFS (no has_more); treat full page as "maybe more"
-  let hasMore;
+  // offset=0 → BFS path, no has_more. Be honest: "maybe" if page looks full.
+  let more;
   if (info.offset > 0) {
-    hasMore = data.has_more === true;
+    more = data.has_more === true ? "yes" : "no";
+  } else if (returned >= info.pageSize) {
+    more = "maybe";
   } else {
-    hasMore = returned >= info.pageSize;
+    more = "no";
   }
 
   const nextOffset = info.offset + info.pageSize;
   info = {
-    offset: hasMore ? nextOffset : info.offset + returned,
+    offset: more === "no" ? info.offset + returned : nextOffset,
     pageSize: info.pageSize,
-    hasMore,
+    more,
     loaded: info.loaded + returnedNodes.length,
     batchIds,
   };
@@ -988,7 +1326,8 @@ async function loadNeighbors(nodeId, { reset = false, pageSize } = {}) {
   updateNeighborUi(nodeId);
   log(
     `neighbors ${nodeId} offset=${args.offset || 0} +${returnedNodes.length}` +
-      (newCount ? ` (${newCount} new)` : ""),
+      (newCount ? ` (${newCount} new)` : "") +
+      ` · ${more}`,
   );
   return data;
 }
@@ -1078,6 +1417,7 @@ function clearGraph({ quiet = false } = {}) {
   state.nodes.clear();
   state.edges.clear();
   state.neighborState.clear();
+  state.seedIds.clear();
   state.pathEdgeKeys.clear();
   state.selectedId = null;
   updateStats();
@@ -1098,6 +1438,37 @@ function exportPng() {
   a.download = `graph-memory-${Date.now()}.png`;
   a.click();
   log("exported PNG");
+}
+
+function exportJson() {
+  const payload = {
+    exported_at: new Date().toISOString(),
+    owner_id: $("owner-id").value.trim() || "default",
+    layout: state.layoutName,
+    seed_ids: [...state.seedIds],
+    nodes: [...state.nodes.values()].map((n) => ({
+      node_id: n.node_id,
+      node_type: n.node_type,
+      text: n.text,
+      status: n.status,
+      similarity: n.similarity,
+      metadata: n.metadata,
+      seed: state.seedIds.has(n.node_id),
+    })),
+    edges: [...state.edges.values()],
+    last_tool: state.lastToolResponse
+      ? { tool: state.lastToolResponse.tool, arguments: state.lastToolResponse.args }
+      : null,
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], {
+    type: "application/json",
+  });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `graph-memory-${Date.now()}.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  log(`exported JSON (${payload.nodes.length} nodes, ${payload.edges.length} edges)`);
 }
 
 function toggleLock() {
@@ -1302,9 +1673,11 @@ $("llm-tool").addEventListener("change", () => {
 
 function onRunToolClick() {
   runSelectedTool().catch((e) => {
+    if (e?.name === "AbortError") return;
     $("tool-summary").textContent = e.message;
     $("tool-summary").classList.add("muted");
     log(`tool error: ${e.message}`);
+    setBusy(false);
   });
 }
 
@@ -1324,6 +1697,14 @@ $("tool-call-section").addEventListener("keydown", (e) => {
   }
 });
 
+$("tool-call-section").addEventListener("input", (e) => {
+  const el = e.target;
+  if (el?.classList?.contains("has-error")) {
+    el.classList.remove("has-error");
+    el.closest(".field")?.querySelector(".field-error")?.remove();
+  }
+});
+
 $("overview").addEventListener("click", (e) => {
   const idEl = e.target.closest("[data-id]");
   if (idEl?.dataset.id) {
@@ -1335,11 +1716,28 @@ $("overview").addEventListener("click", (e) => {
     setTool("get_trace");
     $("trace-from").value = pair.dataset.from;
     $("trace-to").value = pair.dataset.to;
-    runSelectedTool().catch((err) => log(`trace: ${err.message}`));
+    persistField("trace-from");
+    persistField("trace-to");
+    onRunToolClick();
   }
 });
 
 $("btn-clear").addEventListener("click", () => clearGraph());
+
+$("btn-reset-forms").addEventListener("click", () => {
+  if (!confirm("Reset saved scope and tool form values?")) return;
+  resetPersistedForms();
+});
+
+$("btn-copy-id").addEventListener("click", () => {
+  copyText($("detail-id").textContent, "node id copied");
+});
+
+$("btn-copy-raw").addEventListener("click", (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  copyText($("tool-raw").textContent, "raw JSON copied");
+});
 
 $("btn-set-anchor").addEventListener("click", () => {
   if (!state.selectedId) return;
@@ -1415,6 +1813,7 @@ $("btn-center-sel").addEventListener("click", () => {
 });
 $("btn-lock").addEventListener("click", toggleLock);
 $("btn-png").addEventListener("click", exportPng);
+$("btn-json").addEventListener("click", exportJson);
 
 [
   "view-fact",
@@ -1454,5 +1853,5 @@ async function checkHealth() {
 checkHealth();
 updateStats();
 log(
-  "ready — LLM tool call (recall_context / get_trace) · click node → 1-hop neighbors",
+  "ready — tool panel · scope persists · seeds highlighted · neighbors maybe-more",
 );

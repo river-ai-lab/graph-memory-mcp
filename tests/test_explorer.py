@@ -78,8 +78,15 @@ def test_explorer_api_with_mock_client():
         assert 'id="params-get_trace"' in page.text
         assert 'id="scope-project"' in page.text
         assert 'id="scope-tags"' in page.text
+        assert 'id="scope-outdated"' in page.text
         assert 'id="tool-hint"' in page.text
         assert "field-hint" in page.text
+        assert 'id="btn-reset-forms"' in page.text
+        assert 'id="btn-copy-id"' in page.text
+        assert 'id="btn-copy-raw"' in page.text
+        assert 'id="btn-json"' in page.text
+        assert 'id="params-search_triplets"' in page.text
+        assert 'id="params-get_stats"' in page.text
         assert 'id="btn-neighbors"' in page.text
         assert 'id="btn-neighbors-more"' in page.text
         assert 'id="sel-action"' in page.text
@@ -90,6 +97,8 @@ def test_explorer_api_with_mock_client():
         assert 'id="view-fact"' in page.text
         assert 'id="btn-history"' in page.text
         assert 'id="tool-raw"' in page.text
+        assert "recall-outdated" not in page.text
+        assert "ctx-outdated" not in page.text
 
         static = client.get("/static/explorer.js")
         assert static.status_code == 200
@@ -97,10 +106,19 @@ def test_explorer_api_with_mock_client():
         assert "get_brief" in static.text
         assert "get_trace" in static.text
         assert "recall_context" in static.text
+        assert "search_triplets" in static.text
+        assert "get_stats" in static.text
         assert "runSelectedTool" in static.text
         assert "loadNeighbors" in static.text
         assert "loadPersistedFields" in static.text
+        assert "resetPersistedForms" in static.text
         assert "scopeMetadataFilter" in static.text
+        assert "scopeIncludeOutdated" in static.text
+        assert "validateTool" in static.text
+        assert "exportJson" in static.text
+        assert "markSeeds" in static.text
+        assert "maybe more" in static.text
+        assert "AbortController" in static.text
         assert "TOOL_HINTS" in static.text
         assert "edge-contradicts" in static.text
         assert "rotateGraph" in static.text
