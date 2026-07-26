@@ -12,16 +12,17 @@ const KNOWN_EDGE_TYPES = new Set([
 const state = {
   ownerId: localStorage.getItem("gm_owner_id") || "default",
   anchorId: null,
-  depth: 1,
   nodes: new Map(),
   edges: new Map(),
-  neighborOffset: new Map(),
+  /** @type {Map<string, { offset: number, pageSize: number, hasMore: boolean, loaded: number, batchIds: string[] }>} */
+  neighborState: new Map(),
   selectedId: null,
   hoverId: null,
   pathEdgeKeys: new Set(),
   nodesLocked: false,
   spacePan: false,
   layoutName: localStorage.getItem("gm_layout") || "cose",
+  lastToolResponse: null,
   /** @type {{ active: boolean, cx: number, cy: number, lastAngle: number } | null} */
   rotateDrag: null,
 };
@@ -75,6 +76,22 @@ function edgeClass(relationType) {
   return "edge-default";
 }
 
+function parseTags(raw) {
+  return raw
+    .split(",")
+    .map((t) => t.trim())
+    .filter(Boolean);
+}
+
+function metadataFilterFrom(projectEl, tagsEl) {
+  const project = $(projectEl).value.trim();
+  const tags = parseTags($(tagsEl).value.trim());
+  const mf = {};
+  if (project) mf.project = project;
+  if (tags.length) mf.tags = tags;
+  return Object.keys(mf).length ? mf : null;
+}
+
 function searchFilters() {
   const extra = {};
   const status = $("search-status").value;
@@ -86,19 +103,157 @@ function searchFilters() {
   const entity = $("type-entity").checked;
   if (fact && !entity) extra.node_types = ["Fact"];
   else if (entity && !fact) extra.node_types = ["Entity"];
-
-  const project = $("filter-project").value.trim();
-  const tagsRaw = $("filter-tags").value.trim();
-  const mf = {};
-  if (project) mf.project = project;
-  if (tagsRaw) {
-    mf.tags = tagsRaw
-      .split(",")
-      .map((t) => t.trim())
-      .filter(Boolean);
-  }
-  if (Object.keys(mf).length) extra.metadata_filter = mf;
+  const mf = metadataFilterFrom("filter-project", "filter-tags");
+  if (mf) extra.metadata_filter = mf;
   return extra;
+}
+
+function setTool(tool) {
+  $("llm-tool").value = tool;
+  for (const el of document.querySelectorAll(".tool-params")) {
+    el.hidden = el.id !== `params-${tool}`;
+  }
+}
+
+function showToolResult(tool, args, data) {
+  state.lastToolResponse = { tool, args, data };
+  const nodes = data.nodes?.length || 0;
+  const edges = data.edges?.length || 0;
+  const seeds = data.seeds?.length || 0;
+  const paths = data.paths?.length || 0;
+  const parts = [`${tool}`, `${nodes} nodes`, `${edges} edges`];
+  if (seeds) parts.push(`${seeds} seeds`);
+  if (paths) parts.push(`${paths} paths`);
+  if (data.message) parts.push(data.message);
+  if (data.has_more != null) parts.push(data.has_more ? "has_more" : "end");
+  $("tool-summary").textContent = parts.join(" · ");
+  $("tool-summary").classList.remove("muted");
+  $("tool-raw").textContent = JSON.stringify({ tool, arguments: args, response: data }, null, 2);
+}
+
+async function beginToolRun() {
+  if ($("tool-replace").checked) clearGraph({ quiet: true });
+}
+
+function buildToolCall(tool) {
+  switch (tool) {
+    case "recall_context": {
+      const query = $("recall-query").value.trim();
+      if (!query) throw new Error("recall_context needs query");
+      const args = ownerArgs({
+        query,
+        limit: Number($("recall-limit").value) || 8,
+        depth: Number($("recall-depth").value) || 0,
+        max_nodes: Number($("recall-max-nodes").value) || 30,
+        include_paths: $("recall-paths").checked,
+        include_outdated: $("recall-outdated").checked,
+      });
+      const thr = $("recall-threshold").value;
+      if (thr !== "") args.similarity_threshold = Number(thr);
+      const mf = metadataFilterFrom("recall-project", "recall-tags");
+      if (mf) args.metadata_filter = mf;
+      return args;
+    }
+    case "get_trace": {
+      const from_id = $("trace-from").value.trim();
+      const to_id = $("trace-to").value.trim();
+      if (!from_id || !to_id) throw new Error("get_trace needs from_id and to_id");
+      return ownerArgs({
+        from_id,
+        to_id,
+        max_depth: Number($("trace-depth").value) || 5,
+        directed: !$("trace-undirected").checked,
+      });
+    }
+    case "get_context": {
+      const node_id = $("ctx-node-id").value.trim();
+      if (!node_id) throw new Error("get_context needs node_id");
+      return ownerArgs({
+        node_id,
+        depth: Number($("ctx-depth").value) || 0,
+        max_nodes: Number($("ctx-max-nodes").value) || 20,
+        offset: Number($("ctx-offset").value) || 0,
+        include_outdated: $("ctx-outdated").checked,
+      });
+    }
+    case "search": {
+      const query = $("search-query").value.trim();
+      if (!query) throw new Error("search needs query");
+      return ownerArgs({
+        query,
+        limit: Number($("search-limit").value) || 10,
+        ...searchFilters(),
+      });
+    }
+    case "find_similar": {
+      const fact_id =
+        $("similar-fact-id").value.trim() ||
+        state.selectedId ||
+        state.anchorId ||
+        "";
+      if (!fact_id) throw new Error("find_similar needs fact_id");
+      return ownerArgs({
+        fact_id,
+        limit: Number($("similar-limit").value) || 5,
+        similarity_threshold: Number($("similar-threshold").value) || 0.55,
+      });
+    }
+    default:
+      throw new Error(`unknown tool: ${tool}`);
+  }
+}
+
+async function runSelectedTool() {
+  const tool = $("llm-tool").value;
+  const args = buildToolCall(tool);
+  await beginToolRun();
+  clearPathHighlight();
+  const data = await callTool(tool, args);
+
+  if (tool === "get_trace") {
+    const nodes = data.nodes || [];
+    if (!nodes.length) {
+      showToolResult(tool, args, data);
+      log(data.message || "no path");
+      return data;
+    }
+    mergeNodes(nodes, { fresh: true });
+    mergeEdges(edgesFromTrace(nodes, data.relations || []), { path: true });
+    syncGraph({ fullLayout: true, originNodeId: args.from_id });
+    centerViewOnNode(args.from_id);
+  } else if (tool === "find_similar") {
+    const anchor = args.fact_id;
+    const ids = new Set([
+      anchor,
+      ...(data.similar_facts || []).map((f) => f.node_id),
+    ]);
+    mergeNodes(data.similar_facts, { fresh: true });
+    mergeNodes([{ node_id: anchor }], {});
+    const ctx = await callTool(
+      "get_context",
+      ownerArgs({ node_id: anchor, depth: 2, max_nodes: 50 }),
+    );
+    mergeEdges(
+      (ctx.edges || []).filter((e) => ids.has(e.from_id) && ids.has(e.to_id)),
+    );
+    syncGraph({ originNodeId: anchor, fullLayout: true });
+  } else {
+    mergeToolResult(data, { fresh: true }, { fullLayout: true });
+    const seed =
+      data.seeds?.[0]?.node_id ||
+      data.results?.[0]?.node_id ||
+      args.node_id ||
+      null;
+    if (seed) {
+      state.anchorId = seed;
+      if (tool === "get_context") $("ctx-node-id").value = seed;
+      centerViewOnNode(seed);
+    }
+  }
+
+  showToolResult(tool, args, data);
+  log(`ran ${tool}`);
+  return data;
 }
 
 function mergeNodes(nodes, meta = {}) {
@@ -552,6 +707,79 @@ async function loadNodeDetail(nodeId) {
   showDetail(nodeId, data.node);
 }
 
+function neighborInfo(nodeId) {
+  return (
+    state.neighborState.get(nodeId) || {
+      offset: 0,
+      pageSize: Number($("neighbor-page-size")?.value) || 10,
+      hasMore: true,
+      loaded: 0,
+      batchIds: [],
+    }
+  );
+}
+
+function updateNeighborUi(nodeId) {
+  if (!nodeId || state.selectedId !== nodeId) return;
+  const info = neighborInfo(nodeId);
+  const status = $("neighbor-status");
+  const moreBtn = $("btn-neighbors-more");
+  const loadBtn = $("btn-neighbors");
+  const selMore = $("btn-sel-more");
+  const selStatus = $("sel-action-status");
+
+  if (info.loaded === 0 && !state.neighborState.has(nodeId)) {
+    status.textContent = "Not loaded yet — fetch 1-hop neighbors.";
+    loadBtn.textContent = "Load neighbors";
+    moreBtn.hidden = true;
+    selMore.hidden = true;
+    selStatus.textContent = "";
+  } else {
+    status.textContent = info.hasMore
+      ? `Loaded ${info.loaded} · next offset ${info.offset} · more available`
+      : `Loaded ${info.loaded} · no more pages`;
+    loadBtn.textContent = "Reload from start";
+    moreBtn.hidden = !info.hasMore;
+    selMore.hidden = !info.hasMore;
+    selStatus.textContent = info.hasMore
+      ? `${info.loaded} loaded · more`
+      : `${info.loaded} loaded`;
+  }
+
+  const list = $("neighbor-list");
+  const ids = info.batchIds || [];
+  list.innerHTML = ids.length
+    ? ids
+        .map((id) => {
+          const n = state.nodes.get(id);
+          return `<li data-id="${id}" title="${id}">${preview(n?.text || id, 42)}</li>`;
+        })
+        .join("")
+    : "<li class='muted'>none in last page</li>";
+
+  updateSelAction();
+}
+
+function updateSelAction() {
+  const bar = $("sel-action");
+  if (!state.selectedId) {
+    bar.hidden = true;
+    return;
+  }
+  const node = cy.getElementById(state.selectedId);
+  if (node.empty()) {
+    bar.hidden = true;
+    return;
+  }
+  bar.hidden = false;
+  const bb = node.renderedBoundingBox({
+    includeLabels: false,
+    includeOverlays: false,
+  });
+  bar.style.left = `${(bb.x1 + bb.x2) / 2}px`;
+  bar.style.top = `${bb.y2 + 8}px`;
+}
+
 function showDetail(nodeId, nodeOverride) {
   const n = nodeOverride || state.nodes.get(nodeId);
   if (!n) return;
@@ -576,6 +804,8 @@ function showDetail(nodeId, nodeOverride) {
   $("detail-edges").innerHTML = related.length
     ? related.map((x) => `<li>${x}</li>`).join("")
     : "<li class='muted'>none in view</li>";
+
+  updateNeighborUi(nodeId);
 }
 
 async function loadHistory() {
@@ -597,144 +827,78 @@ async function loadHistory() {
   log(`history ${id}: ${versions.length}`);
 }
 
-async function loadAnchor(nodeId) {
+async function focusNode(nodeId, { loadDetail = true } = {}) {
   state.anchorId = nodeId;
-  $("node-id").value = nodeId;
-  log(`anchor ${nodeId}`);
-  const isEmpty = cy.nodes().length === 0;
-  await loadNodeDetail(nodeId);
-  await loadContext(nodeId, { resetOffset: true, originNodeId: nodeId });
-  if (isEmpty) centerViewOnNode(nodeId);
+  $("ctx-node-id").value = nodeId;
+  $("similar-fact-id").value = nodeId;
+  if (loadDetail) await loadNodeDetail(nodeId);
+  showDetail(nodeId);
+  const ele = cy.getElementById(nodeId);
+  if (ele.nonempty()) {
+    cy.$(":selected").unselect();
+    ele.select();
+    centerViewOnNode(nodeId);
+  }
+  updateSelAction();
+  log(`selected ${nodeId}`);
 }
 
-async function loadContext(nodeId, opts = {}) {
-  const depth = opts.depth ?? (Number($("depth").value) || 1);
-  const maxNodes = Number($("max-nodes").value) || 10;
-  const args = ownerArgs({
-    node_id: nodeId,
-    depth,
-    max_nodes: maxNodes,
-    include_outdated: $("include-outdated").checked,
-  });
-
-  if (opts.resetOffset) {
-    state.neighborOffset.set(nodeId, 0);
+async function loadNeighbors(nodeId, { reset = false, pageSize } = {}) {
+  const size =
+    pageSize || Number($("neighbor-page-size").value) || 10;
+  let info = neighborInfo(nodeId);
+  if (reset || !state.neighborState.has(nodeId)) {
+    info = {
+      offset: 0,
+      pageSize: size,
+      hasMore: true,
+      loaded: 0,
+      batchIds: [],
+    };
+  } else {
+    info = { ...info, pageSize: size };
   }
 
-  const data = await callTool("get_context", args);
-  mergeToolResult(data, { fresh: true }, {
-    fullLayout: opts.fullLayout === true,
-    originNodeId: opts.originNodeId || nodeId,
-  });
-  log(`context ${nodeId} depth=${depth} nodes=${data.nodes?.length || 0}`);
-  return data;
-}
-
-async function loadNeighbors(nodeId, pageSize = 10) {
-  let off = state.neighborOffset.get(nodeId) ?? 0;
   const args = ownerArgs({
     node_id: nodeId,
     depth: 1,
-    max_nodes: pageSize,
-    include_outdated: $("include-outdated").checked,
+    max_nodes: info.pageSize,
+    include_outdated: $("ctx-outdated")?.checked || false,
   });
-  if (off > 0) args.offset = off;
+  if (info.offset > 0) args.offset = info.offset;
 
   const data = await callTool("get_context", args);
+  const before = new Set(state.nodes.keys());
   mergeToolResult(data, { fresh: true }, { originNodeId: nodeId });
+
+  const returnedNodes = (data.nodes || []).filter((n) => n.node_id !== nodeId);
+  const batchIds = returnedNodes.map((n) => n.node_id);
+  const newCount = batchIds.filter((id) => !before.has(id)).length;
   const returned = data.nodes?.length || 0;
-  if (off > 0) {
-    state.neighborOffset.set(
-      nodeId,
-      data.has_more ? off + pageSize : off + returned,
-    );
+
+  // offset=0 uses BFS (no has_more); treat full page as "maybe more"
+  let hasMore;
+  if (info.offset > 0) {
+    hasMore = data.has_more === true;
   } else {
-    state.neighborOffset.set(nodeId, pageSize);
+    hasMore = returned >= info.pageSize;
   }
-  log(`neighbors ${nodeId} offset=${off} +${returned}`);
-  return data;
-}
 
-async function findSimilar() {
-  const anchor = state.anchorId || $("node-id").value.trim();
-  if (!anchor) {
-    log("set anchor first");
-    return;
-  }
-  const limit = Number($("similar-limit").value) || 5;
-  const threshold = Number($("similar-threshold").value) || 0.55;
-  const sim = await callTool(
-    "find_similar",
-    ownerArgs({
-      fact_id: anchor,
-      limit,
-      similarity_threshold: threshold,
-    }),
-  );
-  const ids = new Set([anchor, ...(sim.similar_facts || []).map((f) => f.node_id)]);
-  mergeNodes(sim.similar_facts, { fresh: true });
-  mergeNodes([{ node_id: anchor }], {});
-
-  const ctx = await callTool(
-    "get_context",
-    ownerArgs({
-      node_id: anchor,
-      depth: 2,
-      max_nodes: 50,
-      include_outdated: $("include-outdated").checked,
-    }),
-  );
-  const filteredEdges = (ctx.edges || []).filter(
-    (e) => ids.has(e.from_id) && ids.has(e.to_id),
-  );
-  mergeEdges(filteredEdges);
-  syncGraph({ originNodeId: anchor, fullLayout: true });
-  log(`similar ${sim.similar_facts?.length || 0} facts + edges among them`);
-}
-
-async function textSearch() {
-  const query = $("search-query").value.trim();
-  if (!query) return;
-  const limit = Number($("search-limit").value) || 10;
-  const data = await callTool(
-    "search",
-    ownerArgs({ query, limit, ...searchFilters() }),
-  );
-  mergeToolResult(data, { fresh: true }, {
-    originNodeId: state.anchorId || null,
-    fullLayout: cy.nodes().length < 2,
-  });
-  log(`search "${query}" → ${data.results?.length || 0}`);
-}
-
-async function recallContext() {
-  const query = $("search-query").value.trim();
-  if (!query) return;
-  const limit = Number($("search-limit").value) || 10;
-  const depth = Number($("depth").value) || 1;
-  const maxNodes = Number($("max-nodes").value) || 10;
-  clearPathHighlight();
-  const filters = searchFilters();
-  const args = ownerArgs({
-    query,
-    limit,
-    depth,
-    max_nodes: maxNodes,
-    include_paths: true,
-    include_outdated: $("include-outdated").checked || !!filters.include_outdated,
-  });
-  if (filters.metadata_filter) args.metadata_filter = filters.metadata_filter;
-  const data = await callTool("recall_context", args);
-  mergeToolResult(data, { fresh: true }, { fullLayout: true });
-  const seed = data.seeds?.[0]?.node_id;
-  if (seed) {
-    state.anchorId = seed;
-    $("node-id").value = seed;
-    centerViewOnNode(seed);
-  }
+  const nextOffset = info.offset + info.pageSize;
+  info = {
+    offset: hasMore ? nextOffset : info.offset + returned,
+    pageSize: info.pageSize,
+    hasMore,
+    loaded: info.loaded + returnedNodes.length,
+    batchIds,
+  };
+  state.neighborState.set(nodeId, info);
+  updateNeighborUi(nodeId);
   log(
-    `recall "${query}" → ${data.nodes?.length || 0} nodes, ${data.seeds?.length || 0} seeds`,
+    `neighbors ${nodeId} offset=${args.offset || 0} +${returnedNodes.length}` +
+      (newCount ? ` (${newCount} new)` : ""),
   );
+  return data;
 }
 
 function renderOverview(data) {
@@ -817,49 +981,22 @@ async function loadBrief() {
   );
 }
 
-async function runTrace() {
-  const fromId = $("trace-from").value.trim();
-  const toId = $("trace-to").value.trim();
-  if (!fromId || !toId) {
-    log("trace needs from_id and to_id");
-    return;
-  }
-  const maxDepth = Number($("trace-depth").value) || 5;
-  const directed = !$("trace-undirected").checked;
-  clearPathHighlight();
-  const data = await callTool(
-    "get_trace",
-    ownerArgs({
-      from_id: fromId,
-      to_id: toId,
-      max_depth: maxDepth,
-      directed,
-    }),
-  );
-  const nodes = data.nodes || [];
-  if (!nodes.length) {
-    log(data.message || "no path");
-    return;
-  }
-  mergeNodes(nodes, { fresh: true });
-  mergeEdges(edgesFromTrace(nodes, data.relations || []), { path: true });
-  syncGraph({ fullLayout: true, originNodeId: fromId });
-  centerViewOnNode(fromId);
-  log(`trace ${fromId} → ${toId}: ${nodes.length} nodes`);
-}
-
-function clearGraph() {
+function clearGraph({ quiet = false } = {}) {
   cy.elements().remove();
   state.nodes.clear();
   state.edges.clear();
-  state.neighborOffset.clear();
+  state.neighborState.clear();
   state.pathEdgeKeys.clear();
   state.selectedId = null;
   updateStats();
   $("detail").hidden = true;
   $("detail-empty").hidden = false;
   $("detail-history").innerHTML = "";
-  log("graph cleared");
+  $("neighbor-list").innerHTML = "";
+  $("neighbor-status").textContent = "Not loaded yet.";
+  $("btn-neighbors-more").hidden = true;
+  $("sel-action").hidden = true;
+  if (!quiet) log("graph cleared");
 }
 
 function exportPng() {
@@ -915,15 +1052,24 @@ function scheduleHideHoverPlus() {
 
 cy.on("tap", "node", (evt) => {
   const id = evt.target.id();
-  showDetail(id);
   cy.$(":selected").unselect();
   evt.target.select();
+  showDetail(id);
+  updateSelAction();
   loadNodeDetail(id).catch((e) => log(`detail error: ${e.message}`));
+});
+
+cy.on("tap", (evt) => {
+  if (evt.target === cy) {
+    $("sel-action").hidden = true;
+  }
 });
 
 cy.on("dbltap", "node", (evt) => {
   const id = evt.target.id();
-  loadNeighbors(id, 10).catch((err) => log(`expand: ${err.message}`));
+  loadNeighbors(id, { reset: !state.neighborState.has(id) }).catch((err) =>
+    log(`expand: ${err.message}`),
+  );
 });
 
 cy.on("mouseover", "node", (evt) => {
@@ -934,14 +1080,19 @@ cy.on("mouseout", "node", () => {
   scheduleHideHoverPlus();
 });
 
-cy.on("pan zoom", refreshHoverPlusPosition);
+cy.on("pan zoom", () => {
+  refreshHoverPlusPosition();
+  updateSelAction();
+});
 
 cy.on("drag", "node", (evt) => {
   if (state.hoverId === evt.target.id()) positionHoverPlus(evt.target);
+  if (state.selectedId === evt.target.id()) updateSelAction();
 });
 
 cy.on("position", "node", (evt) => {
   if (state.hoverId === evt.target.id()) positionHoverPlus(evt.target);
+  if (state.selectedId === evt.target.id()) updateSelAction();
 });
 
 hoverPlus.addEventListener("mouseenter", () => {
@@ -956,7 +1107,8 @@ hoverPlus.addEventListener("click", (e) => {
   e.stopPropagation();
   const id = state.hoverId;
   if (!id) return;
-  loadNeighbors(id, 10).catch((err) => log(`neighbors: ${err.message}`));
+  const reset = !state.neighborState.has(id);
+  loadNeighbors(id, { reset }).catch((err) => log(`neighbors: ${err.message}`));
 });
 
 function isTypingTarget(el) {
@@ -1040,6 +1192,7 @@ window.addEventListener("mouseup", endRotateDrag);
 
 $("owner-id").value = state.ownerId;
 $("layout-mode").value = state.layoutName;
+setTool($("llm-tool").value);
 
 $("owner-id").addEventListener("change", () => {
   state.ownerId = $("owner-id").value.trim() || "default";
@@ -1051,71 +1204,85 @@ $("btn-brief").addEventListener("click", () => {
   loadBrief().catch((e) => log(`brief: ${e.message}`));
 });
 
+$("llm-tool").addEventListener("change", () => {
+  setTool($("llm-tool").value);
+});
+
+function onRunToolClick() {
+  runSelectedTool().catch((e) => {
+    $("tool-summary").textContent = e.message;
+    $("tool-summary").classList.add("muted");
+    log(`tool error: ${e.message}`);
+  });
+}
+
+$("btn-run-tool").addEventListener("click", onRunToolClick);
+
+$("tool-call-section").addEventListener("keydown", (e) => {
+  if (e.key !== "Enter") return;
+  if (e.target.tagName === "TEXTAREA" && !e.metaKey && !e.ctrlKey) return;
+  if (e.target.tagName === "TEXTAREA" && (e.metaKey || e.ctrlKey)) {
+    e.preventDefault();
+    onRunToolClick();
+    return;
+  }
+  if (e.target.tagName === "INPUT") {
+    e.preventDefault();
+    onRunToolClick();
+  }
+});
+
 $("overview").addEventListener("click", (e) => {
   const idEl = e.target.closest("[data-id]");
   if (idEl?.dataset.id) {
-    loadAnchor(idEl.dataset.id).catch((err) => log(err.message));
+    focusNode(idEl.dataset.id).catch((err) => log(err.message));
     return;
   }
   const pair = e.target.closest("[data-from][data-to]");
   if (pair) {
+    setTool("get_trace");
     $("trace-from").value = pair.dataset.from;
     $("trace-to").value = pair.dataset.to;
-    runTrace().catch((err) => log(`trace: ${err.message}`));
+    runSelectedTool().catch((err) => log(`trace: ${err.message}`));
   }
 });
 
-$("btn-load-node").addEventListener("click", () => {
-  const id = $("node-id").value.trim();
-  if (!id) return;
-  loadAnchor(id).catch((e) => log(`load: ${e.message}`));
-});
-
-$("btn-search").addEventListener("click", () => {
-  textSearch().catch((e) => log(`search: ${e.message}`));
-});
-
-$("btn-recall").addEventListener("click", () => {
-  recallContext().catch((e) => log(`recall: ${e.message}`));
-});
-
-$("btn-trace").addEventListener("click", () => {
-  runTrace().catch((e) => log(`trace: ${e.message}`));
-});
-
-$("btn-similar").addEventListener("click", () => {
-  findSimilar().catch((e) => log(`similar: ${e.message}`));
-});
-
-$("btn-context").addEventListener("click", () => {
-  const id = state.anchorId || $("node-id").value.trim();
-  if (!id) return;
-  loadContext(id, { originNodeId: id, fullLayout: true }).catch((e) =>
-    log(`context: ${e.message}`),
-  );
-});
-
-$("btn-hop").addEventListener("click", () => {
-  const d = Number($("depth").value) || 1;
-  $("depth").value = String(Math.min(3, d + 1));
-  const id = state.anchorId || $("node-id").value.trim();
-  if (!id) return;
-  loadContext(id, {
-    depth: Number($("depth").value),
-    originNodeId: id,
-    fullLayout: true,
-  }).catch((e) => log(`hop: ${e.message}`));
-});
-
-$("btn-clear").addEventListener("click", clearGraph);
+$("btn-clear").addEventListener("click", () => clearGraph());
 
 $("btn-set-anchor").addEventListener("click", () => {
-  if (state.selectedId) loadAnchor(state.selectedId).catch((e) => log(e.message));
+  if (!state.selectedId) return;
+  setTool("get_context");
+  $("ctx-node-id").value = state.selectedId;
+  log(`filled get_context node_id=${state.selectedId}`);
 });
 
 $("btn-neighbors").addEventListener("click", () => {
   if (!state.selectedId) return;
-  loadNeighbors(state.selectedId, 10).catch((e) => log(e.message));
+  loadNeighbors(state.selectedId, { reset: true }).catch((e) => log(e.message));
+});
+
+$("btn-neighbors-more").addEventListener("click", () => {
+  if (!state.selectedId) return;
+  loadNeighbors(state.selectedId, { reset: false }).catch((e) => log(e.message));
+});
+
+$("btn-sel-neighbors").addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (!state.selectedId) return;
+  loadNeighbors(state.selectedId, { reset: true }).catch((err) => log(err.message));
+});
+
+$("btn-sel-more").addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (!state.selectedId) return;
+  loadNeighbors(state.selectedId, { reset: false }).catch((err) => log(err.message));
+});
+
+$("neighbor-list").addEventListener("click", (e) => {
+  const idEl = e.target.closest("[data-id]");
+  if (idEl?.dataset.id) {
+    focusNode(idEl.dataset.id).catch((err) => log(err.message));
+  }
 });
 
 $("btn-history").addEventListener("click", () => {
@@ -1123,11 +1290,15 @@ $("btn-history").addEventListener("click", () => {
 });
 
 $("btn-trace-from").addEventListener("click", () => {
-  if (state.selectedId) $("trace-from").value = state.selectedId;
+  if (!state.selectedId) return;
+  setTool("get_trace");
+  $("trace-from").value = state.selectedId;
 });
 
 $("btn-trace-to").addEventListener("click", () => {
-  if (state.selectedId) $("trace-to").value = state.selectedId;
+  if (!state.selectedId) return;
+  setTool("get_trace");
+  $("trace-to").value = state.selectedId;
 });
 
 $("btn-layout").addEventListener("click", () => {
@@ -1188,5 +1359,5 @@ async function checkHealth() {
 checkHealth();
 updateStats();
 log(
-  "ready — layouts: Force/Circle/Radial/Hierarchy/Grid · rotate · fit · dblclick expand",
+  "ready — LLM tool call (recall_context / get_trace) · click node → 1-hop neighbors",
 );

@@ -21,7 +21,109 @@
         <div class="row">
           <input id="owner-id" type="text" value="default" placeholder="default" />
           <button id="btn-brief" type="button">Brief</button>
+          <button id="btn-clear" type="button" class="secondary">Clear</button>
         </div>
+      </section>
+
+      <section class="tool-call" id="tool-call-section">
+        <label>LLM tool call</label>
+        <p class="hint muted">Emulate an agent call: pick a tool, set args, Run → graph.</p>
+        <select id="llm-tool" title="tool">
+          <option value="recall_context">recall_context</option>
+          <option value="get_trace">get_trace (find path)</option>
+          <option value="get_context">get_context</option>
+          <option value="search">search</option>
+          <option value="find_similar">find_similar</option>
+        </select>
+
+        <div class="tool-params" id="params-recall_context">
+          <textarea id="recall-query" rows="3" placeholder="Question / query text (as LLM would pass)"></textarea>
+          <div class="row">
+            <label class="inline">limit</label>
+            <input id="recall-limit" type="number" value="8" min="1" max="50" />
+            <label class="inline">depth</label>
+            <input id="recall-depth" type="number" value="1" min="0" max="3" />
+            <label class="inline">max_nodes</label>
+            <input id="recall-max-nodes" type="number" value="30" min="1" max="100" />
+          </div>
+          <div class="row">
+            <label class="inline">threshold</label>
+            <input id="recall-threshold" type="number" value="" min="0" max="1" step="0.05" placeholder="auto" />
+            <label class="inline chk"><input id="recall-paths" type="checkbox" /> include_paths</label>
+            <label class="inline chk"><input id="recall-outdated" type="checkbox" /> include_outdated</label>
+          </div>
+          <div class="row">
+            <input id="recall-project" type="text" placeholder="metadata.project" />
+            <input id="recall-tags" type="text" placeholder="metadata.tags (a, b)" />
+          </div>
+        </div>
+
+        <div class="tool-params" id="params-get_trace" hidden>
+          <input id="trace-from" type="text" placeholder="from_id" />
+          <input id="trace-to" type="text" placeholder="to_id" />
+          <div class="row">
+            <label class="inline">max_depth</label>
+            <input id="trace-depth" type="number" value="5" min="1" max="10" />
+            <label class="inline chk"><input id="trace-undirected" type="checkbox" /> undirected</label>
+          </div>
+        </div>
+
+        <div class="tool-params" id="params-get_context" hidden>
+          <input id="ctx-node-id" type="text" placeholder="node_id" />
+          <div class="row">
+            <label class="inline">depth</label>
+            <input id="ctx-depth" type="number" value="1" min="0" max="3" />
+            <label class="inline">max_nodes</label>
+            <input id="ctx-max-nodes" type="number" value="20" min="1" max="100" />
+            <label class="inline">offset</label>
+            <input id="ctx-offset" type="number" value="0" min="0" max="500" />
+          </div>
+          <div class="row">
+            <label class="inline chk"><input id="ctx-outdated" type="checkbox" /> include_outdated</label>
+          </div>
+        </div>
+
+        <div class="tool-params" id="params-search" hidden>
+          <input id="search-query" type="text" placeholder="search query…" />
+          <div class="row">
+            <label class="inline">limit</label>
+            <input id="search-limit" type="number" value="10" min="1" max="50" />
+            <select id="search-status" title="status">
+              <option value="">status: any</option>
+              <option value="active">active</option>
+              <option value="outdated">outdated</option>
+              <option value="archived">archived</option>
+            </select>
+          </div>
+          <div class="row filters">
+            <label class="inline chk"><input id="type-fact" type="checkbox" checked /> Fact</label>
+            <label class="inline chk"><input id="type-entity" type="checkbox" checked /> Entity</label>
+          </div>
+          <div class="row">
+            <input id="filter-project" type="text" placeholder="project" />
+            <input id="filter-tags" type="text" placeholder="tags (a, b)" />
+          </div>
+        </div>
+
+        <div class="tool-params" id="params-find_similar" hidden>
+          <input id="similar-fact-id" type="text" placeholder="fact_id (anchor)" />
+          <div class="row">
+            <label class="inline">top</label>
+            <input id="similar-limit" type="number" value="5" min="1" max="30" />
+            <label class="inline">threshold</label>
+            <input id="similar-threshold" type="number" value="0.55" min="0" max="1" step="0.05" />
+          </div>
+        </div>
+
+        <div class="row tool-actions">
+          <label class="inline chk"><input id="tool-replace" type="checkbox" checked /> replace graph</label>
+          <button id="btn-run-tool" type="button">Run tool</button>
+        </div>
+        <div id="tool-summary" class="tool-summary muted">No call yet.</div>
+        <details id="tool-raw-wrap" class="tool-raw-wrap">
+          <summary>Raw response</summary>
+          <pre id="tool-raw"></pre>
+        </details>
       </section>
 
       <section id="overview-section">
@@ -31,81 +133,7 @@
       </section>
 
       <section>
-        <label>Anchor node ID</label>
-        <div class="row">
-          <input id="node-id" type="text" placeholder="e.g. uuid hex" />
-          <button id="btn-load-node" type="button">Load</button>
-        </div>
-      </section>
-
-      <section>
-        <label>Search / recall</label>
-        <input id="search-query" type="text" placeholder="query…" />
-        <div class="row">
-          <label class="inline">limit</label>
-          <input id="search-limit" type="number" value="10" min="1" max="50" />
-          <button id="btn-search" type="button">Search</button>
-          <button id="btn-recall" type="button">Recall</button>
-        </div>
-        <div class="row filters">
-          <select id="search-status" title="status">
-            <option value="">status: any</option>
-            <option value="active">active</option>
-            <option value="outdated">outdated</option>
-            <option value="archived">archived</option>
-          </select>
-          <label class="inline chk"><input id="type-fact" type="checkbox" checked /> Fact</label>
-          <label class="inline chk"><input id="type-entity" type="checkbox" checked /> Entity</label>
-        </div>
-        <div class="row">
-          <input id="filter-project" type="text" placeholder="project" />
-          <input id="filter-tags" type="text" placeholder="tags (a, b)" />
-        </div>
-      </section>
-
-      <section>
-        <label>Trace A → B</label>
-        <input id="trace-from" type="text" placeholder="from_id" />
-        <input id="trace-to" type="text" placeholder="to_id" />
-        <div class="row">
-          <label class="inline">depth</label>
-          <input id="trace-depth" type="number" value="5" min="1" max="10" />
-          <label class="inline chk"><input id="trace-undirected" type="checkbox" /> undirected</label>
-          <button id="btn-trace" type="button">Trace</button>
-        </div>
-      </section>
-
-      <section>
-        <label>Similar facts (from anchor)</label>
-        <div class="row">
-          <label class="inline">top</label>
-          <input id="similar-limit" type="number" value="5" min="1" max="30" />
-          <label class="inline">threshold</label>
-          <input id="similar-threshold" type="number" value="0.55" min="0" max="1" step="0.05" />
-        </div>
-        <button id="btn-similar" type="button">Find similar</button>
-      </section>
-
-      <section>
-        <label>Graph expansion</label>
-        <div class="row">
-          <label class="inline">depth</label>
-          <input id="depth" type="number" value="1" min="0" max="3" />
-          <label class="inline">max_nodes</label>
-          <input id="max-nodes" type="number" value="10" min="1" max="50" />
-        </div>
-        <div class="row">
-          <label class="inline chk"><input id="include-outdated" type="checkbox" /> include outdated</label>
-        </div>
-        <div class="row">
-          <button id="btn-context" type="button">Context</button>
-          <button id="btn-hop" type="button">+1 hop</button>
-          <button id="btn-clear" type="button" class="secondary">Clear graph</button>
-        </div>
-      </section>
-
-      <section>
-        <label>View filters (in canvas)</label>
+        <label>View filters</label>
         <div class="row filters">
           <label class="inline chk"><input id="view-fact" type="checkbox" checked /> Fact</label>
           <label class="inline chk"><input id="view-entity" type="checkbox" checked /> Entity</label>
@@ -153,15 +181,20 @@
         <button id="btn-center-sel" type="button" class="secondary" title="Center selection">Center</button>
         <button id="btn-lock" type="button" class="secondary" title="Lock / unlock node drag">🔓</button>
         <button id="btn-png" type="button" class="secondary" title="Export PNG">PNG</button>
-        <span class="tb-hint muted">drag · scroll zoom · space+pan · alt+drag rotate · [ ] · dblclick expand</span>
+        <span class="tb-hint muted">drag · zoom · space+pan · alt+drag rotate · click node → neighbors</span>
       </div>
       <div id="cy"></div>
-      <div id="hover-plus" class="hover-plus" title="Load 10 neighbors">+</div>
+      <div id="sel-action" class="sel-action" hidden>
+        <button id="btn-sel-neighbors" type="button">1-hop neighbors</button>
+        <button id="btn-sel-more" type="button" class="secondary" hidden>Load more</button>
+        <span id="sel-action-status" class="muted"></span>
+      </div>
+      <div id="hover-plus" class="hover-plus" title="Load next page of neighbors">+</div>
     </main>
 
     <aside class="panel panel-right">
       <h2>Node detail</h2>
-      <p id="detail-empty" class="muted">Click a node to see full text.</p>
+      <p id="detail-empty" class="muted">Click a node to inspect it and load 1-hop neighbors.</p>
       <div id="detail" hidden>
         <p><strong>ID</strong> <span id="detail-id"></span></p>
         <p><strong>Type</strong> <span id="detail-type"></span></p>
@@ -171,15 +204,29 @@
         <pre id="detail-text"></pre>
         <label>Metadata</label>
         <pre id="detail-meta" class="meta-box"></pre>
-        <label>Edges</label>
+
+        <div class="neighbor-card" id="neighbor-card">
+          <label>1-hop neighbors</label>
+          <p id="neighbor-status" class="muted">Not loaded yet.</p>
+          <div class="row">
+            <label class="inline">page</label>
+            <input id="neighbor-page-size" type="number" value="10" min="1" max="50" />
+            <button id="btn-neighbors" type="button">Load neighbors</button>
+            <button id="btn-neighbors-more" type="button" class="secondary" hidden>Load more</button>
+          </div>
+          <ul id="neighbor-list" class="neighbor-list"></ul>
+        </div>
+
+        <label>Edges in view</label>
         <ul id="detail-edges"></ul>
         <label>History</label>
         <ul id="detail-history"></ul>
-        <button id="btn-set-anchor" type="button">Set as anchor</button>
-        <button id="btn-neighbors" type="button">+10 neighbors</button>
-        <button id="btn-history" type="button" class="secondary">Load history</button>
-        <button id="btn-trace-from" type="button" class="secondary">Trace from</button>
-        <button id="btn-trace-to" type="button" class="secondary">Trace to</button>
+        <div class="row detail-actions">
+          <button id="btn-set-anchor" type="button" class="secondary">Use in get_context</button>
+          <button id="btn-history" type="button" class="secondary">Load history</button>
+          <button id="btn-trace-from" type="button" class="secondary">Path from</button>
+          <button id="btn-trace-to" type="button" class="secondary">Path to</button>
+        </div>
       </div>
     </aside>
   </div>
