@@ -4,11 +4,7 @@ from typing import Any, Dict, List
 
 from graph_memory_mcp.config import MCPServerConfig
 from graph_memory_mcp.graph_memory.database import FalkorDBClient
-from graph_memory_mcp.graph_memory.owner_scoped_search import (
-    build_owner_scoped_similarity_query,
-)
 from graph_memory_mcp.graph_memory.utils import (
-    escape_value,
     normalize_owner_id,
     parse_embedding_value,
 )
@@ -28,19 +24,12 @@ def _parse_owner_ids(config: MCPServerConfig) -> List[str]:
 
 
 def _resolve_owner_ids(db: FalkorDBClient, config: MCPServerConfig) -> List[str]:
-    """Resolve owner IDs either from config or by discovering them from the graph."""
+    """Resolve owner IDs from config or discover them from per-owner graphs."""
     if not config.jobs_process_all_owners:
         return _parse_owner_ids(config)
 
-    query = """
-    MATCH (n)
-    WHERE n.owner_id IS NOT NULL AND n.owner_id <> ''
-    RETURN DISTINCT n.owner_id as owner_id
-    ORDER BY owner_id
-    """
-
     try:
-        result = db.graph.query(query)
+        discovered = db.list_owners()
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "Dedup job: failed to discover owners, falling back to jobs_owner_ids: %s",
@@ -48,23 +37,14 @@ def _resolve_owner_ids(db: FalkorDBClient, config: MCPServerConfig) -> List[str]
         )
         return _parse_owner_ids(config)
 
-    if not result or not hasattr(result, "result_set") or not result.result_set:
-        return _parse_owner_ids(config)
-
     owners = []
-    for row in result.result_set:
-        if not row or row[0] is None:
-            continue
-        raw_owner = row[0]
-        if isinstance(raw_owner, bytes):
-            raw_owner = raw_owner.decode("utf-8", errors="replace")
-        owner_text = str(raw_owner).strip()
-        if not owner_text:
-            continue
-        owners.append(normalize_owner_id(owner_text))
+    for owner_text in discovered:
+        try:
+            owners.append(normalize_owner_id(owner_text))
+        except ValueError:
+            logger.warning("Dedup job: skipping invalid owner_id %r", owner_text)
 
-    resolved_owners = sorted(set(owners))
-    return resolved_owners or _parse_owner_ids(config)
+    return sorted(set(owners)) or _parse_owner_ids(config)
 
 
 def _parse_candidate_rows(rows: List[List[Any]]) -> List[Dict[str, Any]]:
@@ -102,7 +82,7 @@ def _query_candidate_batch(
 
     query = f"""
     MATCH (n:{label})
-    WHERE n.owner_id = '{escape_value(owner_id)}'
+    WHERE n.owner_id = $owner_id
       AND (n.status IS NULL OR n.status = 'active')
       AND n.embedding IS NOT NULL
       AND (
@@ -111,16 +91,16 @@ def _query_candidate_batch(
       )
       {touched_filter}
     RETURN
-      id(n) as node_id,
+      n.uid as node_id,
       n.text as text,
       n.created_at as created_at,
       coalesce(n.updated_at, n.created_at) as touched_at,
       n.embedding as embedding
     ORDER BY touched_at ASC, created_at ASC, node_id ASC
-    LIMIT {limit}
+    LIMIT {int(limit)}
     """
 
-    result = db.graph.query(query)
+    result = db.query(query, params={"owner_id": owner_id})
     if not result or not hasattr(result, "result_set") or not result.result_set:
         return []
 
@@ -169,31 +149,41 @@ def _query_similar_nodes(
     threshold: float,
     top_k: int,
 ) -> List[Dict[str, Any]]:
-    """Query same-owner similar nodes across the full active corpus."""
-    max_distance = 1.0 - threshold
-    query = build_owner_scoped_similarity_query(
-        node_type=label,
-        embedding=embedding,
-        owner_id=owner_id,
-        limit=top_k,
-        max_distance=max_distance,
-        exclude_node_id=int(node_id),
-    )
-    # Dedup expects ascending score order and extra fields for tie-breaking.
-    query = query.replace(
-        "ORDER BY score ASC",
-        "ORDER BY score ASC, node.created_at ASC, node_id ASC",
-    )
+    """ANN (HNSW) neighbor lookup for one candidate, owner/status post-filtered.
 
-    result = db.graph.query(query)
+    ~O(log N + k) per candidate via the existing vector index — replaces the
+    former exact scan over the whole owner corpus. The index is global per
+    label, so `ann_k` takes a margin to survive the post-ANN owner filter.
+    """
+    ann_k = min(max(top_k * 2, 100), 2000)
+    query = f"""
+    CALL db.idx.vector.queryNodes('{label}', 'embedding', {int(ann_k)}, vecf32($embedding))
+    YIELD node, score
+    WHERE score <= $max_distance
+      AND node.owner_id = $owner_id
+      AND node.uid <> $node_id
+      AND (node.status IS NULL OR node.status = 'active')
+    RETURN node.uid, node.created_at, score
+    ORDER BY score ASC, node.created_at ASC, node.uid ASC
+    LIMIT {int(top_k)}
+    """
+    result = db.query(
+        query,
+        params={
+            "embedding": [float(v) for v in embedding],
+            "max_distance": 1.0 - threshold,
+            "owner_id": owner_id,
+            "node_id": str(node_id),
+        },
+    )
     if not result or not hasattr(result, "result_set") or not result.result_set:
         return []
 
     return [
         {
             "node_id": str(row[0]),
-            "created_at": row[4] or 0,
-            "score": float(row[6]),
+            "created_at": row[1] or 0,
+            "score": float(row[2]),
         }
         for row in result.result_set
     ]
@@ -209,7 +199,12 @@ def _find_duplicate_groups(
     hours_threshold: int,
     candidates: List[Dict[str, Any]] | None = None,
 ) -> List[Dict[str, Any]]:
-    """Find duplicate groups for one label using incremental candidates vs owner corpus."""
+    """Find duplicate groups: ANN pairs per candidate, union-find into components.
+
+    Union-find merges overlapping candidate neighborhoods into disjoint groups,
+    so each node appears in at most one group and the oldest member becomes
+    the primary of its whole connected component.
+    """
     owner_id = normalize_owner_id(owner_id)
     candidates = candidates or _load_dedup_candidates(
         db,
@@ -220,58 +215,63 @@ def _find_duplicate_groups(
     if not candidates:
         return []
 
-    groups: List[Dict[str, Any]] = []
+    try:
+        db.ensure_vector_indexes_if_missing(owner_id=owner_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Dedup: failed to ensure vector indexes: %s", exc)
+
     top_k = max(max_group_size, getattr(db.config, "duplicate_top_k", 100))
 
+    parent: Dict[str, str] = {}
+    created_at_by_id: Dict[str, Any] = {}
+
+    def _find(x: str) -> str:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def _union(a: str, b: str) -> None:
+        parent.setdefault(a, a)
+        parent.setdefault(b, b)
+        root_a, root_b = _find(a), _find(b)
+        if root_a != root_b:
+            parent[root_b] = root_a
+
+    def _record(node_id: str, created_at: Any) -> None:
+        known = created_at_by_id.get(node_id)
+        if known is None or (created_at or 0) < (known or 0):
+            created_at_by_id[node_id] = created_at or 0
+
     for candidate in candidates:
+        cand_id = str(candidate["node_id"])
+        _record(cand_id, candidate.get("created_at"))
         matches = _query_similar_nodes(
             db,
             label=label,
-            node_id=candidate["node_id"],
+            node_id=cand_id,
             embedding=candidate["embedding"],
             owner_id=owner_id,
             threshold=threshold,
             top_k=top_k,
         )
-        if not matches:
+        for match in matches:
+            match_id = str(match["node_id"])
+            _record(match_id, match.get("created_at"))
+            _union(cand_id, match_id)
+
+    components: Dict[str, List[str]] = {}
+    for node_id in parent:
+        components.setdefault(_find(node_id), []).append(node_id)
+
+    groups: List[Dict[str, Any]] = []
+    for members in components.values():
+        if len(members) < 2:
             continue
-
-        members = [
-            {"node_id": candidate["node_id"], "created_at": candidate["created_at"]},
-            *matches,
-        ]
-
-        deduped_members: dict[str, Dict[str, Any]] = {}
-        for member in members:
-            member_id = str(member["node_id"])
-            created_at = member.get("created_at") or 0
-            existing = deduped_members.get(member_id)
-            if existing is None or created_at < (existing.get("created_at") or 0):
-                deduped_members[member_id] = {
-                    "node_id": member_id,
-                    "created_at": created_at,
-                }
-
-        sorted_members = sorted(
-            deduped_members.values(),
-            key=lambda member: (member["created_at"], int(member["node_id"])),
-        )
-        if len(sorted_members) < 2:
-            continue
-
-        primary_id = sorted_members[0]["node_id"]
-        duplicate_ids = [
-            member["node_id"]
-            for member in sorted_members[1 : max(2, max_group_size)]
-            if member["node_id"] != primary_id
-        ]
-        if duplicate_ids:
-            groups.append(
-                {
-                    "primary_id": primary_id,
-                    "duplicate_ids": duplicate_ids,
-                }
-            )
+        members.sort(key=lambda nid: (created_at_by_id.get(nid, 0), nid))
+        primary_id = members[0]
+        duplicate_ids = members[1 : max(2, max_group_size)]
+        groups.append({"primary_id": primary_id, "duplicate_ids": duplicate_ids})
 
     return groups
 
@@ -289,14 +289,14 @@ def _mark_nodes_deduped(
 
     query = f"""
     MATCH (n:{label})
-    WHERE id(n) IN $node_ids AND n.owner_id = $owner_id
+    WHERE n.uid IN $node_ids AND n.owner_id = $owner_id
     SET n.last_dedup_at = timestamp()
     RETURN count(n) as updated
     """
-    db.graph.query(
+    db.query(
         query,
         params={
-            "node_ids": [int(node_id) for node_id in node_ids],
+            "node_ids": [str(node_id) for node_id in node_ids],
             "owner_id": normalize_owner_id(owner_id),
         },
     )
@@ -322,99 +322,139 @@ async def _find_duplicate_fact_groups(
     )
 
 
-async def _merge_duplicate_facts(
+def _merge_duplicate_nodes(
     db: FalkorDBClient,
-    fact_ids: List[str],
+    *,
+    label: str,
+    node_ids: List[str],
     owner_id: str,
 ) -> str | None:
-    """Merge duplicate facts by redirecting relations and marking duplicates as outdated.
+    """Merge duplicates: redirect relations to the primary, mark others outdated.
 
-    Returns primary fact ID.
+    Not transactional (FalkorDB executes one query atomically); instead the
+    steps are idempotent (MERGE-based) and ordered so a partial failure is
+    repaired by the next dedup run. Duplicates get `merged_into` for tracing.
+
+    Returns primary node ID.
     """
-    if not fact_ids or len(fact_ids) < 2:
+    if not node_ids or len(node_ids) < 2:
         return None
 
     owner_id = normalize_owner_id(owner_id)
-    primary_id = fact_ids[0]
-    duplicate_ids = fact_ids[1:]
+    primary_id = str(node_ids[0])
+    duplicate_ids = [str(node_id) for node_id in node_ids[1:]]
 
     for dup_id in duplicate_ids:
+        params = {"dup_id": dup_id, "primary_id": primary_id, "owner_id": owner_id}
         try:
-            get_out_rels_query = f"""
-            MATCH (dup:Fact)-[r]->(target)
-            WHERE id(dup) = {int(dup_id)}
-              AND (dup.owner_id = '{owner_id}' OR dup.owner_id IS NULL)
-            RETURN type(r) as rel_type, properties(r) as props, id(target) as target_id
-            """
-            out_rels = db.graph.query(get_out_rels_query)
+            out_rels = db.query(
+                f"""
+                MATCH (dup:{label})-[r]->(target)
+                WHERE dup.uid = $dup_id
+                  AND (dup.owner_id = $owner_id OR dup.owner_id IS NULL)
+                RETURN type(r) as rel_type, properties(r) as props, target.uid as target_id
+                """,
+                params=params,
+            )
             if out_rels and hasattr(out_rels, "result_set"):
                 for row in out_rels.result_set:
                     rel_type, props, target_id = row
-                    merge_query = f"""
-                    MATCH (p:Fact), (t)
-                    WHERE id(p) = {int(primary_id)} AND id(t) = {int(target_id)}
-                    MERGE (p)-[new_r:{rel_type}]->(t)
-                    SET new_r = $props
-                    """
-                    db.graph.query(merge_query, {"props": props})
+                    db.query(
+                        f"""
+                        MATCH (p:{label}), (t)
+                        WHERE p.uid = $primary_id AND t.uid = $target_id
+                        MERGE (p)-[new_r:{rel_type}]->(t)
+                        SET new_r = $props
+                        """,
+                        params={
+                            "primary_id": primary_id,
+                            "target_id": str(target_id),
+                            "props": props,
+                            "owner_id": owner_id,
+                        },
+                    )
 
-            db.graph.query(
-                f"MATCH (dup:Fact)-[r]->() WHERE id(dup) = {int(dup_id)} DELETE r"
+            db.query(
+                f"MATCH (dup:{label})-[r]->() WHERE dup.uid = $dup_id DELETE r",
+                params=params,
             )
         except Exception as e:
             logger.warning(f"Failed to redirect outgoing relations for {dup_id}: {e}")
 
         try:
-            get_in_rels_query = f"""
-            MATCH (source)-[r]->(dup:Fact)
-            WHERE id(dup) = {int(dup_id)}
-              AND (dup.owner_id = '{owner_id}' OR dup.owner_id IS NULL)
-            RETURN type(r) as rel_type, properties(r) as props, id(source) as source_id
-            """
-            in_rels = db.graph.query(get_in_rels_query)
+            in_rels = db.query(
+                f"""
+                MATCH (source)-[r]->(dup:{label})
+                WHERE dup.uid = $dup_id
+                  AND (dup.owner_id = $owner_id OR dup.owner_id IS NULL)
+                RETURN type(r) as rel_type, properties(r) as props, source.uid as source_id
+                """,
+                params=params,
+            )
             if in_rels and hasattr(in_rels, "result_set"):
                 for row in in_rels.result_set:
                     rel_type, props, source_id = row
-                    merge_query = f"""
-                    MATCH (s), (p:Fact)
-                    WHERE id(s) = {int(source_id)} AND id(p) = {int(primary_id)}
-                    MERGE (s)-[new_r:{rel_type}]->(p)
-                    SET new_r = $props
-                    """
-                    db.graph.query(merge_query, {"props": props})
+                    db.query(
+                        f"""
+                        MATCH (s), (p:{label})
+                        WHERE s.uid = $source_id AND p.uid = $primary_id
+                        MERGE (s)-[new_r:{rel_type}]->(p)
+                        SET new_r = $props
+                        """,
+                        params={
+                            "source_id": str(source_id),
+                            "primary_id": primary_id,
+                            "props": props,
+                            "owner_id": owner_id,
+                        },
+                    )
 
-            db.graph.query(
-                f"MATCH ()-[r]->(dup:Fact) WHERE id(dup) = {int(dup_id)} DELETE r"
+            db.query(
+                f"MATCH ()-[r]->(dup:{label}) WHERE dup.uid = $dup_id DELETE r",
+                params=params,
             )
         except Exception as e:
             logger.warning(f"Failed to redirect incoming relations for {dup_id}: {e}")
 
-        mark_outdated_query = f"""
-        MATCH (f:Fact)
-        WHERE id(f) = {int(dup_id)}
-          AND f.owner_id = '{owner_id}'
-        SET f.status = 'outdated',
-            f.metadata_str = coalesce(f.metadata_str, '{{}}')
-        """
-
         try:
-            db.graph.query(mark_outdated_query)
+            # merged_into makes partially-failed merges traceable and re-runnable.
+            db.query(
+                f"""
+                MATCH (n:{label})
+                WHERE n.uid = $dup_id AND n.owner_id = $owner_id
+                SET n.status = 'outdated',
+                    n.merged_into = $primary_id,
+                    n.metadata_str = coalesce(n.metadata_str, '{{}}')
+                """,
+                params=params,
+            )
         except Exception as e:
             logger.warning(f"Failed to mark {dup_id} as outdated: {e}")
 
-    update_primary_query = f"""
-    MATCH (f:Fact)
-    WHERE id(f) = {int(primary_id)}
-      AND f.owner_id = '{owner_id}'
-    SET f.last_dedup_at = timestamp()
-    """
-
     try:
-        db.graph.query(update_primary_query)
+        db.query(
+            f"""
+            MATCH (n:{label})
+            WHERE n.uid = $primary_id AND n.owner_id = $owner_id
+            SET n.last_dedup_at = timestamp()
+            """,
+            params={"primary_id": primary_id, "owner_id": owner_id},
+        )
     except Exception as e:
         logger.warning(f"Failed to update last_dedup_at for primary {primary_id}: {e}")
 
     return primary_id
+
+
+async def _merge_duplicate_facts(
+    db: FalkorDBClient,
+    fact_ids: List[str],
+    owner_id: str,
+) -> str | None:
+    """Merge duplicate facts. Returns primary fact ID."""
+    return _merge_duplicate_nodes(
+        db, label="Fact", node_ids=fact_ids, owner_id=owner_id
+    )
 
 
 async def _find_duplicate_entity_groups(
@@ -442,94 +482,10 @@ async def _merge_duplicate_entities(
     entity_ids: List[str],
     owner_id: str,
 ) -> str | None:
-    """Merge duplicate entities."""
-    if not entity_ids or len(entity_ids) < 2:
-        return None
-
-    owner_id = normalize_owner_id(owner_id)
-    primary_id = entity_ids[0]
-    duplicate_ids = entity_ids[1:]
-
-    for dup_id in duplicate_ids:
-        try:
-            get_out_rels_query = f"""
-            MATCH (dup:Entity)-[r]->(target)
-            WHERE id(dup) = {int(dup_id)}
-              AND (dup.owner_id = '{owner_id}' OR dup.owner_id IS NULL)
-            RETURN type(r) as rel_type, properties(r) as props, id(target) as target_id
-            """
-            out_rels = db.graph.query(get_out_rels_query)
-            if out_rels and hasattr(out_rels, "result_set"):
-                for row in out_rels.result_set:
-                    rel_type, props, target_id = row
-                    merge_query = f"""
-                    MATCH (p:Entity), (t)
-                    WHERE id(p) = {int(primary_id)} AND id(t) = {int(target_id)}
-                    MERGE (p)-[new_r:{rel_type}]->(t)
-                    SET new_r = $props
-                    """
-                    db.graph.query(merge_query, {"props": props})
-
-            db.graph.query(
-                f"MATCH (dup:Entity)-[r]->() WHERE id(dup) = {int(dup_id)} DELETE r"
-            )
-        except Exception as e:
-            logger.warning(
-                f"Failed to redirect outgoing relations for entity {dup_id}: {e}"
-            )
-
-        try:
-            get_in_rels_query = f"""
-            MATCH (source)-[r]->(dup:Entity)
-            WHERE id(dup) = {int(dup_id)}
-              AND (dup.owner_id = '{owner_id}' OR dup.owner_id IS NULL)
-            RETURN type(r) as rel_type, properties(r) as props, id(source) as source_id
-            """
-            in_rels = db.graph.query(get_in_rels_query)
-            if in_rels and hasattr(in_rels, "result_set"):
-                for row in in_rels.result_set:
-                    rel_type, props, source_id = row
-                    merge_query = f"""
-                    MATCH (s), (p:Entity)
-                    WHERE id(s) = {int(source_id)} AND id(p) = {int(primary_id)}
-                    MERGE (s)-[new_r:{rel_type}]->(p)
-                    SET new_r = $props
-                    """
-                    db.graph.query(merge_query, {"props": props})
-
-            db.graph.query(
-                f"MATCH ()-[r]->(dup:Entity) WHERE id(dup) = {int(dup_id)} DELETE r"
-            )
-        except Exception as e:
-            logger.warning(
-                f"Failed to redirect incoming relations for entity {dup_id}: {e}"
-            )
-
-        mark_outdated_query = f"""
-        MATCH (e:Entity)
-        WHERE id(e) = {int(dup_id)}
-          AND e.owner_id = '{owner_id}'
-        SET e.status = 'outdated'
-        """
-
-        try:
-            db.graph.query(mark_outdated_query)
-        except Exception as e:
-            logger.warning(f"Failed to mark entity {dup_id} as outdated: {e}")
-
-    update_primary_query = f"""
-    MATCH (e:Entity)
-    WHERE id(e) = {int(primary_id)}
-      AND e.owner_id = '{owner_id}'
-    SET e.last_dedup_at = timestamp()
-    """
-
-    try:
-        db.graph.query(update_primary_query)
-    except Exception as e:
-        logger.warning(f"Failed to update last_dedup_at for entity {primary_id}: {e}")
-
-    return primary_id
+    """Merge duplicate entities. Returns primary entity ID."""
+    return _merge_duplicate_nodes(
+        db, label="Entity", node_ids=entity_ids, owner_id=owner_id
+    )
 
 
 async def deduplicate_facts(db: FalkorDBClient, config: MCPServerConfig) -> None:
@@ -569,16 +525,6 @@ async def deduplicate_facts(db: FalkorDBClient, config: MCPServerConfig) -> None
         backoff_base=retry_backoff_base,
         backoff_max=retry_backoff_max,
     )(_merge_duplicate_entities)
-
-    try:
-        db.create_vector_index()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Dedup job: failed to ensure Fact vector index: %s", exc)
-
-    try:
-        db.create_entity_vector_index()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Dedup job: failed to ensure Entity vector index: %s", exc)
 
     threshold = config.job_deduplicate_similarity_threshold
     max_group_size = max(2, config.duplicate_max_group_size)

@@ -16,53 +16,287 @@
 
   <div class="layout">
     <aside class="panel panel-left">
-      <section>
-        <label>owner_id</label>
-        <input id="owner-id" type="text" value="default" placeholder="default" />
-      </section>
-
-      <section>
-        <label>Anchor node ID</label>
+      <section class="scope-section" id="scope-section">
+        <label>Scope <span class="muted">(kept across calls)</span></label>
+        <p class="hint muted">Shared filters for every tool — saved in this browser.</p>
+        <div class="field">
+          <label class="field-label" for="owner-id">owner_id</label>
+          <input id="owner-id" type="text" value="default" placeholder="default"
+            title="Memory partition. Same value the LLM passes as owner_id." />
+          <span class="field-hint">Graph namespace / tenant. Default: <code>default</code>.</span>
+        </div>
+        <div class="field">
+          <label class="field-label" for="scope-project">project</label>
+          <input id="scope-project" type="text" placeholder="e.g. my-app"
+            title="Optional metadata_filter.project" />
+          <span class="field-hint">Optional. Sent as <code>metadata_filter.project</code> for recall/search.</span>
+        </div>
+        <div class="field">
+          <label class="field-label" for="scope-tags">tags</label>
+          <input id="scope-tags" type="text" placeholder="tag-a, tag-b"
+            title="Optional metadata_filter.tags (comma-separated)" />
+          <span class="field-hint">Optional. Comma-separated → <code>metadata_filter.tags</code>.</span>
+        </div>
+        <div class="row" style="margin-top:0.45rem">
+          <label class="inline chk" title="Include outdated / expired nodes in reads that support it">
+            <input id="scope-outdated" type="checkbox" /> include_outdated
+          </label>
+        </div>
         <div class="row">
-          <input id="node-id" type="text" placeholder="e.g. 12345" />
-          <button id="btn-load-node" type="button">Load</button>
+          <button id="btn-brief" type="button" title="Load owner overview (top facts, contradictions)">Brief</button>
+          <button id="btn-clear" type="button" class="secondary" title="Clear canvas only — scope params stay">Clear graph</button>
+          <button id="btn-reset-forms" type="button" class="secondary" title="Reset saved scope + tool form values">Reset forms</button>
         </div>
       </section>
 
-      <section>
-        <label>Semantic search (text)</label>
-        <input id="search-query" type="text" placeholder="query…" />
-        <div class="row">
-          <label class="inline">limit</label>
-          <input id="search-limit" type="number" value="10" min="1" max="50" />
-          <button id="btn-search" type="button">Search</button>
+      <section class="tool-call" id="tool-call-section">
+        <label>LLM tool call</label>
+        <p class="hint muted">Emulate an agent call: pick a tool, set args, Run → graph.</p>
+        <select id="llm-tool" title="MCP read tool to call (same as an LLM would)">
+          <option value="recall_context">recall_context — question → subgraph</option>
+          <option value="get_trace">get_trace — find path A → B</option>
+          <option value="get_context">get_context — expand around a node</option>
+          <option value="search">search — semantic / text hits</option>
+          <option value="find_similar">find_similar — near a fact</option>
+          <option value="search_triplets">search_triplets — entity–rel–entity</option>
+          <option value="get_stats">get_stats — owner counts</option>
+        </select>
+        <p id="tool-hint" class="hint muted"></p>
+
+        <div class="tool-params" id="params-recall_context">
+          <div class="field">
+            <label class="field-label" for="recall-query">query</label>
+            <textarea id="recall-query" rows="3"
+              placeholder="e.g. What do we know about onboarding?"
+              title="Natural-language question; same string an LLM would pass as query"></textarea>
+            <span class="field-hint">Required. Semantic seed search + graph expansion.</span>
+          </div>
+          <div class="row">
+            <div class="field compact">
+              <label class="field-label" for="recall-limit">limit</label>
+              <input id="recall-limit" type="number" value="8" min="1" max="50"
+                title="Max seed hits from search (seed_limit)" />
+              <span class="field-hint">Seed hits</span>
+            </div>
+            <div class="field compact">
+              <label class="field-label" for="recall-depth">depth</label>
+              <input id="recall-depth" type="number" value="1" min="0" max="3"
+                title="Hop depth around seeds (prefer 1)" />
+              <span class="field-hint">Hops</span>
+            </div>
+            <div class="field compact">
+              <label class="field-label" for="recall-max-nodes">max_nodes</label>
+              <input id="recall-max-nodes" type="number" value="30" min="1" max="100"
+                title="Budget for expanded subgraph size" />
+              <span class="field-hint">Node budget</span>
+            </div>
+          </div>
+          <div class="row">
+            <div class="field compact">
+              <label class="field-label" for="recall-threshold">threshold</label>
+              <input id="recall-threshold" type="number" value="" min="0" max="1" step="0.05" placeholder="auto"
+                title="Min similarity 0–1; empty = server default" />
+              <span class="field-hint">Empty = auto</span>
+            </div>
+            <label class="inline chk" title="Also return a path hint between top two seeds">
+              <input id="recall-paths" type="checkbox" /> include_paths
+            </label>
+          </div>
         </div>
+
+        <div class="tool-params" id="params-get_trace" hidden>
+          <div class="field">
+            <label class="field-label" for="trace-from">from_id</label>
+            <input id="trace-from" type="text" placeholder="uid of start node"
+              title="Start node uid" />
+            <span class="field-hint">Start node. Use “Path from” on a selected node.</span>
+          </div>
+          <div class="field">
+            <label class="field-label" for="trace-to">to_id</label>
+            <input id="trace-to" type="text" placeholder="uid of end node"
+              title="End node uid" />
+            <span class="field-hint">End node. Use “Path to” on a selected node.</span>
+          </div>
+          <div class="row">
+            <div class="field compact">
+              <label class="field-label" for="trace-depth">max_depth</label>
+              <input id="trace-depth" type="number" value="5" min="1" max="10"
+                title="Maximum path length" />
+              <span class="field-hint">Max hops</span>
+            </div>
+            <label class="inline chk" title="If checked: ignore edge direction (undirected path)">
+              <input id="trace-undirected" type="checkbox" /> undirected
+            </label>
+          </div>
+        </div>
+
+        <div class="tool-params" id="params-get_context" hidden>
+          <div class="field">
+            <label class="field-label" for="ctx-node-id">node_id</label>
+            <input id="ctx-node-id" type="text" placeholder="uid to expand around"
+              title="Center node uid for subgraph expansion" />
+            <span class="field-hint">Center node. Fill via “Use in get_context”.</span>
+          </div>
+          <div class="row">
+            <div class="field compact">
+              <label class="field-label" for="ctx-depth">depth</label>
+              <input id="ctx-depth" type="number" value="1" min="0" max="3"
+                title="Traversal depth from center" />
+              <span class="field-hint">Hops</span>
+            </div>
+            <div class="field compact">
+              <label class="field-label" for="ctx-max-nodes">max_nodes</label>
+              <input id="ctx-max-nodes" type="number" value="20" min="1" max="100"
+                title="Page size / node budget" />
+              <span class="field-hint">Page size</span>
+            </div>
+            <div class="field compact">
+              <label class="field-label" for="ctx-offset">offset</label>
+              <input id="ctx-offset" type="number" value="0" min="0" max="500"
+                title="Pagination offset (0 = BFS budget mode)" />
+              <span class="field-hint">Skip N (paging)</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="tool-params" id="params-search" hidden>
+          <div class="field">
+            <label class="field-label" for="search-query">query</label>
+            <input id="search-query" type="text" placeholder="e.g. payment retry policy"
+              title="Search text / embedding query" />
+            <span class="field-hint">Required. Hits only — no graph expansion.</span>
+          </div>
+          <div class="row">
+            <div class="field compact">
+              <label class="field-label" for="search-limit">limit</label>
+              <input id="search-limit" type="number" value="10" min="1" max="50"
+                title="Max results" />
+              <span class="field-hint">Results</span>
+            </div>
+            <div class="field compact grow">
+              <label class="field-label" for="search-status">status</label>
+              <select id="search-status" title="Filter by node status">
+                <option value="">any</option>
+                <option value="active">active</option>
+                <option value="outdated">outdated</option>
+                <option value="archived">archived</option>
+              </select>
+              <span class="field-hint">Non-active also sets include_outdated</span>
+            </div>
+          </div>
+          <div class="row filters">
+            <label class="inline chk" title="Include Fact nodes"><input id="type-fact" type="checkbox" checked /> Fact</label>
+            <label class="inline chk" title="Include Entity nodes"><input id="type-entity" type="checkbox" checked /> Entity</label>
+          </div>
+        </div>
+
+        <div class="tool-params" id="params-find_similar" hidden>
+          <div class="field">
+            <label class="field-label" for="similar-fact-id">fact_id</label>
+            <input id="similar-fact-id" type="text" placeholder="uid of a Fact"
+              title="Reference fact uid; leave empty to use selected node" />
+            <span class="field-hint">Empty → uses selected / last focused node.</span>
+          </div>
+          <div class="row">
+            <div class="field compact">
+              <label class="field-label" for="similar-limit">top</label>
+              <input id="similar-limit" type="number" value="5" min="1" max="30"
+                title="How many similar facts to return" />
+              <span class="field-hint">Count</span>
+            </div>
+            <div class="field compact">
+              <label class="field-label" for="similar-threshold">threshold</label>
+              <input id="similar-threshold" type="number" value="0.55" min="0" max="1" step="0.05"
+                title="Minimum cosine similarity" />
+              <span class="field-hint">Min similarity</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="tool-params" id="params-search_triplets" hidden>
+          <div class="field">
+            <label class="field-label" for="trip-subject">subject</label>
+            <input id="trip-subject" type="text" placeholder="entity name (optional)"
+              title="Subject entity name (normalized match)" />
+            <span class="field-hint">Optional. Entity name on the left of the triplet.</span>
+          </div>
+          <div class="field">
+            <label class="field-label" for="trip-predicate">predicate</label>
+            <input id="trip-predicate" type="text" placeholder="e.g. WORKS_AT (optional)"
+              title="Relation type filter" />
+            <span class="field-hint">Optional. Relation type between entities.</span>
+          </div>
+          <div class="field">
+            <label class="field-label" for="trip-object">object</label>
+            <input id="trip-object" type="text" placeholder="entity name (optional)"
+              title="Object entity name (normalized match)" />
+            <span class="field-hint">Optional. Entity name on the right of the triplet.</span>
+          </div>
+          <div class="row">
+            <div class="field compact">
+              <label class="field-label" for="trip-limit">limit</label>
+              <input id="trip-limit" type="number" value="10" min="1" max="50"
+                title="Max triplets to return" />
+              <span class="field-hint">Results</span>
+            </div>
+          </div>
+          <p class="hint muted">At least one of subject / predicate / object is recommended.</p>
+        </div>
+
+        <div class="tool-params" id="params-get_stats" hidden>
+          <p class="hint muted">Uses current <code>owner_id</code> from Scope. No graph merge — counts only.</p>
+        </div>
+
+        <div class="row tool-actions">
+          <label class="inline chk" title="Clear canvas before merging the new result">
+            <input id="tool-replace" type="checkbox" checked /> replace graph
+          </label>
+          <button id="btn-run-tool" type="button" title="Call the selected MCP tool">
+            <span class="btn-spinner" aria-hidden="true"></span>
+            <span class="btn-label">Run tool</span>
+          </button>
+        </div>
+        <div id="tool-summary" class="tool-summary muted">No call yet.</div>
+        <details id="tool-raw-wrap" class="tool-raw-wrap">
+          <summary>
+            Raw response
+            <button id="btn-copy-raw" type="button" class="linkish" title="Copy raw JSON">Copy</button>
+          </summary>
+          <pre id="tool-raw"></pre>
+        </details>
+      </section>
+
+      <section id="overview-section">
+        <label>Overview</label>
+        <p id="overview-stats" class="muted">Load brief to see top facts.</p>
+        <div id="overview"></div>
       </section>
 
       <section>
-        <label>Similar facts (from anchor)</label>
-        <div class="row">
-          <label class="inline">top</label>
-          <input id="similar-limit" type="number" value="5" min="1" max="30" />
-          <label class="inline">threshold</label>
-          <input id="similar-threshold" type="number" value="0.55" min="0" max="1" step="0.05" />
+        <label>View filters</label>
+        <div class="row filters">
+          <label class="inline chk"><input id="view-fact" type="checkbox" checked /> Fact</label>
+          <label class="inline chk"><input id="view-entity" type="checkbox" checked /> Entity</label>
+          <label class="inline chk"><input id="view-active" type="checkbox" checked /> active</label>
+          <label class="inline chk"><input id="view-outdated" type="checkbox" checked /> outdated</label>
+          <label class="inline chk"><input id="view-archived" type="checkbox" checked /> archived</label>
         </div>
-        <button id="btn-similar" type="button">Find similar</button>
+        <div class="row filters">
+          <label class="inline chk"><input id="view-edge-labels" type="checkbox" checked /> edge labels</label>
+          <label class="inline chk"><input id="view-node-labels" type="checkbox" checked /> node labels</label>
+        </div>
       </section>
 
-      <section>
-        <label>Graph expansion</label>
-        <div class="row">
-          <label class="inline">depth</label>
-          <input id="depth" type="number" value="1" min="0" max="3" />
-          <label class="inline">max_nodes</label>
-          <input id="max-nodes" type="number" value="10" min="1" max="50" />
-        </div>
-        <div class="row">
-          <button id="btn-context" type="button">Context</button>
-          <button id="btn-hop" type="button">+1 hop</button>
-          <button id="btn-clear" type="button" class="secondary">Clear graph</button>
-        </div>
+      <section class="legend">
+        <label>Legend</label>
+        <ul class="legend-list">
+          <li><span class="swatch swatch-seed"></span> seed (recall)</li>
+          <li><span class="swatch swatch-contradicts"></span> CONTRADICTS</li>
+          <li><span class="swatch swatch-summarizes"></span> SUMMARIZES</li>
+          <li><span class="swatch swatch-triplet"></span> triplet / other</li>
+          <li><span class="swatch swatch-default"></span> RELATED / MENTIONS…</li>
+          <li><span class="swatch swatch-path"></span> path (trace)</li>
+        </ul>
       </section>
 
       <section id="log-section">
@@ -72,28 +306,79 @@
     </aside>
 
     <main class="graph-wrap">
+      <div class="graph-toolbar" id="graph-toolbar">
+        <select id="layout-mode" title="Layout">
+          <option value="cose">Force</option>
+          <option value="circle">Circle</option>
+          <option value="concentric">Radial</option>
+          <option value="breadthfirst">Hierarchy</option>
+          <option value="grid">Grid</option>
+          <option value="cose-bilkent-fallback">Dense force</option>
+        </select>
+        <button id="btn-layout" type="button" title="Re-run layout">Layout</button>
+        <button id="btn-rotate-ccw" type="button" class="secondary" title="Rotate −15°">↺</button>
+        <button id="btn-rotate-cw" type="button" class="secondary" title="Rotate +15°">↻</button>
+        <button id="btn-fit" type="button" class="secondary" title="Fit">Fit</button>
+        <button id="btn-center-sel" type="button" class="secondary" title="Center selection">Center</button>
+        <button id="btn-lock" type="button" class="secondary" title="Lock / unlock node drag">🔓</button>
+        <button id="btn-png" type="button" class="secondary" title="Export PNG">PNG</button>
+        <button id="btn-json" type="button" class="secondary" title="Export current graph as JSON">JSON</button>
+        <span class="tb-hint muted">drag · zoom · space+pan · alt+drag rotate · click node → neighbors</span>
+      </div>
+      <div id="busy-banner" class="busy-banner" hidden>Calling tool…</div>
       <div id="cy"></div>
-      <div id="hover-plus" class="hover-plus" title="Load 10 neighbors">+</div>
+      <div id="sel-action" class="sel-action" hidden>
+        <button id="btn-sel-neighbors" type="button">1-hop neighbors</button>
+        <button id="btn-sel-more" type="button" class="secondary" hidden>Load more</button>
+        <span id="sel-action-status" class="muted"></span>
+      </div>
+      <div id="hover-plus" class="hover-plus" title="Load next page of neighbors">+</div>
     </main>
 
     <aside class="panel panel-right">
       <h2>Node detail</h2>
-      <p id="detail-empty" class="muted">Click a node to see full text.</p>
+      <p id="detail-empty" class="muted">Click a node to inspect it and load 1-hop neighbors.</p>
       <div id="detail" hidden>
-        <p><strong>ID</strong> <span id="detail-id"></span></p>
+        <p class="id-row">
+          <strong>ID</strong>
+          <span id="detail-id" class="mono"></span>
+          <button id="btn-copy-id" type="button" class="linkish" title="Copy node id">Copy</button>
+        </p>
         <p><strong>Type</strong> <span id="detail-type"></span></p>
         <p><strong>Status</strong> <span id="detail-status"></span></p>
         <p><strong>Similarity</strong> <span id="detail-sim"></span></p>
         <label>Text</label>
         <pre id="detail-text"></pre>
-        <label>Edges</label>
+        <label>Metadata</label>
+        <pre id="detail-meta" class="meta-box"></pre>
+
+        <div class="neighbor-card" id="neighbor-card">
+          <label>1-hop neighbors</label>
+          <p id="neighbor-status" class="muted">Not loaded yet.</p>
+          <div class="row">
+            <label class="inline">page</label>
+            <input id="neighbor-page-size" type="number" value="10" min="1" max="50"
+              title="Neighbors page size for get_context pagination" />
+            <button id="btn-neighbors" type="button">Load neighbors</button>
+            <button id="btn-neighbors-more" type="button" class="secondary" hidden>Load more</button>
+          </div>
+          <ul id="neighbor-list" class="neighbor-list"></ul>
+        </div>
+
+        <label>Edges in view</label>
         <ul id="detail-edges"></ul>
-        <button id="btn-set-anchor" type="button">Set as anchor</button>
-        <button id="btn-neighbors" type="button">+10 neighbors</button>
+        <label>History</label>
+        <ul id="detail-history"></ul>
+        <div class="row detail-actions">
+          <button id="btn-set-anchor" type="button" class="secondary">Use in get_context</button>
+          <button id="btn-history" type="button" class="secondary">Load history</button>
+          <button id="btn-trace-from" type="button" class="secondary">Path from</button>
+          <button id="btn-trace-to" type="button" class="secondary">Path to</button>
+        </div>
       </div>
     </aside>
   </div>
 
-  <script src="/static/explorer.js"></script>
+  <script type="module" src="/static/explorer.js"></script>
 </body>
 </html>

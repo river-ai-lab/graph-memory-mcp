@@ -10,7 +10,6 @@ __pycache__/
 coverage.xml
 htmlcov/
 
-.github
 .env
 .env.*
 
@@ -25,3 +24,10 @@ build/
 .DS_Store
 graph_memory_mcp/demo/
 data/
+
+# Local planning / audit notes (not product docs)
+audit.md
+todo.md
+done.md
+features_current_plan.md
+limitations.md

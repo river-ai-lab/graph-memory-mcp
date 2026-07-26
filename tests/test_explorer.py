@@ -37,6 +37,19 @@ def test_static_assets_exist():
     assert (STATIC_DIR / "index.html").is_file()
     assert (STATIC_DIR / "explorer.js").is_file()
     assert (STATIC_DIR / "explorer.css").is_file()
+    for name in (
+        "api.js",
+        "detail.js",
+        "dom.js",
+        "graph.js",
+        "interactions.js",
+        "neighbors.js",
+        "panel.js",
+        "persist.js",
+        "state.js",
+        "tools.js",
+    ):
+        assert (STATIC_DIR / "js" / name).is_file(), name
 
 
 def test_read_only_tools_include_graph_reads():
@@ -71,10 +84,81 @@ def test_explorer_api_with_mock_client():
         page = client.get("/")
         assert page.status_code == 200
         assert "Graph Memory Explorer" in page.text
+        assert 'id="btn-brief"' in page.text
+        assert 'id="llm-tool"' in page.text
+        assert 'id="btn-run-tool"' in page.text
+        assert 'id="params-recall_context"' in page.text
+        assert 'id="params-get_trace"' in page.text
+        assert 'id="scope-project"' in page.text
+        assert 'id="scope-tags"' in page.text
+        assert 'id="scope-outdated"' in page.text
+        assert 'id="tool-hint"' in page.text
+        assert "field-hint" in page.text
+        assert 'id="btn-reset-forms"' in page.text
+        assert 'id="btn-copy-id"' in page.text
+        assert 'id="btn-copy-raw"' in page.text
+        assert 'id="btn-json"' in page.text
+        assert 'id="params-search_triplets"' in page.text
+        assert 'id="params-get_stats"' in page.text
+        assert 'id="btn-neighbors"' in page.text
+        assert 'id="btn-neighbors-more"' in page.text
+        assert 'id="sel-action"' in page.text
+        assert 'id="btn-sel-neighbors"' in page.text
+        assert 'id="layout-mode"' in page.text
+        assert 'id="btn-layout"' in page.text
+        assert 'id="btn-rotate-cw"' in page.text
+        assert 'id="view-fact"' in page.text
+        assert 'id="btn-history"' in page.text
+        assert 'id="tool-raw"' in page.text
+        assert "recall-outdated" not in page.text
+        assert "ctx-outdated" not in page.text
+
+        assert 'type="module"' in page.text
 
         static = client.get("/static/explorer.js")
         assert static.status_code == 200
-        assert "callTool" in static.text
+        assert "./js/graph.js" in static.text
+        assert "initCy" in static.text
+        assert "bindPanelControls" in static.text
+
+        neighbors = client.get("/static/js/neighbors.js")
+        assert neighbors.status_code == 200
+        assert "emptyNeighborInfo" in neighbors.text
+        assert "revealNeighborPage" in neighbors.text
+        assert "fetchCap" in neighbors.text
+        assert "bufferIds" in neighbors.text
+        assert "loadNeighbors" in neighbors.text
+
+        graph_js = client.get("/static/js/graph.js")
+        assert graph_js.status_code == 200
+        assert "export function syncGraph" in graph_js.text
+        assert "export function initCy" in graph_js.text
+        assert "exportJson" in graph_js.text
+        assert "edge-contradicts" in graph_js.text
+
+        tools_js = client.get("/static/js/tools.js")
+        assert tools_js.status_code == 200
+        assert "runSelectedTool" in tools_js.text
+        assert "AbortController" in tools_js.text
+        assert "recall_context" in tools_js.text
+        assert "search_triplets" in tools_js.text
+        assert "get_stats" in tools_js.text
+
+        persist_js = client.get("/static/js/persist.js")
+        assert persist_js.status_code == 200
+        assert "loadPersistedFields" in persist_js.text
+        assert "resetPersistedForms" in persist_js.text
+        assert "TOOL_HINTS" in persist_js.text
+
+        api_js = client.get("/static/js/api.js")
+        assert api_js.status_code == 200
+        assert "scopeIncludeOutdated" in api_js.text
+        assert "export async function callTool" in api_js.text
+
+        detail_js = client.get("/static/js/detail.js")
+        assert detail_js.status_code == 200
+        assert "get_brief" in detail_js.text
+        assert "loadBrief" in detail_js.text
 
 
 @pytest.mark.integration

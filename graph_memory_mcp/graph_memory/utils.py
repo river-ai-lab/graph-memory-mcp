@@ -3,36 +3,42 @@
 import json
 import logging
 import re
+import uuid
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+_OWNER_ID_RE = re.compile(r"^[a-zA-Z0-9_@-]+$")
+_NODE_ID_RE = re.compile(r"^[a-zA-Z0-9-]{1,64}$")
 
-def normalize_owner_id(owner_id: Optional[str]) -> str:
-    """Normalize owner_id to a valid string."""
-    default_owner_id = "default"
+
+def new_uid() -> str:
+    """Generate a stable public node id (opaque, never reused)."""
+    return uuid.uuid4().hex
+
+
+def normalize_owner_id(owner_id: Optional[str], *, default: str = "default") -> str:
+    """Normalize and validate owner_id; raises ValueError on invalid format."""
     if owner_id is None:
-        return default_owner_id
+        return default
     if isinstance(owner_id, bytes):
         value = owner_id.decode("utf-8", errors="replace").strip()
     elif isinstance(owner_id, str):
         value = owner_id.strip()
     else:
         value = str(owner_id).strip()
-    return value or default_owner_id
+    value = value or default
+    if not _OWNER_ID_RE.match(value):
+        raise ValueError("Invalid owner_id format (use alphanumeric, -, _, @)")
+    return value
 
 
-def escape_value(value: Optional[str]) -> str:
-    """Escape string values for safe use in Cypher queries."""
-    if value is None:
-        return ""
-    if isinstance(value, bytes):
-        val_str = value.decode("utf-8", errors="replace")
-    elif not isinstance(value, str):
-        val_str = str(value)
-    else:
-        val_str = value
-    return val_str.replace("\\", "\\\\").replace("'", "\\'")
+def require_node_id(value: Any, field: str = "node_id") -> str:
+    """Validate a public node id; raises ValueError on invalid format."""
+    text = ensure_text(value)
+    if not text or not _NODE_ID_RE.match(text):
+        raise ValueError(f"Invalid {field} format")
+    return text
 
 
 def ensure_text(value: Any) -> Optional[str]:
@@ -66,14 +72,6 @@ def dump_json(value: Any, fallback: str = "{}") -> str:
         return json.dumps(value, ensure_ascii=False)
     except Exception:
         return fallback
-
-
-def format_vecf32(embedding: List[float]) -> str:
-    """Format embedding as vecf32() for FalkorDB vector index."""
-    if not embedding:
-        return "vecf32([])"
-    values = ", ".join(str(float(v)) for v in embedding)
-    return f"vecf32([{values}])"
 
 
 def parse_embedding_value(embedding: Any) -> List[float]:
@@ -234,25 +232,58 @@ def validate_inputs(inputs: dict[str, Any], config: Any) -> Optional[str]:
 
 
 def mcp_handler(func):
-    """Decorator for standard error handling in MCP handlers."""
+    """Decorator: standard error handling + Prometheus latency/status metrics."""
     import functools
+    import time as _time
+
+    from graph_memory_mcp.metrics import observe_handler
 
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
+        started = _time.perf_counter()
         try:
-            return func(*args, **kwargs)
+            result = func(*args, **kwargs)
+        except ValueError as exc:
+            result = error_response(exc, code="memory_validation_error")
         except Exception as exc:
             logger.error(f"Failed to execute {func.__name__}: {exc}")
-            return error_response(exc, code="memory_service_error")
+            result = error_response(exc, code="memory_service_error")
+        observe_handler(
+            func.__name__,
+            _time.perf_counter() - started,
+            bool(result.get("success", True)) if isinstance(result, dict) else True,
+        )
+        return result
 
     return wrapper
 
 
 def execute_query(db: Any, query: str, params: Optional[Dict] = None) -> Any:
-    """Execute query and validate result."""
-    result = db.graph.query(query, params=params)
+    """Execute query (routed to the owner graph via params) and validate result."""
+    result = db.query(query, params=params)
 
     if not result or not hasattr(result, "result_set") or not result.result_set:
         return None
 
     return result
+
+
+def touch_nodes(db: Any, node_ids: List[str], owner_id: str) -> None:
+    """Record recall usage: bump access_count / last_accessed_at (best-effort)."""
+    if not node_ids:
+        return
+    try:
+        db.query(
+            """
+            MATCH (n)
+            WHERE n.uid IN $node_ids AND n.owner_id = $owner_id
+            SET n.access_count = coalesce(n.access_count, 0) + 1,
+                n.last_accessed_at = timestamp()
+            """,
+            params={
+                "node_ids": [str(node_id) for node_id in node_ids],
+                "owner_id": owner_id,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("touch_nodes failed: %s", exc)

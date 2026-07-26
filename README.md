@@ -41,7 +41,7 @@ Graph Memory MCP
 
 ## Agent policies
 
-Any LLM agent that reads or writes Graph Memory — single-agent or multi-agent — should have [`docs/memory_policies_for_LLM.md`](docs/memory_policies_for_LLM.md) in context **at the start of each session**. It defines what to store, `owner_id` rules, and how to link facts; without it, memory tends to get noisy or mis-scoped.
+Any LLM agent that reads or writes Graph Memory — single-agent or multi-agent — should load the memory ritual from client rules / `AGENTS.md` and keep [`docs/memory_policies_for_LLM.md`](docs/memory_policies_for_LLM.md) (or the shorter [`docs/memory_policy_cheatsheet.md`](docs/memory_policy_cheatsheet.md)) in context **at the start of each session**. That defines what to store, `owner_id` rules, and how to link facts; without it, memory tends to get noisy or mis-scoped. The same full policy is optionally exposed as MCP resource `graph-memory://agent-policies` (clients rarely auto-fetch it — prefer rules).
 
 ---
 
@@ -201,9 +201,27 @@ The server uses **two vector indexes** (Fact and Entity):
 
 - **Automatic** — indexes are created on first `search`, `find_similar`, or Fact `auto_link` if missing.
 - **Startup** — `AUTO_CREATE_INDEXES=true` in `.env`.
-- **MCP tool** — `ensure_vector_indexes` (idempotent).
+- **Admin** — `POST /admin/ensure-indexes` (or MCP `ensure_vector_indexes` when `MCP_EXPOSE_ADMIN_TOOLS=true`).
 
 FalkorDB keeps index data in sync when nodes change; you only need to recreate index **definitions** after changing embedding model **dimension**.
+
+> [!WARNING]
+> **Changing `EMBEDDING_MODEL` invalidates the stored corpus.** Old node embeddings were produced by the old model — new queries will not match them meaningfully. The full procedure is: (1) switch the model, (2) recreate vector index definitions if the dimension changed, (3) **re-embed every node** (currently manual: iterate nodes and `update_node` with the same text, or export/import with `regenerate_embeddings=true`). The same applies to changing prompt/prefix conventions of the same model.
+
+### Embedding prefixes
+
+Some models are trained with prompt prefixes. The default `intfloat/multilingual-e5-base` expects `"query: "` for search queries and `"passage: "` for stored texts — without them retrieval quality degrades. Configure via `EMBEDDING_QUERY_PREFIX` / `EMBEDDING_PASSAGE_PREFIX` (see `env.example`; empty by default for backward compatibility). Enabling prefixes on an existing corpus counts as a model change — re-embed the corpus (see warning above).
+
+## Persistence & Backups
+
+`docker-compose.yml` enables **AOF persistence** (`--appendonly yes --appendfsync everysec`) — a container crash loses at most ~1 second of writes. For point-in-time backups:
+
+```bash
+./scripts/backup.sh            # BGSAVE + copy dump.rdb to ./backups (keeps last 14)
+# cron example (hourly): 0 * * * * cd /path/to/repo && ./scripts/backup.sh
+```
+
+Logical per-owner backups (portable across instances/models): `GET /admin/export/{owner_id}` — supports `?limit=&offset=&section=nodes|relations` for large owners; restore with `POST /admin/import`.
 
 ## Multi-Agent Usage
 
@@ -221,12 +239,11 @@ Use `owner_id` to isolate knowledge between agents/tenants. Values must be alpha
 
 ### Owner Isolation
 
-Use `owner_id` to:
-- **Isolate agents**: Each agent/team has its own `owner_id`
+Isolation is **physical**: every `owner_id` lives in its own FalkorDB graph (`{FALKORDB_GRAPH}_{owner_id}`) with its own vector indexes. Use `owner_id` to:
+- **Isolate agents**: Each agent/team has its own `owner_id` (= its own graph)
 - **Share knowledge**: Use the same `owner_id` for shared knowledge base
-- **Cross-reference**: Query across owners when needed (with proper permissions)
 
-All MCP tools support `owner_id` parameter (defaults to `"default"`). Agents should pass `owner_id` explicitly rather than relying on the default.
+All MCP tools support `owner_id` (default from `DEFAULT_OWNER_ID`, usually `"default"`). Agents should pass `owner_id` explicitly rather than relying on the default.
 
 See [`docs/memory_policies_for_LLM.md`](docs/memory_policies_for_LLM.md) and [`docs/memory_faq.md`](docs/memory_faq.md) for operational guidance.
 
@@ -261,7 +278,7 @@ graph-memory-mcp --host 127.0.0.1 --port 8000
 uv run python examples/http_client_usage.py
 ```
 
-That script calls `ensure_vector_indexes`, `create_node`, and `search` over Streamable HTTP. See [examples/](examples/) for embedded usage and MCP client configuration.
+That script calls `health_check`, `create_node`, and `search` over Streamable HTTP. See [examples/](examples/) for embedded usage and MCP client configuration.
 
 ## Why Choose MCP Graph Memory?
 

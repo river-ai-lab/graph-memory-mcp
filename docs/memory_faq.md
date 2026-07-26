@@ -1,73 +1,36 @@
-# Long-term Memory FAQ
+# Memory FAQ
 
-## Search vs. Summary?
+## Recall
 
-- **“What do we know about Y?”**: **`search(query="Y")`** → **`get_context`** on best hits. Optional: `recall_context` on small/sparse memory only.
-- **“Find all about Z”**: `search(query="Z", limit=50)` + `get_context` on top hits.
-- **“How are X and Y related?”**: `search` for both → **`get_trace(from_id=..., to_id=...)`**. `recall_context(..., include_paths=true)` is a rough hint between top seeds, not a substitute for `get_trace`.
+- **About X?** → `search(query="X")` → `get_context` on best hits (skips outdated/expired neighbors unless `include_outdated=true`). `recall_context` only on small/sparse graphs.
+- **X ↔ Y?** → `search` both → `get_trace(from_id, to_id)` (`directed=false` if empty).
 
-## Deleting Knowledge ("Forget")
+## Forget
 
-There is no single `forget_topic(X)` tool. Use a deliberate workflow:
+No `forget_topic`. `search` → filter → `mark_outdated` (Facts) or `delete_node` / `delete_relation`. Tag at write time if you expect bulk cleanup.
 
-1. **`search(query="X", owner_id=...)`** — semantic hits; add **`get_context`** when you need the subgraph.
-2. **Filter** by `metadata.tags`, `metadata.entities`, or your own naming conventions (metadata is not a separate search API today).
-3. **`mark_outdated(fact_id=..., owner_id=..., reason="...")`** — soft-delete for **Facts** only (hidden from default search).
-4. **`delete_node`** — hard removal (Facts or Entities; compliance, mistakes, test data). Entities have no soft-delete.
-5. **`delete_relation`** — remove specific edges between nodes (optional `relation_type`).
+## Fact vs Entity
 
-**Why “only X” is hard:** embeddings overlap (e.g. “Redis” vs “cache layer”), and graphs share nodes. Tag facts at write time (`metadata.tags`, `metadata.entities`) if you expect bulk forget later. Shared team facts should stay immutable unless correcting an error.
+- **Fact** — declarative `text`. **Entity** — named thing. Practical labels, not ontology. Link with `MENTIONS` / `RELATED_TO`.
 
-## Fact vs. Entity
+## Metadata
 
-- **Fact**: declarative statement (`text`).
-- **Entity**: named concept (person, service, technology).
+Searchable substance lives in `text`. Reserved keys (typed, filterable via `metadata_filter`): `project`, `created_by`, `tags`, `type`, `confidence`. Other keys are free-form.
 
-This is a **practical UI distinction**, not a strict ontology. Agents may store the same idea as either label; use consistent `owner_id` and relations (`MENTIONS`, `RELATED_TO`) rather than debating labels.
+## Indexes
 
-## Metadata — why not “searchable metadata”?
+Fact + Entity vector indexes: auto on first `search` / `find_similar` / Fact `auto_link`, or `AUTO_CREATE_INDEXES=true`, or `POST /admin/ensure-indexes`. Recreate definitions only if embedding **dimension** changes; model/prefix change → re-embed corpus.
 
-Primary recall is **`text` embeddings** plus **graph traversal**. `metadata` holds tags, provenance, confidence — returned with nodes, useful for filtering in agent logic, but there is no dedicated metadata-query tool in v1. Put the searchable substance in `text`.
+## Isolation
 
-## Vector indexes (FalkorDB)
+Each `owner_id` = own FalkorDB graph. Same `owner_id` → shared memory. Soft split inside owner: `metadata.project`. Always pass `owner_id` explicitly (server default: `DEFAULT_OWNER_ID`, usually `"default"`).
 
-- Two indexes: **Fact** (`search`, `find_similar`) and **Entity** (Fact **auto_link**).
-- **Automatic:** missing indexes are created on first `search`, `find_similar`, or Fact `auto_link` (idempotent).
-- **Startup:** set `AUTO_CREATE_INDEXES=true` to create them when the MCP server starts.
-- **Manual:** MCP tool `ensure_vector_indexes` (same logic).
-- FalkorDB **maintains** index contents when nodes change; you only redefine indexes when the embedding **model dimension** changes.
+## Lifecycle
 
-## Explorer vs. MCP
+`active` (default search) · `outdated` (soft-delete Fact) · `archived` (TTL/stale job). Use `include_outdated` / `status` to see non-active.
 
-- **Agents** use MCP tools (`stdio` or HTTP) — this is the production interface.
-- **Explorer** (`graph-memory-explorer`) is a **human debugging GUI** over read-only MCP calls; agents do not need it.
+## Agent vs Explorer
 
-## Fact Lifecycle & Status
+Agents → MCP tools. Explorer → human read-only GUI over MCP.
 
-- **`active`**: Default. Visible in default search.
-- **`outdated`**: Soft-deleted (Facts). Hidden from default search; use `search(..., include_outdated=True)` or `status="outdated"` to include.
-- **`archived`**: Set by optional background job when TTL expires (same graph, not separate storage). Hidden from default search like `outdated`.
-
-Agent write/update rules: [memory_policies_for_LLM.md](./memory_policies_for_LLM.md).
-
-## Metadata Schema
-
-Recommended optional fields in `metadata` (not validated by the server):
-
-- `type`: Category (e.g., "incident", "terminology").
-- `entities`: List of key names (["Redis", "Auth"]).
-- `tags`: Filters (["infra", "prod"]).
-- `valid_until`: "YYYY-MM-DD" for expiry.
-
-## Do we save everything?
-
-**No.** Only explicit savings or final decisions.
-
-- **Save**: "The server IP is 10.0.0.1", "User prefers concise answers".
-- **Ignore**: "Hello", "Let me think", "Did that work?".
-
-## Is memory shared?
-
-- **Physically**: One database.
-- **Logically**: Partitioned by `owner_id`.
-- **Rule**: Always set `owner_id` to respect boundaries (private vs team).
+Policy: [memory_policies_for_LLM.md](./memory_policies_for_LLM.md).

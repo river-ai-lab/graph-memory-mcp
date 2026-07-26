@@ -62,17 +62,12 @@ class _FakeResult:
         self.result_set = rows
 
 
-class _FakeOwnerGraph:
-    def __init__(self, rows):
-        self.rows = rows
-
-    def query(self, query):
-        return _FakeResult(self.rows)
-
-
 class _FakeOwnerDB:
-    def __init__(self, rows):
-        self.graph = _FakeOwnerGraph(rows)
+    def __init__(self, owners):
+        self._owners = owners
+
+    def list_owners(self):
+        return list(self._owners)
 
 
 @pytest.mark.asyncio
@@ -121,9 +116,9 @@ async def test_scheduler_lifecycle(monkeypatch):
     [_resolve_archive_owner_ids, _resolve_dedup_owner_ids],
 )
 def test_jobs_process_all_owners_discovers_graph_owners(resolver):
-    """Owner discovery should honor jobs_process_all_owners when enabled."""
+    """Owner discovery should list per-owner graphs when enabled."""
     cfg = MCPServerConfig(jobs_process_all_owners=True, jobs_owner_ids="fallback")
-    db = _FakeOwnerDB([["team_b"], ["team_a"], [None], [""]])
+    db = _FakeOwnerDB(["team_b", "team_a", "bad owner!"])
 
     owners = resolver(db, cfg)
 
@@ -254,10 +249,10 @@ async def test_deduplication_with_relation_redirection(monkeypatch, db_client):
     # Verify relation exists before dedup
     query_before = f"""
     MATCH (f:Fact)-[r:MENTIONS]->(e:Entity)
-    WHERE id(f) = {int(fact2_id)} AND id(e) = {int(entity_id)}
+    WHERE f.uid = '{fact2_id}' AND e.uid = '{entity_id}'
     RETURN count(r) as cnt
     """
-    result_before = db.graph.query(query_before)
+    result_before = db.query(query_before, owner_id=owner_id)
     assert result_before.result_set[0][0] == 1
 
     # Run deduplication
@@ -276,19 +271,19 @@ async def test_deduplication_with_relation_redirection(monkeypatch, db_client):
     # Verify relation was redirected from Fact2 to Fact1
     query_after = f"""
     MATCH (f:Fact)-[r:MENTIONS]->(e:Entity)
-    WHERE id(f) = {int(fact1_id)} AND id(e) = {int(entity_id)}
+    WHERE f.uid = '{fact1_id}' AND e.uid = '{entity_id}'
     RETURN count(r) as cnt
     """
-    result_after = db.graph.query(query_after)
+    result_after = db.query(query_after, owner_id=owner_id)
     assert result_after.result_set[0][0] == 1, "Relation should be redirected to Fact1"
 
     # Verify old relation from Fact2 is gone
     query_old = f"""
     MATCH (f:Fact)-[r:MENTIONS]->(e:Entity)
-    WHERE id(f) = {int(fact2_id)} AND id(e) = {int(entity_id)}
+    WHERE f.uid = '{fact2_id}' AND e.uid = '{entity_id}'
     RETURN count(r) as cnt
     """
-    result_old = db.graph.query(query_old)
+    result_old = db.query(query_old, owner_id=owner_id)
     assert result_old.result_set[0][0] == 0, "Old relation from Fact2 should be deleted"
 
 
@@ -437,13 +432,16 @@ async def test_find_duplicate_fact_groups_backfills_old_pending_facts(
         fact_id = result["node"]["node_id"]
         created_ids.append(fact_id)
 
-        db.graph.query(f"""
+        db.query(
+            f"""
             MATCH (f:Fact)
-            WHERE id(f) = {int(fact_id)}
+            WHERE f.uid = '{fact_id}'
             SET f.created_at = {old_ms + offset},
                 f.updated_at = {old_ms + offset},
                 f.last_dedup_at = NULL
-            """)
+            """,
+            owner_id=owner_id,
+        )
 
     groups = await _find_duplicate_fact_groups(
         db,
@@ -495,13 +493,16 @@ async def test_deduplicate_facts_stays_within_owner_and_keeps_oldest_primary(
     old_fact_id = old_result["node"]["node_id"]
 
     old_ms = int((time.time() - 7 * 24 * 3600) * 1000)
-    db.graph.query(f"""
+    db.query(
+        f"""
         MATCH (f:Fact)
-        WHERE id(f) = {int(old_fact_id)}
+        WHERE f.uid = '{old_fact_id}'
         SET f.created_at = {old_ms},
             f.updated_at = {old_ms},
             f.last_dedup_at = NULL
-        """)
+        """,
+        owner_id=owner_id,
+    )
 
     cross_owner_result = mcp_handlers_nodes.create_node(
         db,

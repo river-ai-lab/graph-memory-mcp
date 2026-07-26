@@ -7,6 +7,12 @@ from typing import Any, Optional
 from cachetools import LRUCache, TTLCache
 
 
+def _observe(cache: str, hit: bool) -> None:
+    from graph_memory_mcp.metrics import observe_cache
+
+    observe_cache(cache, hit)
+
+
 class CacheManager:
     """Manages LRU and TTL caches for embeddings and search results."""
 
@@ -32,7 +38,9 @@ class CacheManager:
         """Get cached embedding for text."""
         if self.embeddings is None:
             return None
-        return self.embeddings.get(text)
+        cached = self.embeddings.get(text)
+        _observe("embeddings", cached is not None)
+        return cached
 
     def set_embedding(self, text: str, embedding: list):
         """Cache embedding for text."""
@@ -43,7 +51,9 @@ class CacheManager:
         """Get cached search results."""
         if self.search is None:
             return None
-        return self.search.get(query_hash)
+        cached = self.search.get(query_hash)
+        _observe("search", cached is not None)
+        return cached
 
     def set_search(self, query_hash: str, results: Any):
         """Cache search results."""

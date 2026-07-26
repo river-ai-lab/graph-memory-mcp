@@ -1,37 +1,22 @@
-# Roadmap & Future Considerations
+# Roadmap
 
-## Search & multi-tenant scale
+Agents: [memory_policies_for_LLM.md](./memory_policies_for_LLM.md). Ops: [admin.md](./admin.md).
 
-**Hybrid FalkorDB + Qdrant** — dedicated vector index per tenant when an owner holds 100k+ embeddings; FalkorDB remains source of truth for graph structure and metadata.
+## Next
 
-## Features
+- Undirected `get_trace` — bidirectional BFS (path scan is costly on dense graphs)
+- Auto `search_type` by owner size (`pre_filter` vs `post_filter` ANN)
+- `MCP_TOOL_PROFILE=core|full` — fewer tools for weak models
+- Re-embed script — before prod with stable data (model/prefix changes)
+- Redis pub/sub cache invalidation — if multi-instance MCP
+- HA — FalkorDB replica + Sentinel (backups already cover durability)
 
-**Hybrid Memory/Disk Database** - Specialized backend supporting hybrid memory/disk operation (active data in memory, archived data on disk). Enables handling datasets larger than RAM without eviction.
+## Later
 
-**BM25 Hybrid Search** - May be implemented via database backend with native BM25 support (Qdrant, Weaviate, or future FalkorDB features).
-
-**Batch Operations** - Bulk create/update/delete for large data volumes.
-
-**Custom Embedding Models/Spaces** - Multiple embedding spaces per domain via metadata (code embeddings vs natural language).
-
-**Owner Groups & Multi-Ownership** - Support for owner groups combining multiple `owner_id`s.
-
-**Temporal Queries** - Enhanced time-based filtering and sorting.
-
-**Enhanced Search** - Faceted search, query expansion, multi-language support.
-
-**Versioning Improvements** - Tracks `change_reason` and `changed_by` when versioning is enabled.
-
-**Access Tracking & Analytics** - Implement append-only access events with TTL (instead of a single mutable `last_accessed_at` field) to avoid write-amplification and enable richer analytics.
-
-## Infrastructure
-
-**Performance Optimizations** - Connection pooling, query tuning
-
-**Monitoring & Observability** - Prometheus metrics expansion, distributed tracing, deeper query analytics.
-
-**API Enhancements** - GraphQL endpoint, REST wrapper, WebSocket support, API versioning.
-
----
-
-**Note:** This roadmap is subject to change based on user feedback and priorities.
+- Owner groups / cheap cross-owner reads (today: one graph per `owner_id`)
+- BM25 + vector hybrid (FalkorDB full-text or external index)
+- External ANN (e.g. Qdrant) when one owner grows past ~10⁵ embeddings
+- Pluggable storage (`StorageBackend` → Neo4j / Memgraph; Dgraph last)
+- Richer versioning (`change_reason`, `changed_by`); `as_of` for relations
+- Append-only access events (vs mutable `last_accessed_at`)
+- JSONL stream export; HTTP MCP auth outside trusted networks

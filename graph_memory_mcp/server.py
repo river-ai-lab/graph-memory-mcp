@@ -19,6 +19,7 @@ from graph_memory_mcp.config import MCPServerConfig
 from graph_memory_mcp.graph_memory import (
     mcp_handlers_admin,
     mcp_handlers_graph,
+    mcp_handlers_ingest,
     mcp_handlers_nodes,
     mcp_handlers_relations,
     mcp_handlers_search,
@@ -44,14 +45,22 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
                 logger.error("Failed to auto-create vector indexes: %s", exc)
 
     def _ensure_indexes_if_needed(self) -> None:
-        """Create vector indexes if they don't exist (with dimension validation)."""
+        """Create vector indexes in every existing owner graph.
+
+        New owner graphs get their indexes lazily on first search/auto_link.
+        """
         dim = int(getattr(self.embedding_service, "dimension", 0) or 0)
-        self.db_client.ensure_vector_indexes_if_missing(dimension=dim)
+        owners = self.db_client.list_owners() or ["default"]
+        for owner_id in owners:
+            self.db_client.ensure_vector_indexes_if_missing(
+                owner_id=owner_id, dimension=dim
+            )
 
     def _register_tools(self) -> None:
         exposed: Dict[str, Any] = {}
         exposed.update(self._register_information_tools())
         exposed.update(self._register_fact_tools())
+        exposed.update(self._register_bulk_and_transfer_tools())
         exposed.update(self._register_triplet_tools())
         exposed.update(self._register_graph_tools())
 
@@ -63,21 +72,26 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
         db = self.db_client
         mcp = self.mcp
         assert mcp is not None
+        default_owner = self.config.default_owner_id
 
-        @mcp.tool(
-            title="Test connection",
-            description="Simple ping to verify MCP server availability.",
-            annotations=ToolAnnotations(readOnlyHint=True),
-        )
-        def test_connection() -> dict:
-            return mcp_handlers_admin.test_connection(db)
+        if self.config.mcp_expose_admin_tools:
+
+            @mcp.tool(
+                title="Test connection",
+                description="Simple ping to verify MCP server availability.",
+                annotations=ToolAnnotations(readOnlyHint=True),
+            )
+            def test_connection() -> dict:
+                return mcp_handlers_admin.test_connection(db)
+
+            exposed["test_connection"] = test_connection
 
         @mcp.tool(
             title="Get stats",
             description="Get graph statistics (node counts, etc.).",
             annotations=ToolAnnotations(readOnlyHint=True),
         )
-        def get_stats(owner_id: str = "default") -> dict:
+        def get_stats(owner_id: str = default_owner) -> dict:
             return mcp_handlers_admin.get_stats(db, owner_id=owner_id)
 
         @mcp.tool(
@@ -89,38 +103,68 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
             return mcp_handlers_admin.health_check(db, self.embedding_service)
 
         @mcp.tool(
-            title="Ensure vector indexes",
+            title="Get brief",
             description=(
-                "Create or verify Fact and Entity vector indexes for semantic search. "
-                "Idempotent — safe to call multiple times. "
-                "Indexes are also created automatically on first search or auto_link "
-                "when missing; set AUTO_CREATE_INDEXES=true to create them at server startup."
+                "Session warm-up in one call: top facts for the owner "
+                "(by connectivity and recency), open CONTRADICTS pairs, and stats. "
+                "Call at session start before deeper search/get_context."
             ),
+            annotations=ToolAnnotations(readOnlyHint=True),
         )
-        def ensure_vector_indexes() -> dict:
-            try:
-                self._ensure_indexes_if_needed()
-                status = db.get_vector_index_status()
-                return {
-                    "success": True,
-                    "indexes": status,
-                    "dimension": getattr(self.embedding_service, "dimension", 0),
-                }
-            except Exception as e:
-                return {"success": False, "error": str(e)}
+        def get_brief(owner_id: str = default_owner, limit: int = 10) -> dict:
+            return mcp_handlers_admin.get_brief(db, owner_id=owner_id, limit=limit)
 
-        exposed["test_connection"] = test_connection
+        if self.config.mcp_expose_admin_tools:
+
+            @mcp.tool(
+                title="Ensure vector indexes",
+                description=(
+                    "Create or verify Fact and Entity vector indexes for semantic search. "
+                    "Idempotent — safe to call multiple times. "
+                    "Indexes are also created automatically on first search or auto_link "
+                    "when missing; set AUTO_CREATE_INDEXES=true to create them at server startup."
+                ),
+            )
+            def ensure_vector_indexes() -> dict:
+                return self.ensure_indexes_status()
+
+            exposed["ensure_vector_indexes"] = ensure_vector_indexes
+
         exposed["get_stats"] = get_stats
         exposed["health_check"] = health_check
-        exposed["ensure_vector_indexes"] = ensure_vector_indexes
+        exposed["get_brief"] = get_brief
         return exposed
 
+    def ensure_indexes_status(self) -> dict:
+        """Create missing indexes and report per-owner status (MCP and /admin)."""
+        try:
+            self._ensure_indexes_if_needed()
+            owners = self.db_client.list_owners() or ["default"]
+            return {
+                "success": True,
+                "indexes": {
+                    owner: self.db_client.get_vector_index_status(owner_id=owner)
+                    for owner in owners
+                },
+                "dimension": getattr(self.embedding_service, "dimension", 0),
+            }
+        except Exception as e:  # noqa: BLE001
+            return {"success": False, "error": str(e)}
+
     def _register_fact_tools(self) -> Dict[str, Any]:
+        """Node tools: provenance-specific writes + shared read/lifecycle tools."""
+        exposed: Dict[str, Any] = self._register_node_write_tools()
+        exposed.update(self._register_node_shared_tools())
+        return exposed
+
+    def _register_node_write_tools(self) -> Dict[str, Any]:
+        """create/upsert/update with nested `source` (overridden by simple profile)."""
         exposed: Dict[str, Any] = {}
         db = self.db_client
         config = self.config
         mcp = self.mcp
         assert mcp is not None
+        default_owner = self.config.default_owner_id
 
         @mcp.tool(
             title="Create node",
@@ -134,13 +178,14 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
                 "Note: auto_link=true (default) on Facts adds MENTIONS edges to similar Entity nodes "
                 "(vector search on Entity index; threshold AUTO_LINKING_SEMANTIC_THRESHOLD). "
                 "Use create_relation for links between arbitrary node pairs. "
-                "Set ttl_days for automatic archival."
+                "Set ttl_days for automatic archival. "
+                "Response may include possible_duplicates — review before keeping both."
             ),
         )
         def create_node(
             text: str,
             node_type: Literal["Fact", "Entity"] = "Fact",
-            owner_id: str = "default",
+            owner_id: str = default_owner,
             metadata: dict | None = None,
             source: dict | None = None,
             status: Literal["active", "outdated", "archived"] | None = None,
@@ -179,11 +224,11 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
             text: str,
             source: dict,
             node_type: Literal["Fact", "Entity"] = "Fact",
-            owner_id: str = "default",
+            owner_id: str = default_owner,
             metadata: dict | None = None,
             status: Literal["active", "outdated", "archived"] | None = None,
             ttl_days: float | None = None,
-            versioning: bool = False,
+            versioning: bool | None = None,
             entity_type: str | None = None,
             auto_link: bool = True,
             semantic_threshold: float | None = None,
@@ -209,50 +254,6 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
             )
 
         @mcp.tool(
-            title="Search",
-            description=(
-                "Semantic search using embedding similarity (cosine distance). "
-                "Returns active nodes by default (use include_outdated=true to include outdated and archived nodes). "
-                "Results ranked by similarity to query text. "
-                "Supports multi-tenant isolation via owner_id. "
-                "search_type: pre_filter (filter owner first, best for large/multi-tenant graphs) "
-                "or post_filter (global ANN then filter, best for small graphs); "
-                "defaults to server SEARCH_TYPE when omitted."
-            ),
-            annotations=ToolAnnotations(readOnlyHint=True),
-        )
-        def search(
-            query: str,
-            owner_id: str = "default",
-            limit: int | None = None,
-            node_types: list[str] | None = None,
-            status: str | None = None,
-            similarity_threshold: float | None = None,
-            include_outdated: bool = False,
-            search_type: str | None = None,
-        ) -> dict:
-            return mcp_handlers_search.search(
-                db,
-                config,
-                query=query,
-                owner_id=owner_id,
-                limit=limit,
-                node_types=node_types,
-                status=status,
-                similarity_threshold=similarity_threshold,
-                include_outdated=include_outdated,
-                search_type=search_type,
-            )
-
-        @mcp.tool(
-            title="Get node",
-            description="Retrieve a single node (Fact or Entity) by its ID.",
-            annotations=ToolAnnotations(readOnlyHint=True),
-        )
-        def get_node(node_id: str, owner_id: str = "default") -> dict:
-            return mcp_handlers_nodes.get_node(db, node_id=node_id, owner_id=owner_id)
-
-        @mcp.tool(
             title="Update node",
             description=(
                 "Update a node (Fact or Entity). "
@@ -262,14 +263,14 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
         )
         def update_node(
             node_id: str,
-            owner_id: str = "default",
+            owner_id: str = default_owner,
             text: str | None = None,
             metadata: dict | None = None,
             source: dict | None = None,
             status: Literal["active", "outdated", "archived"] | None = None,
             ttl_days: float | None = None,
             entity_type: str | None = None,
-            versioning: bool = False,
+            versioning: bool | None = None,
         ) -> dict:
             return mcp_handlers_nodes.update_node(
                 db,
@@ -284,6 +285,189 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
                 versioning=versioning,
             )
 
+        exposed["create_node"] = create_node
+        exposed["upsert_node"] = upsert_node
+        exposed["update_node"] = update_node
+        return exposed
+
+    def _register_bulk_and_transfer_tools(self) -> Dict[str, Any]:
+        """Bulk ingest and owner export/import (shared by both profiles)."""
+        exposed: Dict[str, Any] = {}
+        db = self.db_client
+        config = self.config
+        mcp = self.mcp
+        assert mcp is not None
+        default_owner = self.config.default_owner_id
+
+        @mcp.tool(
+            title="Ingest knowledge",
+            description=(
+                "Persist knowledge you extracted from one document/conversation in a "
+                "single call: creates a source node (document.ref required), facts "
+                "with provenance (source.ref = 'doc#{fact.ref|hash(text)}'), "
+                "EXTRACTED_FROM links to the source, and optional triplets. "
+                "Prefer facts[].ref for stable ids across edits/reorders; omit ref "
+                "to key by text hash. Idempotent on fact ref. Extract first, then "
+                "call once. Check possible_duplicates in the response."
+            ),
+        )
+        def ingest_knowledge(
+            document: dict,
+            facts: list[dict] | None = None,
+            triplets: list[dict] | None = None,
+            owner_id: str = default_owner,
+            auto_link: bool = False,
+        ) -> dict:
+            return mcp_handlers_ingest.ingest_knowledge(
+                db,
+                config,
+                document=document,
+                facts=facts,
+                triplets=triplets,
+                owner_id=owner_id,
+                auto_link=auto_link,
+            )
+
+        exposed["ingest_knowledge"] = ingest_knowledge
+
+        @mcp.tool(
+            title="Create nodes (bulk)",
+            description=(
+                "Bulk create up to 200 nodes of one type in a single call with "
+                "batched embeddings. Each item: {text, description?, metadata?, "
+                "status?, ttl_days?}. No auto_link/links/possible_duplicates — "
+                "link explicitly afterwards."
+            ),
+        )
+        def create_nodes(
+            items: list[dict],
+            node_type: Literal["Fact", "Entity"] = "Fact",
+            owner_id: str = default_owner,
+        ) -> dict:
+            return mcp_handlers_nodes.create_nodes(
+                db, config, items=items, node_type=node_type, owner_id=owner_id
+            )
+
+        if self.config.mcp_expose_admin_tools:
+
+            @mcp.tool(
+                title="Export owner",
+                description=(
+                    "Export all nodes and relations of an owner as JSON "
+                    "(one object per node/relation; write items as lines for JSONL). "
+                    "include_embeddings=true makes re-import lossless and cheap."
+                ),
+                annotations=ToolAnnotations(readOnlyHint=True),
+            )
+            def export_owner(
+                owner_id: str = default_owner,
+                include_embeddings: bool = True,
+                include_versions: bool = False,
+                offset: int = 0,
+                limit: int | None = None,
+                section: str = "all",
+            ) -> dict:
+                return mcp_handlers_admin.export_owner(
+                    db,
+                    owner_id=owner_id,
+                    include_embeddings=include_embeddings,
+                    include_versions=include_versions,
+                    offset=offset,
+                    limit=limit,
+                    section=section,
+                )
+
+            @mcp.tool(
+                title="Import owner",
+                description=(
+                    "Import an export_owner payload into an owner scope. "
+                    "Nodes merge by uid (idempotent). Embeddings are taken from the "
+                    "payload or recomputed when missing/regenerate_embeddings=true."
+                ),
+            )
+            def import_owner(
+                owner_id: str,
+                nodes: list[dict],
+                relations: list[dict] | None = None,
+                regenerate_embeddings: bool = False,
+            ) -> dict:
+                return mcp_handlers_admin.import_owner(
+                    db,
+                    owner_id=owner_id,
+                    nodes=nodes,
+                    relations=relations,
+                    regenerate_embeddings=regenerate_embeddings,
+                )
+
+            exposed["export_owner"] = export_owner
+            exposed["import_owner"] = import_owner
+
+        exposed["create_nodes"] = create_nodes
+        return exposed
+
+    def _register_node_shared_tools(self) -> Dict[str, Any]:
+        """Read/lifecycle node tools shared by both server profiles."""
+        exposed: Dict[str, Any] = {}
+        db = self.db_client
+        config = self.config
+        mcp = self.mcp
+        assert mcp is not None
+        default_owner = self.config.default_owner_id
+
+        @mcp.tool(
+            title="Search",
+            description=(
+                "Semantic search using embedding similarity (cosine distance). "
+                "Returns active nodes by default (use include_outdated=true to include outdated and archived nodes). "
+                "Results ranked by similarity to query text. "
+                "Supports multi-tenant isolation via owner_id. "
+                "search_type: pre_filter (filter owner first, best for large/multi-tenant graphs) "
+                "or post_filter (global ANN then filter, best for small graphs); "
+                "defaults to server SEARCH_TYPE when omitted."
+            ),
+            annotations=ToolAnnotations(readOnlyHint=True),
+        )
+        def search(
+            query: str,
+            owner_id: str = default_owner,
+            limit: int | None = None,
+            node_types: list[str] | None = None,
+            status: str | None = None,
+            similarity_threshold: float | None = None,
+            include_outdated: bool = False,
+            search_type: str | None = None,
+            metadata_filter: dict | None = None,
+        ) -> dict:
+            return mcp_handlers_search.search(
+                db,
+                config,
+                query=query,
+                owner_id=owner_id,
+                limit=limit,
+                node_types=node_types,
+                status=status,
+                similarity_threshold=similarity_threshold,
+                include_outdated=include_outdated,
+                search_type=search_type,
+                metadata_filter=metadata_filter,
+            )
+
+        @mcp.tool(
+            title="Get node",
+            description=(
+                "Retrieve a single node (Fact or Entity) by its ID. "
+                "Optional as_of (unix ms): read the state at that time via version "
+                "snapshots (requires updates made with versioning=true)."
+            ),
+            annotations=ToolAnnotations(readOnlyHint=True),
+        )
+        def get_node(
+            node_id: str, owner_id: str = default_owner, as_of: int | None = None
+        ) -> dict:
+            return mcp_handlers_nodes.get_node(
+                db, node_id=node_id, owner_id=owner_id, as_of=as_of
+            )
+
         @mcp.tool(
             title="Delete node",
             description=(
@@ -292,7 +476,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
                 "For reversible removal of Facts, use mark_outdated instead."
             ),
         )
-        def delete_node(node_id: str, owner_id: str = "default") -> dict:
+        def delete_node(node_id: str, owner_id: str = default_owner) -> dict:
             return mcp_handlers_nodes.delete_node(
                 db, node_id=node_id, owner_id=owner_id
             )
@@ -307,7 +491,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
             ),
         )
         def mark_outdated(
-            fact_id: str, reason: str | None = None, owner_id: str = "default"
+            fact_id: str, reason: str | None = None, owner_id: str = default_owner
         ) -> dict:
             return mcp_handlers_nodes.mark_outdated(
                 db, fact_id=fact_id, reason=reason, owner_id=owner_id
@@ -322,16 +506,15 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
             ),
             annotations=ToolAnnotations(readOnlyHint=True),
         )
-        def get_node_change_history(node_id: str, owner_id: str = "default") -> dict:
+        def get_node_change_history(
+            node_id: str, owner_id: str = default_owner
+        ) -> dict:
             return mcp_handlers_nodes.get_node_change_history(
                 db, node_id=node_id, owner_id=owner_id
             )
 
         exposed["search"] = search
-        exposed["create_node"] = create_node
-        exposed["upsert_node"] = upsert_node
         exposed["get_node"] = get_node
-        exposed["update_node"] = update_node
         exposed["delete_node"] = delete_node
         exposed["mark_outdated"] = mark_outdated
         exposed["get_node_change_history"] = get_node_change_history
@@ -344,6 +527,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
         config = self.config
         mcp = self.mcp
         assert mcp is not None
+        default_owner = self.config.default_owner_id
 
         @mcp.tool(
             title="Create triplet",
@@ -359,7 +543,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
             object_value: str,
             metadata: dict | None = None,
             fact_id: str | None = None,
-            owner_id: str = "default",
+            owner_id: str = default_owner,
         ) -> dict:
             return mcp_handlers_relations.create_triplet(
                 db,
@@ -384,7 +568,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
             subject: str | None = None,
             predicate: str | None = None,
             object_value: str | None = None,
-            owner_id: str = "default",
+            owner_id: str = default_owner,
             limit: int = 10,
         ) -> dict:
             return mcp_handlers_relations.search_triplets(
@@ -406,6 +590,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
         config = self.config
         mcp = self.mcp
         assert mcp is not None
+        default_owner = self.config.default_owner_id
 
         @mcp.tool(
             title="Create relation",
@@ -423,7 +608,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
             to_id: str,
             relation_type: str,
             properties: dict | None = None,
-            owner_id: str = "default",
+            owner_id: str = default_owner,
         ) -> dict:
             return mcp_handlers_relations.create_relation(
                 db,
@@ -446,11 +631,17 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
         def get_trace(
             from_id: str,
             to_id: str,
-            owner_id: str = "default",
+            owner_id: str = default_owner,
             max_depth: int = 5,
+            directed: bool = True,
         ) -> dict:
             return mcp_handlers_graph.get_trace(
-                db, from_id=from_id, to_id=to_id, owner_id=owner_id, max_depth=max_depth
+                db,
+                from_id=from_id,
+                to_id=to_id,
+                owner_id=owner_id,
+                max_depth=max_depth,
+                directed=directed,
             )
 
         @mcp.tool(
@@ -465,7 +656,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
             from_id: str,
             to_id: str,
             relation_type: str | None = None,
-            owner_id: str = "default",
+            owner_id: str = default_owner,
         ) -> dict:
             return mcp_handlers_relations.unlink_facts(
                 db,
@@ -488,10 +679,11 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
         )
         def get_context(
             node_id: str,
-            owner_id: str = "default",
+            owner_id: str = default_owner,
             depth: int | None = None,
             max_nodes: int | None = None,
             offset: int = 0,
+            include_outdated: bool = False,
         ) -> dict:
             return mcp_handlers_graph.get_context(
                 db,
@@ -501,6 +693,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
                 depth=depth,
                 max_nodes=max_nodes,
                 offset=offset,
+                include_outdated=include_outdated,
             )
 
         @mcp.tool(
@@ -508,20 +701,23 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
             description=(
                 "Optional shortcut: semantic search + graph expansion in one call. "
                 "Default recall workflow is search → get_context → get_trace (see memory policies). "
-                "Use on small/sparse owner graphs; prefer depth=1 and include_paths=false when unsure."
+                "Use on small/sparse owner graphs; prefer depth=1. "
+                "Set include_paths=true only when you need an approximate path hint "
+                "between the top two seeds."
             ),
             annotations=ToolAnnotations(readOnlyHint=True),
         )
         def recall_context(
             query: str,
-            owner_id: str = "default",
+            owner_id: str = default_owner,
             depth: int | None = None,
             limit: int | None = None,
             max_nodes: int | None = None,
             similarity_threshold: float | None = None,
             include_outdated: bool = False,
             search_type: str | None = None,
-            include_paths: bool = True,
+            include_paths: bool = False,
+            metadata_filter: dict | None = None,
         ) -> dict:
             return mcp_handlers_graph.recall_context(
                 db,
@@ -535,6 +731,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
                 include_outdated=include_outdated,
                 search_type=search_type,
                 include_paths=include_paths,
+                metadata_filter=metadata_filter,
             )
 
         @mcp.tool(
@@ -548,7 +745,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
         )
         def find_similar(
             fact_id: str,
-            owner_id: str = "default",
+            owner_id: str = default_owner,
             limit: int = 5,
             similarity_threshold: float | None = None,
         ) -> dict:
@@ -571,7 +768,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
         def create_summary_fact(
             fact_ids: list[str],
             summary_text: str,
-            owner_id: str = "default",
+            owner_id: str = default_owner,
             metadata: dict | None = None,
         ) -> dict:
             return mcp_handlers_admin.create_summary_fact(
