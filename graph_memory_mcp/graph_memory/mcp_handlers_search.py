@@ -10,13 +10,11 @@ from graph_memory_mcp.graph_memory.database import FalkorDBClient
 from graph_memory_mcp.graph_memory.owner_scoped_search import (
     SearchType,
     build_metadata_filter_clauses,
-    build_owner_scoped_similarity_query,
     normalize_search_type,
 )
 from graph_memory_mcp.graph_memory.utils import (
     ensure_text,
     error_response,
-    execute_query,
     load_json,
     mcp_handler,
     normalize_owner_id,
@@ -58,35 +56,29 @@ def _count_labeled_nodes(
     if cached and now - cached[1] < _LABEL_COUNT_TTL_SECONDS:
         return cached[0]
     try:
-        result = db.query(
-            f"MATCH (n:{node_type}) WHERE n.owner_id = $owner_id RETURN count(n)",
-            params={"owner_id": owner_id},
-        )
-        if result and result.result_set:
-            count = int(result.result_set[0][0])
-            cache[cache_key] = (count, now)
-            setattr(db, "_label_count_cache", cache)
-            return count
+        count = int(db.count_labeled(node_type, owner_id))
+        cache[cache_key] = (count, now)
+        setattr(db, "_label_count_cache", cache)
+        return count
     except Exception as exc:  # noqa: BLE001
         logger.debug("Could not count %s nodes for ANN sizing: %s", node_type, exc)
     return None
 
 
-def _rows_to_search_results(result) -> List[Dict]:
+def _rows_to_search_results(rows) -> List[Dict]:
     results: List[Dict] = []
-    if result and hasattr(result, "result_set"):
-        for row in result.result_set:
-            results.append(
-                {
-                    "node_id": str(row[0]),
-                    "node_type": row[1],
-                    "text": ensure_text(row[2]),
-                    "status": ensure_text(row[3]),
-                    "created_at": row[4],
-                    "metadata": load_json(row[5], {}),
-                    "similarity": 1.0 - float(row[6]),
-                }
-            )
+    for row in rows or []:
+        results.append(
+            {
+                "node_id": str(row[0]),
+                "node_type": row[1],
+                "text": ensure_text(row[2]),
+                "status": ensure_text(row[3]),
+                "created_at": row[4],
+                "metadata": load_json(row[5], {}),
+                "similarity": 1.0 - float(row[6]),
+            }
+        )
     return results
 
 
@@ -103,50 +95,20 @@ def _search_nodes_post_filter(
     metadata_filter: Optional[Dict] = None,
 ) -> List[Dict]:
     """post_filter: global ANN (queryNodes), then owner/status filters."""
-
-    params = {
-        "embedding": embedding,
-        "max_distance": float(max_distance),
-        "owner_id": owner_id,
-    }
-    status_clause = ""
-    if status:
-        status_clause = " AND node.status = $status"
-        params["status"] = status
-    elif not include_outdated:
-        status_clause = " AND (node.status IS NULL OR node.status = 'active')"
-
     ann_k = _vector_ann_k(limit, _count_labeled_nodes(db, node_type, owner_id), config)
-
-    query = f"""
-    CALL db.idx.vector.queryNodes('{node_type}', 'embedding', {ann_k}, vecf32($embedding))
-    YIELD node, score
-    WHERE score <= $max_distance
-      AND node.owner_id = $owner_id
-    """
-
-    query += status_clause
-    meta_clauses, meta_params = build_metadata_filter_clauses(metadata_filter)
-    query += meta_clauses
-    params.update(meta_params)
-
-    if node_type == "Fact":
-        if status == "active" or (status is None and not include_outdated):
-            query += " AND (node.expires_at IS NULL OR node.expires_at > timestamp())"
-
-    query += f"""
-    RETURN
-        node.uid as node_id,
-        '{node_type}' as node_type,
-        node.text as text,
-        node.status as status,
-        node.created_at as created_at,
-        node.metadata_str as metadata_str,
-        score
-    LIMIT {int(limit)}
-    """
-
-    return _rows_to_search_results(db.query(query, params=params))
+    return _rows_to_search_results(
+        db.ann_rows(
+            node_type=node_type,
+            embedding=embedding,
+            owner_id=owner_id,
+            ann_k=ann_k,
+            limit=limit,
+            max_distance=max_distance,
+            include_outdated=include_outdated,
+            status=status,
+            metadata_filter=metadata_filter,
+        )
+    )
 
 
 def _search_nodes_pre_filter(
@@ -160,18 +122,19 @@ def _search_nodes_pre_filter(
     status: Optional[str] = None,
     metadata_filter: Optional[Dict] = None,
 ) -> List[Dict]:
-    """pre_filter: owner/status filters first, then exact vec.cosineDistance."""
-    query, params = build_owner_scoped_similarity_query(
-        node_type=node_type,
-        embedding=embedding,
-        owner_id=owner_id,
-        limit=limit,
-        max_distance=max_distance,
-        include_outdated=include_outdated,
-        status=status,
-        metadata_filter=metadata_filter,
+    """pre_filter: owner/status filters first, then exact cosine distance."""
+    return _rows_to_search_results(
+        db.similarity_rows(
+            node_type=node_type,
+            embedding=embedding,
+            owner_id=owner_id,
+            limit=limit,
+            max_distance=max_distance,
+            include_outdated=include_outdated,
+            status=status,
+            metadata_filter=metadata_filter,
+        )
     )
-    return _rows_to_search_results(db.query(query, params=params))
 
 
 def _search_nodes_by_type(
@@ -345,60 +308,37 @@ def find_similar(
         else config.semantic_similarity_threshold
     )
 
-    get_query = """
-    MATCH (n:Fact)
-    WHERE n.uid = $fact_id AND n.owner_id = $owner_id
-    RETURN n.embedding as embedding
-    """
-
-    result = execute_query(db, get_query, {"fact_id": fact_id, "owner_id": owner_id})
-    if not result:
+    found, raw_embedding = db.fact_embedding(fact_id, owner_id)
+    if not found:
         return error_response(f"Fact {fact_id} not found", code="memory_not_found")
 
-    embedding = parse_embedding_value(result.result_set[0][0])
+    embedding = parse_embedding_value(raw_embedding)
     if not embedding:
         return success_response(similar_facts=[])
 
     ann_k = _vector_ann_k(limit + 1, _count_labeled_nodes(db, "Fact", owner_id), config)
-
-    similar_query = f"""
-    CALL db.idx.vector.queryNodes('Fact', 'embedding', {ann_k}, vecf32($embedding))
-    YIELD node, score
-    WHERE score <= $max_distance
-      AND node.owner_id = $owner_id
-      AND node.uid <> $fact_id
-    RETURN
-        node.uid as node_id,
-        node.text as text,
-        node.status as status,
-        node.created_at as created_at,
-        node.metadata_str as metadata_str,
-        score
-    LIMIT {int(limit)}
-    """
-
-    result = db.query(
-        similar_query,
-        params={
-            "embedding": embedding,
-            "max_distance": 1.0 - similarity_threshold,
-            "owner_id": owner_id,
-            "fact_id": fact_id,
-        },
+    rows = db.ann_rows(
+        node_type="Fact",
+        embedding=embedding,
+        owner_id=owner_id,
+        ann_k=ann_k,
+        limit=limit,
+        max_distance=1.0 - similarity_threshold,
+        include_outdated=True,
+        exclude_node_id=fact_id,
     )
 
     similar_facts = []
-    if result and hasattr(result, "result_set"):
-        for row in result.result_set:
-            similar_facts.append(
-                {
-                    "node_id": str(row[0]),
-                    "text": ensure_text(row[1]),
-                    "status": ensure_text(row[2]),
-                    "created_at": row[3],
-                    "metadata": load_json(row[4], {}),
-                    "similarity": 1.0 - float(row[5]),
-                }
-            )
+    for row in _rows_to_search_results(rows):
+        similar_facts.append(
+            {
+                "node_id": row["node_id"],
+                "text": row["text"],
+                "status": row["status"],
+                "created_at": row["created_at"],
+                "metadata": row["metadata"],
+                "similarity": row["similarity"],
+            }
+        )
 
     return success_response(similar_facts=similar_facts)

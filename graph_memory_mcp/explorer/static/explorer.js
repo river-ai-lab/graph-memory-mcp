@@ -820,11 +820,11 @@ async function checkHealth() {
     const res = await fetch("/health");
     const data = await res.json();
     if (data.ready) {
-      badge.textContent = "FalkorDB connected";
+      badge.textContent = "DB connected";
       badge.className = "badge badge-ok";
       loadBrief().catch((e) => log(`brief: ${e.message}`));
     } else {
-      badge.textContent = "FalkorDB offline";
+      badge.textContent = "DB offline";
       badge.className = "badge badge-err";
     }
   } catch {

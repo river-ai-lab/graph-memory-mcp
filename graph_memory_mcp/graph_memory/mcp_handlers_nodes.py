@@ -8,9 +8,6 @@ from pydantic import BaseModel, ConfigDict
 
 from graph_memory_mcp.graph_memory.database import FalkorDBClient
 from graph_memory_mcp.graph_memory.mcp_handlers_relations import create_relation
-from graph_memory_mcp.graph_memory.owner_scoped_search import (
-    build_owner_scoped_similarity_query,
-)
 from graph_memory_mcp.graph_memory.relation_policy import (
     AUTO_LINK_RELATION,
     evaluate_relation_policy,
@@ -19,7 +16,6 @@ from graph_memory_mcp.graph_memory.utils import (
     dump_json,
     ensure_text,
     error_response,
-    execute_query,
     load_json,
     mcp_handler,
     new_uid,
@@ -72,22 +68,10 @@ def metadata_promoted_props(metadata: Optional[Dict]) -> Dict[str, Any]:
 
 
 def _node_return_fields(alias: str = "n") -> str:
-    """Return a consistent node projection for reads and mutation responses."""
-    return f"""
-        {alias}.uid as node_id,
-        labels({alias})[0] as node_type,
-        {alias}.text as text,
-        {alias}.description as description,
-        {alias}.status as status,
-        {alias}.created_at as created_at,
-        {alias}.updated_at as updated_at,
-        {alias}.metadata_str as metadata_str,
-        {alias}.shared_with_ids as shared_with_ids,
-        {alias}.ttl_days as ttl_days,
-        {alias}.expires_at as expires_at,
-        {alias}.type as entity_type,
-        {alias}.source_str as source_str
-    """
+    """Node projection. The Falkor column list lives on the adapter."""
+    from graph_memory_mcp.graph_memory.backends.falkor_ops import node_return_fields
+
+    return node_return_fields(alias)
 
 
 def _node_from_row(row: List[Any]) -> Dict[str, Any]:
@@ -273,44 +257,6 @@ def create_node(
     metadata_str = dump_json(metadata or {})  # Maps must be JSON strings in FalkorDB
     source_props = _source_properties(source)
 
-    # Entity-only properties: normalized name (dedup key) and optional type
-    type_prop = ""
-    if node_type == "Entity":
-        type_prop = ", name_norm: $name_norm"
-        if entity_type:
-            type_prop += ", type: $entity_type"
-
-    embedding_expr = "vecf32($embedding)" if embedding else "NULL"
-    query = f"""
-    CREATE (n:{node_type} {{
-        uid: $uid,
-        owner_id: $owner_id,
-        text: $text,
-        description: $description,
-        embedding: {embedding_expr},
-        status: $status,
-        created_at: timestamp(),
-        updated_at: timestamp(),
-        metadata_str: $metadata_str,
-        tags: $tags,
-        meta_type: $meta_type,
-        confidence: $confidence,
-        project: $project,
-        created_by: $created_by,
-        shared_with_ids: $shared_with_ids,
-        ttl_days: $ttl_days,
-        expires_at: $expires_at,
-        last_dedup_at: NULL,
-        source_str: $source_str,
-        source_ref: $source_ref,
-        source_type: $source_type,
-        source_uri: $source_uri,
-        content_hash: $content_hash,
-        source_updated_at: $source_updated_at{type_prop}
-    }})
-    RETURN {_node_return_fields()}
-    """
-
     params = {
         "uid": new_uid(),
         "owner_id": owner_id,
@@ -341,11 +287,16 @@ def create_node(
         if entity_type:
             params["entity_type"] = entity_type
 
-    result = execute_query(db, query, params)
-    if not result:
+    rows = db.create_node_row(
+        node_type=node_type,
+        params=params,
+        has_embedding=bool(embedding),
+        entity_type=entity_type,
+    )
+    if not rows:
         return error_response("Failed to create node", code="memory_service_error")
 
-    node = _node_from_row(result.result_set[0])
+    node = _node_from_row(rows[0])
     node_id = node["node_id"]
 
     # Add to collection if specified (extended)
@@ -477,32 +428,10 @@ def create_nodes(
             }
         )
 
-    query = f"""
-    UNWIND $rows AS row
-    CREATE (n:{node_type} {{
-        uid: row.uid,
-        owner_id: $owner_id,
-        text: row.text,
-        description: row.description,
-        embedding: vecf32(row.emb),
-        status: row.status,
-        created_at: timestamp(),
-        updated_at: timestamp(),
-        metadata_str: row.metadata_str,
-        tags: row.tags,
-        meta_type: row.meta_type,
-        confidence: row.confidence,
-        project: row.project,
-        created_by: row.created_by,
-        ttl_days: row.ttl_days,
-        expires_at: row.expires_at,
-        name_norm: row.name_norm,
-        last_dedup_at: NULL
-    }})
-    RETURN n.uid
-    """
-    result = execute_query(db, query, {"rows": rows, "owner_id": owner_id})
-    if not result:
+    created_rows = db.create_nodes_bulk(
+        node_type=node_type, rows=rows, owner_id=owner_id
+    )
+    if not created_rows:
         return error_response("Failed to create nodes", code="memory_service_error")
 
     db.cache.invalidate_search()
@@ -679,18 +608,11 @@ def get_node(
     owner_id = normalize_owner_id(owner_id)
     node_id = require_node_id(node_id)
 
-    query = """
-    MATCH (n)
-    WHERE n.uid = $node_id AND n.owner_id = $owner_id
-    RETURN
-    """
-    query += _node_return_fields()
-
-    result = execute_query(db, query, {"node_id": node_id, "owner_id": owner_id})
-    if not result:
+    rows = db.fetch_node_row(node_id, owner_id)
+    if not rows:
         return error_response(f"Node {node_id} not found", code="memory_not_found")
 
-    node = _node_from_row(result.result_set[0])
+    node = _node_from_row(rows[0])
     if as_of is None:
         return success_response(node=node)
     return _node_as_of(db, node=node, owner_id=owner_id, as_of=int(as_of))
@@ -712,21 +634,9 @@ def _node_as_of(
             code="memory_not_found",
         )
 
-    result = execute_query(
-        db,
-        """
-        MATCH (v:FactVersion)
-        WHERE v.fact_id = $node_id AND v.owner_id = $owner_id
-          AND v.version_timestamp > $as_of
-        RETURN v.text, v.description, v.metadata_str, v.source_str,
-               v.status, v.ttl_days, v.expires_at, v.version_timestamp
-        ORDER BY v.version_timestamp ASC
-        LIMIT 1
-        """,
-        {"node_id": node["node_id"], "owner_id": owner_id, "as_of": as_of},
-    )
-    if result:
-        row = result.result_set[0]
+    rows = db.fetch_version_after(node["node_id"], owner_id, as_of)
+    if rows:
+        row = rows[0]
         node.update(
             {
                 "text": ensure_text(row[0]),
@@ -778,49 +688,23 @@ def update_node(
 
     # Create version snapshot if versioning enabled
     if versioning and node_type == "Fact":
-        version_query = """
-        MATCH (n:Fact)
-        WHERE n.uid = $node_id AND n.owner_id = $owner_id
-        CREATE (v:FactVersion {
-            uid: $version_uid,
-            fact_id: n.uid,
-            owner_id: n.owner_id,
-            text: n.text,
-            description: n.description,
-            metadata_str: n.metadata_str,
-            source_str: n.source_str,
-            shared_with_ids: n.shared_with_ids,
-            status: n.status,
-            ttl_days: n.ttl_days,
-            expires_at: n.expires_at,
-            version_timestamp: timestamp(),
-            original_created_at: n.created_at
-        })
-        RETURN v.uid as version_id
-        """
-        db.query(
-            version_query,
-            params={
-                "node_id": node_id,
-                "owner_id": owner_id,
-                "version_uid": new_uid(),
-            },
+        db.snapshot_fact(
+            node_id=node_id, owner_id=owner_id, version_uid=new_uid()
         )
 
     # Build SET clauses
-    set_clauses = ["n.updated_at = timestamp()"]
+    set_clauses = [db.updated_at_assignment()]
     params = {"node_id": node_id, "owner_id": owner_id}
 
     if text is not None:
         set_clauses.append("n.text = $text")
         params["text"] = text
-        # Update embedding
         embedding = db.get_embedding(text)
+        set_clauses.append(
+            f"n.embedding = {db.embedding_literal('embedding', bool(embedding))}"
+        )
         if embedding:
-            set_clauses.append("n.embedding = vecf32($embedding)")
             params["embedding"] = embedding
-        else:
-            set_clauses.append("n.embedding = NULL")
 
     if description is not None:
         set_clauses.append("n.description = $description")
@@ -906,22 +790,13 @@ def update_node(
     if len(set_clauses) == 1:  # Only updated_at
         return get_node(db, node_id=node_id, owner_id=owner_id)
 
-    query = f"""
-    MATCH (n)
-    WHERE n.uid = $node_id AND n.owner_id = $owner_id
-    SET {', '.join(set_clauses)}
-    RETURN {_node_return_fields()}
-    """
-
-    # Execute update
-    result = execute_query(db, query, params)
-    if not result:
+    rows = db.apply_node_update(set_clauses=set_clauses, params=params)
+    if not rows:
         return error_response("Failed to update node", code="memory_service_error")
 
-    # Invalidate search cache
     db.cache.invalidate_search()
 
-    return success_response(node=_node_from_row(result.result_set[0]))
+    return success_response(node=_node_from_row(rows[0]))
 
 
 @mcp_handler
@@ -929,30 +804,12 @@ def delete_node(db: FalkorDBClient, *, node_id: str, owner_id: str = "default") 
     """Delete a node, its relationships and its version snapshots."""
     owner_id = normalize_owner_id(owner_id)
     node_id = require_node_id(node_id)
-    params = {"node_id": node_id, "owner_id": owner_id}
-
-    # Cascade: remove version snapshots so they cannot outlive the node.
-    db.query(
-        """
-        MATCH (v:FactVersion)
-        WHERE v.fact_id = $node_id AND v.owner_id = $owner_id
-        DELETE v
-        """,
-        params=params,
-    )
-
-    query = """
-    MATCH (n)
-    WHERE n.uid = $node_id AND n.owner_id = $owner_id
-    DETACH DELETE n
-    RETURN count(n) as deleted
-    """
-
-    result = execute_query(db, query, params)
-    if not result:
+    db.delete_fact_versions(node_id, owner_id)
+    rows = db.delete_node_row(node_id, owner_id)
+    if not rows:
         return error_response("Failed to delete node", code="memory_service_error")
 
-    deleted = result.result_set[0][0]
+    deleted = rows[0][0]
     if deleted == 0:
         return error_response(f"Node {node_id} not found", code="memory_not_found")
 
@@ -988,26 +845,8 @@ def get_node_change_history(
     node_id = require_node_id(node_id)
 
     # Query for version history
-    query = """
-    MATCH (v:FactVersion)
-    WHERE v.fact_id = $node_id AND v.owner_id = $owner_id
-    RETURN
-        id(v) as version_id,
-        v.text as text,
-        v.metadata_str as metadata_str,
-        v.source_str as source_str,
-        v.status as status,
-        v.ttl_days as ttl_days,
-        v.version_timestamp as version_timestamp,
-        v.original_created_at as original_created_at
-    ORDER BY v.version_timestamp DESC
-    """
-
-    result = db.query(query, params={"node_id": node_id, "owner_id": owner_id})
-
     versions = []
-    if result and hasattr(result, "result_set"):
-        for row in result.result_set:
+    for row in db.list_fact_versions(node_id, owner_id):
             versions.append(
                 {
                     "version_id": str(row[0]),
@@ -1037,21 +876,14 @@ def _get_node_by_source_ref(
     source_ref: str,
 ) -> Optional[Dict[str, Any]]:
     """Load a node by same-owner source.ref, used for idempotent upserts."""
-    query = f"""
-    MATCH (n:{node_type})
-    WHERE n.owner_id = $owner_id AND n.source_ref = $source_ref
-    RETURN {_node_return_fields()}
-    LIMIT 1
-    """
-
-    result = execute_query(
-        db,
-        query,
-        {"owner_id": normalize_owner_id(owner_id), "source_ref": source_ref},
+    rows = db.fetch_by_source_ref(
+        node_type=node_type,
+        owner_id=normalize_owner_id(owner_id),
+        source_ref=source_ref,
     )
-    if not result:
+    if not rows:
         return None
-    return _node_from_row(result.result_set[0])
+    return _node_from_row(rows[0])
 
 
 def _create_auto_links(
@@ -1081,31 +913,12 @@ def _create_auto_links(
         if not embedding:
             return
 
-        query = f"""
-        MATCH (node:Entity)
-        WHERE node.owner_id = $owner_id
-          AND node.embedding IS NOT NULL
-          AND (node.status IS NULL OR node.status = 'active')
-        WITH node, vec.cosineDistance(node.embedding, vecf32($embedding)) AS score
-        WHERE score <= $max_distance
-        WITH node
-        ORDER BY score ASC
-        LIMIT 10
-        MATCH (f)
-        WHERE f.uid = $node_id
-        MERGE (f)-[r:{AUTO_LINK_RELATION}]->(node)
-        ON CREATE SET r.created_at = timestamp(), r.auto_linked = true
-        RETURN count(r) as links_created
-        """
-
-        db.query(
-            query,
-            params={
-                "owner_id": owner_id,
-                "embedding": embedding,
-                "max_distance": 1.0 - threshold,
-                "node_id": node_id,
-            },
+        db.auto_link_mentions(
+            relation=AUTO_LINK_RELATION,
+            owner_id=owner_id,
+            embedding=embedding,
+            max_distance=1.0 - threshold,
+            node_id=node_id,
         )
     except Exception as e:
         logger.warning("Auto-link failed: %s", e)
@@ -1125,23 +938,20 @@ def _find_possible_duplicates(
         return []
     try:
         threshold = getattr(config, "duplicate_similarity_threshold", 0.85)
-        query, params = build_owner_scoped_similarity_query(
+        rows = db.similarity_rows(
             node_type=node_type,
             embedding=embedding,
             owner_id=owner_id,
             limit=limit,
             max_distance=1.0 - threshold,
         )
-        result = db.query(query, params=params)
-        if not result or not getattr(result, "result_set", None):
-            return []
         return [
             {
                 "node_id": str(row[0]),
                 "text": ensure_text(row[2]),
                 "similarity": round(1.0 - float(row[6]), 6),
             }
-            for row in result.result_set
+            for row in rows
         ]
     except Exception as exc:  # noqa: BLE001
         logger.debug("possible_duplicates check failed: %s", exc)
@@ -1155,21 +965,6 @@ def _add_to_collection(
 
     Creates a CONTAINS relationship from Collection to Node.
     """
-    query = """
-    MATCH (c:Collection), (n)
-    WHERE c.uid = $collection_id AND n.uid = $node_id
-      AND c.owner_id = $owner_id AND n.owner_id = $owner_id
-    MERGE (c)-[r:CONTAINS]->(n)
-    ON CREATE SET r.created_at = timestamp()
-    RETURN count(r) as created
-    """
-
-    params = {
-        "collection_id": collection_id,
-        "node_id": node_id,
-        "owner_id": owner_id,
-    }
-
-    result = db.query(query, params=params)
-    if not result or not result.result_set:
+    rows = db.add_to_collection(node_id, collection_id, owner_id)
+    if not rows:
         raise ValueError(f"Failed to add node {node_id} to collection {collection_id}")

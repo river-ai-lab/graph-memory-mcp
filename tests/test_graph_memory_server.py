@@ -834,7 +834,45 @@ class _FakeCache:
         self.search_cache[key] = value
 
 
-class _FakeNodeDB:
+class _FakeStoreQueries:
+    """Delegate adapter methods onto the scripted ``query`` log."""
+
+    def __getattr__(self, name):
+        from graph_memory_mcp.graph_memory.backends.falkor_ops import FalkorOps
+
+        attr = getattr(FalkorOps, name, None)
+        if attr is None:
+            raise AttributeError(name)
+        return attr.__get__(self, type(self))
+
+    def rows(self, query, params=None, owner_id=None):
+        result = self.query(query, params=params, owner_id=owner_id)
+        if not result or not getattr(result, "result_set", None):
+            return []
+        return list(result.result_set)
+
+    def count_labeled(self, node_type, owner_id):
+        from graph_memory_mcp.graph_memory.backends.falkor_search import count_labeled
+
+        return count_labeled(self, node_type, owner_id)
+
+    def similarity_rows(self, **kwargs):
+        from graph_memory_mcp.graph_memory.backends.falkor_search import similarity_rows
+
+        return similarity_rows(self, **kwargs)
+
+    def ann_rows(self, **kwargs):
+        from graph_memory_mcp.graph_memory.backends.falkor_search import ann_rows
+
+        return ann_rows(self, **kwargs)
+
+    def fact_embedding(self, fact_id, owner_id):
+        from graph_memory_mcp.graph_memory.backends.falkor_search import fact_embedding
+
+        return fact_embedding(self, fact_id, owner_id)
+
+
+class _FakeNodeDB(_FakeStoreQueries):
     def __init__(self, responses):
         self.graph = _FakeGraph(responses)
         self.cache = _FakeCache()
@@ -855,7 +893,7 @@ class _FakeNodeDB:
         return {"vector": {"Fact": True, "Entity": True}, "owner_id_range": {}}
 
 
-class _FakeGraphDB:
+class _FakeGraphDB(_FakeStoreQueries):
     def __init__(self, responses=None):
         self.graph = _FakeGraph(responses)
 
@@ -863,7 +901,7 @@ class _FakeGraphDB:
         return self.graph.query(query, params=params)
 
 
-class _FakeSearchDB:
+class _FakeSearchDB(_FakeStoreQueries):
     def __init__(self, responses):
         self.graph = _FakeGraph(responses)
         self.cache = _FakeCache()
@@ -1169,6 +1207,7 @@ def test_find_similar_parametrizes_owner_id():
                 [
                     [
                         456,
+                        "Fact",
                         "Similar fact",
                         "active",
                         1_700_000_000_000,

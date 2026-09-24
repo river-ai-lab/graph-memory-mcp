@@ -42,6 +42,9 @@ class MCPServerConfig(BaseSettings):
         validation_alias="MCP_SERVER_DESCRIPTION",
     )
 
+    # Graph backend. Only falkordb is implemented; the factory rejects other names.
+    graph_backend: str = Field(default="falkordb", validation_alias="GRAPH_BACKEND")
+
     # FalkorDB
     falkordb_host: str = "localhost"
     falkordb_port: int = 6379

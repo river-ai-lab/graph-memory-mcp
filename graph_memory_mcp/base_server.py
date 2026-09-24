@@ -14,7 +14,7 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
 from graph_memory_mcp.config import MCPServerConfig
-from graph_memory_mcp.graph_memory.database import FalkorDBClient
+from graph_memory_mcp.graph_memory.database import open_store
 from graph_memory_mcp.graph_memory.embedding_service import EmbeddingService
 from graph_memory_mcp.jobs.scheduler import shutdown_scheduler, start_scheduler
 
@@ -56,7 +56,7 @@ class BaseGraphMemoryMCP:
     def __init__(self, server_config: MCPServerConfig):
         self.server_config = server_config
         self.config = server_config
-        self.db_client = FalkorDBClient(server_config)
+        self.db_client = open_store(server_config)
         self._db_connected = self.db_client.connect()
         if not self._db_connected:
             logger.warning(

@@ -71,18 +71,6 @@ def health_check(db: FalkorDBClient, embedding_service: Any) -> Dict:
 def get_stats(db: FalkorDBClient, *, owner_id: str = "default") -> Dict:
     """Get graph statistics."""
     owner_id = normalize_owner_id(owner_id)
-    params = {"owner_id": owner_id}
-
-    # Count only public memory labels (exclude FactVersion, Collection, etc.)
-    query = """
-    MATCH (n)
-    WHERE n.owner_id = $owner_id AND (n:Fact OR n:Entity)
-    WITH labels(n)[0] as label, count(n) as count
-    RETURN label, count
-    """
-
-    result = db.query(query, params=params)
-
     stats = {
         "total_nodes": 0,
         "total_facts": 0,
@@ -91,47 +79,25 @@ def get_stats(db: FalkorDBClient, *, owner_id: str = "default") -> Dict:
         "outdated_facts": 0,
     }
 
-    if result and hasattr(result, "result_set"):
-        for row in result.result_set:
-            label = row[0]
-            count = row[1]
-            stats["total_nodes"] += count
-            if label == "Fact":
-                stats["total_facts"] = count
-            elif label == "Entity":
-                stats["total_entities"] = count
+    for row in db.label_counts(owner_id):
+        label = row[0]
+        count = row[1]
+        stats["total_nodes"] += count
+        if label == "Fact":
+            stats["total_facts"] = count
+        elif label == "Entity":
+            stats["total_entities"] = count
 
-    # Get fact status breakdown
-    status_query = """
-    MATCH (f:Fact)
-    WHERE f.owner_id = $owner_id
-    WITH f.status as status, count(f) as count
-    RETURN status, count
-    """
+    for row in db.fact_status_counts(owner_id):
+        status = row[0]
+        count = row[1]
+        if status == "active":
+            stats["active_facts"] = count
+        elif status == "outdated":
+            stats["outdated_facts"] = count
 
-    result = db.query(status_query, params=params)
-    if result and hasattr(result, "result_set"):
-        for row in result.result_set:
-            status = row[0]
-            count = row[1]
-            if status == "active":
-                stats["active_facts"] = count
-            elif status == "outdated":
-                stats["outdated_facts"] = count
-
-    # Get relation count
-    rel_query = """
-    MATCH (a)-[r]->(b)
-    WHERE a.owner_id = $owner_id
-      AND b.owner_id = $owner_id
-    RETURN count(r) as total_relations
-    """
-
-    result = db.query(rel_query, params=params)
-    if result and hasattr(result, "result_set") and result.result_set:
-        stats["total_relations"] = result.result_set[0][0]
-    else:
-        stats["total_relations"] = 0
+    rel_rows = db.relation_count(owner_id)
+    stats["total_relations"] = rel_rows[0][0] if rel_rows else 0
 
     return success_response(stats=stats)
 
@@ -146,76 +112,40 @@ def get_brief(
     """Session warm-up: top facts (by connectivity/recency), contradictions, stats."""
     owner_id = normalize_owner_id(owner_id)
     limit = max(1, min(int(limit), 50))
-    params = {"owner_id": owner_id}
-
-    top_query = f"""
-    MATCH (f:Fact)
-    WHERE f.owner_id = $owner_id
-      AND (f.status IS NULL OR f.status = 'active')
-    OPTIONAL MATCH (f)-[r]-()
-    WITH f, count(r) as degree
-    ORDER BY degree DESC, f.created_at DESC
-    LIMIT {limit}
-    RETURN f.uid as node_id, f.text as text, degree, f.created_at as created_at
-    """
     top_facts = []
-    result = db.query(top_query, params=params)
-    if result and hasattr(result, "result_set"):
-        for row in result.result_set:
-            top_facts.append(
-                {
-                    "node_id": str(row[0]),
-                    "text": ensure_text(row[1]),
-                    "degree": row[2],
-                    "created_at": row[3],
-                }
-            )
+    for row in db.brief_top_facts(owner_id, limit):
+        top_facts.append(
+            {
+                "node_id": str(row[0]),
+                "text": ensure_text(row[1]),
+                "degree": row[2],
+                "created_at": row[3],
+            }
+        )
 
-    contradictions_query = """
-    MATCH (a)-[r:CONTRADICTS]-(b)
-    WHERE a.owner_id = $owner_id AND b.owner_id = $owner_id
-      AND a.uid < b.uid
-    RETURN a.uid, a.text, b.uid, b.text
-    LIMIT 10
-    """
     contradictions = []
-    result = db.query(contradictions_query, params=params)
-    if result and hasattr(result, "result_set"):
-        for row in result.result_set:
-            contradictions.append(
-                {
-                    "from_id": str(row[0]),
-                    "from_text": ensure_text(row[1]),
-                    "to_id": str(row[2]),
-                    "to_text": ensure_text(row[3]),
-                }
-            )
+    for row in db.brief_contradictions(owner_id):
+        contradictions.append(
+            {
+                "from_id": str(row[0]),
+                "from_text": ensure_text(row[1]),
+                "to_id": str(row[2]),
+                "to_text": ensure_text(row[3]),
+            }
+        )
 
     stale_days = getattr(getattr(db, "config", None), "stale_facts_days", 30)
     stale_cutoff_ms = int(time.time() * 1000) - stale_days * 24 * 3600 * 1000
-    stale_query = """
-    MATCH (f:Fact)
-    WHERE f.owner_id = $owner_id
-      AND (f.status IS NULL OR f.status = 'active')
-      AND coalesce(f.last_accessed_at, f.created_at) < $cutoff_ms
-    RETURN f.uid, f.text, f.last_accessed_at, f.access_count
-    ORDER BY coalesce(f.last_accessed_at, f.created_at) ASC
-    LIMIT 10
-    """
     stale_facts = []
-    result = db.query(
-        stale_query, params={"owner_id": owner_id, "cutoff_ms": stale_cutoff_ms}
-    )
-    if result and hasattr(result, "result_set"):
-        for row in result.result_set:
-            stale_facts.append(
-                {
-                    "node_id": str(row[0]),
-                    "text": ensure_text(row[1]),
-                    "last_accessed_at": row[2],
-                    "access_count": row[3] or 0,
-                }
-            )
+    for row in db.brief_stale_facts(owner_id, stale_cutoff_ms):
+        stale_facts.append(
+            {
+                "node_id": str(row[0]),
+                "text": ensure_text(row[1]),
+                "last_accessed_at": row[2],
+                "access_count": row[3] or 0,
+            }
+        )
 
     stats_result = get_stats(db, owner_id=owner_id)
 
@@ -265,16 +195,7 @@ def export_owner(
 
     nodes = []
     if section in ("all", "nodes"):
-        result = db.query(
-            f"""
-            MATCH (n)
-            WHERE n.owner_id = $owner_id AND (n:Fact OR n:Entity OR n:FactVersion)
-            RETURN labels(n)[0], properties(n)
-            ORDER BY n.uid{page_clause}
-            """,
-            params={"owner_id": owner_id},
-        )
-        for row in getattr(result, "result_set", None) or []:
+        for row in db.export_node_rows(owner_id, page_clause):
             label = str(row[0])
             if label == "FactVersion" and not include_versions:
                 continue
@@ -296,16 +217,7 @@ def export_owner(
 
     relations = []
     if section in ("all", "relations"):
-        result = db.query(
-            f"""
-            MATCH (a)-[r]->(b)
-            WHERE a.owner_id = $owner_id AND b.owner_id = $owner_id
-            RETURN a.uid, type(r), b.uid, properties(r)
-            ORDER BY a.uid, b.uid{page_clause}
-            """,
-            params={"owner_id": owner_id},
-        )
-        for row in getattr(result, "result_set", None) or []:
+        for row in db.export_relation_rows(owner_id, page_clause):
             relations.append(
                 {
                     "from_id": str(row[0]),
@@ -374,16 +286,10 @@ def import_owner(
         rows_by_group.setdefault((label, bool(embedding)), []).append(row)
 
     for (label, has_emb), rows in rows_by_group.items():
-        emb_clause = ", n.embedding = vecf32(row.emb)" if has_emb else ""
         for start in range(0, len(rows), _IMPORT_BATCH_SIZE):
             batch = rows[start : start + _IMPORT_BATCH_SIZE]
-            db.query(
-                f"""
-                UNWIND $rows AS row
-                MERGE (n:{label} {{uid: row.uid}})
-                SET n = row.props{emb_clause}
-                """,
-                params={"rows": batch, "owner_id": owner_id},
+            db.import_node_batch(
+                label=label, has_emb=has_emb, rows=batch, owner_id=owner_id
             )
             imported += len(batch)
 
@@ -408,16 +314,8 @@ def import_owner(
     for rel_type, rows in rels_by_type.items():
         for start in range(0, len(rows), _IMPORT_BATCH_SIZE):
             batch = rows[start : start + _IMPORT_BATCH_SIZE]
-            db.query(
-                f"""
-                UNWIND $rows AS row
-                MATCH (a), (b)
-                WHERE a.uid = row.from_id AND b.uid = row.to_id
-                  AND a.owner_id = $owner_id AND b.owner_id = $owner_id
-                MERGE (a)-[r:{rel_type}]->(b)
-                SET r = row.props
-                """,
-                params={"rows": batch, "owner_id": owner_id},
+            db.import_relation_batch(
+                rel_type=rel_type, rows=batch, owner_id=owner_id
             )
             imported_relations += len(batch)
 

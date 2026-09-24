@@ -80,31 +80,12 @@ def _query_candidate_batch(
     if limit <= 0:
         return []
 
-    query = f"""
-    MATCH (n:{label})
-    WHERE n.owner_id = $owner_id
-      AND (n.status IS NULL OR n.status = 'active')
-      AND n.embedding IS NOT NULL
-      AND (
-        n.last_dedup_at IS NULL
-        OR n.last_dedup_at < coalesce(n.updated_at, n.created_at)
-      )
-      {touched_filter}
-    RETURN
-      n.uid as node_id,
-      n.text as text,
-      n.created_at as created_at,
-      coalesce(n.updated_at, n.created_at) as touched_at,
-      n.embedding as embedding
-    ORDER BY touched_at ASC, created_at ASC, node_id ASC
-    LIMIT {int(limit)}
-    """
-
-    result = db.query(query, params={"owner_id": owner_id})
-    if not result or not hasattr(result, "result_set") or not result.result_set:
+    rows = db.dedup_candidate_rows(
+        label=label, owner_id=owner_id, limit=limit, touched_filter=touched_filter
+    )
+    if not rows:
         return []
-
-    return _parse_candidate_rows(result.result_set)
+    return _parse_candidate_rows(rows)
 
 
 def _load_dedup_candidates(
@@ -156,36 +137,22 @@ def _query_similar_nodes(
     label, so `ann_k` takes a margin to survive the post-ANN owner filter.
     """
     ann_k = min(max(top_k * 2, 100), 2000)
-    query = f"""
-    CALL db.idx.vector.queryNodes('{label}', 'embedding', {int(ann_k)}, vecf32($embedding))
-    YIELD node, score
-    WHERE score <= $max_distance
-      AND node.owner_id = $owner_id
-      AND node.uid <> $node_id
-      AND (node.status IS NULL OR node.status = 'active')
-    RETURN node.uid, node.created_at, score
-    ORDER BY score ASC, node.created_at ASC, node.uid ASC
-    LIMIT {int(top_k)}
-    """
-    result = db.query(
-        query,
-        params={
-            "embedding": [float(v) for v in embedding],
-            "max_distance": 1.0 - threshold,
-            "owner_id": owner_id,
-            "node_id": str(node_id),
-        },
+    rows = db.dedup_similar_rows(
+        label=label,
+        embedding=[float(v) for v in embedding],
+        max_distance=1.0 - threshold,
+        owner_id=owner_id,
+        node_id=str(node_id),
+        ann_k=ann_k,
+        top_k=top_k,
     )
-    if not result or not hasattr(result, "result_set") or not result.result_set:
-        return []
-
     return [
         {
             "node_id": str(row[0]),
             "created_at": row[1] or 0,
             "score": float(row[2]),
         }
-        for row in result.result_set
+        for row in rows
     ]
 
 
@@ -287,18 +254,10 @@ def _mark_nodes_deduped(
     if not node_ids:
         return
 
-    query = f"""
-    MATCH (n:{label})
-    WHERE n.uid IN $node_ids AND n.owner_id = $owner_id
-    SET n.last_dedup_at = timestamp()
-    RETURN count(n) as updated
-    """
-    db.query(
-        query,
-        params={
-            "node_ids": [str(node_id) for node_id in node_ids],
-            "owner_id": normalize_owner_id(owner_id),
-        },
+    db.mark_deduped(
+        label=label,
+        node_ids=[str(node_id) for node_id in node_ids],
+        owner_id=normalize_owner_id(owner_id),
     )
 
 
@@ -345,100 +304,54 @@ def _merge_duplicate_nodes(
     duplicate_ids = [str(node_id) for node_id in node_ids[1:]]
 
     for dup_id in duplicate_ids:
-        params = {"dup_id": dup_id, "primary_id": primary_id, "owner_id": owner_id}
         try:
-            out_rels = db.query(
-                f"""
-                MATCH (dup:{label})-[r]->(target)
-                WHERE dup.uid = $dup_id
-                  AND (dup.owner_id = $owner_id OR dup.owner_id IS NULL)
-                RETURN type(r) as rel_type, properties(r) as props, target.uid as target_id
-                """,
-                params=params,
-            )
-            if out_rels and hasattr(out_rels, "result_set"):
-                for row in out_rels.result_set:
-                    rel_type, props, target_id = row
-                    db.query(
-                        f"""
-                        MATCH (p:{label}), (t)
-                        WHERE p.uid = $primary_id AND t.uid = $target_id
-                        MERGE (p)-[new_r:{rel_type}]->(t)
-                        SET new_r = $props
-                        """,
-                        params={
-                            "primary_id": primary_id,
-                            "target_id": str(target_id),
-                            "props": props,
-                            "owner_id": owner_id,
-                        },
-                    )
-
-            db.query(
-                f"MATCH (dup:{label})-[r]->() WHERE dup.uid = $dup_id DELETE r",
-                params=params,
-            )
+            for row in db.rels_out(label=label, dup_id=dup_id, owner_id=owner_id):
+                rel_type, props, target_id = row
+                db.copy_rel_out(
+                    label=label,
+                    rel_type=rel_type,
+                    params={
+                        "primary_id": primary_id,
+                        "target_id": str(target_id),
+                        "props": props,
+                        "owner_id": owner_id,
+                    },
+                )
+            db.delete_rels_out(label=label, dup_id=dup_id, owner_id=owner_id)
         except Exception as e:
             logger.warning(f"Failed to redirect outgoing relations for {dup_id}: {e}")
 
         try:
-            in_rels = db.query(
-                f"""
-                MATCH (source)-[r]->(dup:{label})
-                WHERE dup.uid = $dup_id
-                  AND (dup.owner_id = $owner_id OR dup.owner_id IS NULL)
-                RETURN type(r) as rel_type, properties(r) as props, source.uid as source_id
-                """,
-                params=params,
-            )
-            if in_rels and hasattr(in_rels, "result_set"):
-                for row in in_rels.result_set:
-                    rel_type, props, source_id = row
-                    db.query(
-                        f"""
-                        MATCH (s), (p:{label})
-                        WHERE s.uid = $source_id AND p.uid = $primary_id
-                        MERGE (s)-[new_r:{rel_type}]->(p)
-                        SET new_r = $props
-                        """,
-                        params={
-                            "source_id": str(source_id),
-                            "primary_id": primary_id,
-                            "props": props,
-                            "owner_id": owner_id,
-                        },
-                    )
-
-            db.query(
-                f"MATCH ()-[r]->(dup:{label}) WHERE dup.uid = $dup_id DELETE r",
-                params=params,
-            )
+            for row in db.rels_in(label=label, dup_id=dup_id, owner_id=owner_id):
+                rel_type, props, source_id = row
+                db.copy_rel_in(
+                    label=label,
+                    rel_type=rel_type,
+                    params={
+                        "source_id": str(source_id),
+                        "primary_id": primary_id,
+                        "props": props,
+                        "owner_id": owner_id,
+                    },
+                )
+            db.delete_rels_in(label=label, dup_id=dup_id, owner_id=owner_id)
         except Exception as e:
             logger.warning(f"Failed to redirect incoming relations for {dup_id}: {e}")
 
         try:
             # merged_into makes partially-failed merges traceable and re-runnable.
-            db.query(
-                f"""
-                MATCH (n:{label})
-                WHERE n.uid = $dup_id AND n.owner_id = $owner_id
-                SET n.status = 'outdated',
-                    n.merged_into = $primary_id,
-                    n.metadata_str = coalesce(n.metadata_str, '{{}}')
-                """,
-                params=params,
+            db.mark_merged(
+                label=label,
+                dup_id=dup_id,
+                primary_id=primary_id,
+                owner_id=owner_id,
             )
         except Exception as e:
             logger.warning(f"Failed to mark {dup_id} as outdated: {e}")
 
     try:
-        db.query(
-            f"""
-            MATCH (n:{label})
-            WHERE n.uid = $primary_id AND n.owner_id = $owner_id
-            SET n.last_dedup_at = timestamp()
-            """,
-            params={"primary_id": primary_id, "owner_id": owner_id},
+        db.touch_dedup_primary(
+            label=label, primary_id=primary_id, owner_id=owner_id
         )
     except Exception as e:
         logger.warning(f"Failed to update last_dedup_at for primary {primary_id}: {e}")

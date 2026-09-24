@@ -7,7 +7,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from graph_memory_mcp.config import load_mcp_server_config
-from graph_memory_mcp.graph_memory.database import FalkorDBClient
+from graph_memory_mcp.graph_memory.database import open_store
 from graph_memory_mcp.jobs.archive_old_facts import archive_old_facts
 from graph_memory_mcp.jobs.deduplicate_facts import deduplicate_facts
 
@@ -79,7 +79,7 @@ def start_scheduler() -> AsyncIOScheduler:
         return scheduler
 
     # Initialize FalkorDB client
-    db = FalkorDBClient(config)
+    db = open_store(config)
 
     # Test connection
     health = db.health_check()
@@ -145,7 +145,7 @@ async def run_job_now(job_name: str) -> Dict[str, Any]:
     """Run a known job immediately via API."""
     config = load_mcp_server_config()
 
-    db = FalkorDBClient(config)
+    db = open_store(config)
 
     # Test connection
     health = db.health_check()

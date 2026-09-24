@@ -10,7 +10,6 @@ from graph_memory_mcp.graph_memory.utils import (
     dump_json,
     ensure_text,
     error_response,
-    execute_query,
     mcp_handler,
     new_uid,
     normalize_entity_name,
@@ -63,15 +62,6 @@ def create_relation(
     if properties:
         props_str = ", " + ", ".join(f"r.{k} = ${k}" for k in properties.keys())
 
-    query = f"""
-    MATCH (a), (b)
-    WHERE a.uid = $from_id AND b.uid = $to_id
-        AND a.owner_id = $owner_id AND b.owner_id = $owner_id
-    MERGE (a)-[r:{rel_type}]->(b)
-    ON CREATE SET r.created_at = timestamp(){props_str}
-    RETURN id(r) as rel_id
-    """
-
     params = {
         "from_id": from_id,
         "to_id": to_id,
@@ -80,8 +70,10 @@ def create_relation(
     if properties:
         params.update(properties)
 
-    result = execute_query(db, query, params)
-    if not result:
+    rows = db.merge_relation(
+        rel_type=rel_type, params=params, prop_assignments=props_str
+    )
+    if not rows:
         return error_response("Failed to create relation", code="memory_service_error")
 
     db.cache.invalidate_search()
@@ -116,8 +108,8 @@ def create_triplet(
     subj_emb = db.get_embedding(subject)
     obj_emb = db.get_embedding(object_value)
 
-    subj_emb_expr = "vecf32($subj_emb)" if subj_emb else "NULL"
-    obj_emb_expr = "vecf32($obj_emb)" if obj_emb else "NULL"
+    subj_emb_expr = db.embedding_literal("subj_emb", bool(subj_emb))
+    obj_emb_expr = db.embedding_literal("obj_emb", bool(obj_emb))
     # Lazy import: nodes ↔ relations would otherwise cycle at module load.
     from graph_memory_mcp.graph_memory.mcp_handlers_nodes import metadata_promoted_props
 
@@ -126,54 +118,6 @@ def create_triplet(
     except ValueError as exc:
         return error_response(str(exc), code="memory_validation_error")
     metadata_str = dump_json(metadata or {})
-    # Entities are merged on normalized name so "Redis" and " redis " unify;
-    # original casing is preserved in `text`.
-    # Metadata: full write on CREATE; on MATCH only fill reserved keys when provided
-    # (do not wipe existing free-form metadata_str).
-    query = f"""
-    MERGE (s:Entity {{name_norm: $subject_norm, owner_id: $owner_id}})
-    ON CREATE SET
-        s.uid = $subj_uid,
-        s.text = $subject,
-        s.created_at = timestamp(),
-        s.embedding = {subj_emb_expr},
-        s.status = 'active',
-        s.metadata_str = $metadata_str,
-        s.project = $project,
-        s.created_by = $created_by,
-        s.tags = $tags,
-        s.meta_type = $meta_type,
-        s.confidence = $confidence
-    ON MATCH SET
-        s.project = CASE WHEN $project IS NULL THEN s.project ELSE $project END,
-        s.created_by = CASE WHEN $created_by IS NULL THEN s.created_by ELSE $created_by END,
-        s.tags = CASE WHEN $tags IS NULL THEN s.tags ELSE $tags END,
-        s.meta_type = CASE WHEN $meta_type IS NULL THEN s.meta_type ELSE $meta_type END,
-        s.confidence = CASE WHEN $confidence IS NULL THEN s.confidence ELSE $confidence END
-    MERGE (o:Entity {{name_norm: $object_norm, owner_id: $owner_id}})
-    ON CREATE SET
-        o.uid = $obj_uid,
-        o.text = $object,
-        o.created_at = timestamp(),
-        o.embedding = {obj_emb_expr},
-        o.status = 'active',
-        o.metadata_str = $metadata_str,
-        o.project = $project,
-        o.created_by = $created_by,
-        o.tags = $tags,
-        o.meta_type = $meta_type,
-        o.confidence = $confidence
-    ON MATCH SET
-        o.project = CASE WHEN $project IS NULL THEN o.project ELSE $project END,
-        o.created_by = CASE WHEN $created_by IS NULL THEN o.created_by ELSE $created_by END,
-        o.tags = CASE WHEN $tags IS NULL THEN o.tags ELSE $tags END,
-        o.meta_type = CASE WHEN $meta_type IS NULL THEN o.meta_type ELSE $meta_type END,
-        o.confidence = CASE WHEN $confidence IS NULL THEN o.confidence ELSE $confidence END
-    MERGE (s)-[r:{rel_type}]->(o)
-    ON CREATE SET r.created_at = timestamp()
-    RETURN s.uid as subject_id, o.uid as object_id, id(r) as relation_id
-    """
-
     params = {
         "subject": subject,
         "object": object_value,
@@ -190,11 +134,16 @@ def create_triplet(
     if obj_emb:
         params["obj_emb"] = obj_emb
 
-    result = execute_query(db, query, params)
-    if not result:
+    rows = db.merge_triplet(
+        rel_type=rel_type,
+        params=params,
+        subj_emb_expr=subj_emb_expr,
+        obj_emb_expr=obj_emb_expr,
+    )
+    if not rows:
         return error_response("Failed to create triplet", code="memory_service_error")
 
-    row = result.result_set[0]
+    row = rows[0]
     triplet = {
         "subject_id": str(row[0]),
         "object_id": str(row[1]),
@@ -223,20 +172,10 @@ def create_triplet(
         elif warning_x:
             warning = warning_x
 
-        link_query = """
-        MATCH (f:Fact), (s:Entity)
-        WHERE f.uid = $fact_id AND s.uid = $subject_id
-            AND f.owner_id = $owner_id AND s.owner_id = $owner_id
-        MERGE (f)-[r:EXTRACTED_FROM]->(s)
-        ON CREATE SET r.created_at = timestamp()
-        """
-        db.query(
-            link_query,
-            params={
-                "fact_id": require_node_id(fact_id, "fact_id"),
-                "subject_id": str(row[0]),
-                "owner_id": owner_id,
-            },
+        db.link_extracted_from(
+            fact_id=require_node_id(fact_id, "fact_id"),
+            subject_id=str(row[0]),
+            owner_id=owner_id,
         )
 
     db.cache.invalidate_search()
@@ -274,34 +213,23 @@ def search_triplets(
 
     rel_pattern = f"[r:{normalize_predicate_type(predicate)}]" if predicate else "[r]"
 
-    query = f"""
-    MATCH (s:Entity)-{rel_pattern}->(o:Entity)
-    WHERE {' AND '.join(where_clauses)}
-    RETURN
-        s.uid as subject_id,
-        s.text as subject,
-        type(r) as predicate,
-        o.uid as object_id,
-        o.text as object,
-        id(r) as relation_id
-    LIMIT {int(limit)}
-    """
-
-    result = db.query(query, params=params)
-
     triplets = []
-    if result and hasattr(result, "result_set"):
-        for row in result.result_set:
-            triplets.append(
-                {
-                    "subject_id": str(row[0]),
-                    "subject": ensure_text(row[1]),
-                    "predicate": ensure_text(row[2]),
-                    "object_id": str(row[3]),
-                    "object": ensure_text(row[4]),
-                    "relation_id": str(row[5]),
-                }
-            )
+    for row in db.search_triplet_rows(
+        rel_pattern=rel_pattern,
+        where_sql=" AND ".join(where_clauses),
+        params=params,
+        limit=limit,
+    ):
+        triplets.append(
+            {
+                "subject_id": str(row[0]),
+                "subject": ensure_text(row[1]),
+                "predicate": ensure_text(row[2]),
+                "object_id": str(row[3]),
+                "object": ensure_text(row[4]),
+                "relation_id": str(row[5]),
+            }
+        )
 
     return success_response(triplets=triplets)
 
@@ -324,26 +252,10 @@ def unlink_facts(
         f"[r:{normalize_predicate_type(relation_type)}]" if relation_type else "[r]"
     )
 
-    query = f"""
-    MATCH (a)-{rel_pattern}->(b)
-    WHERE a.uid = $from_id AND b.uid = $to_id
-        AND a.owner_id = $owner_id AND b.owner_id = $owner_id
-    DELETE r
-    RETURN count(r) as deleted
-    """
-
-    result = execute_query(
-        db,
-        query,
-        {
-            "from_id": from_id,
-            "to_id": to_id,
-            "owner_id": owner_id,
-        },
+    rows = db.unlink_relation(
+        rel_pattern=rel_pattern,
+        params={"from_id": from_id, "to_id": to_id, "owner_id": owner_id},
     )
-
-    deleted = 0
-    if result and hasattr(result, "result_set") and result.result_set:
-        deleted = result.result_set[0][0]
+    deleted = rows[0][0] if rows else 0
 
     return success_response(deleted=deleted)

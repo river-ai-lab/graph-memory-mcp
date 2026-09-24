@@ -9,6 +9,11 @@ def main() -> None:
         prog="graph-memory-mcp",
         description="Run MCP Graph Memory server (FastMCP HTTP).",
     )
+    parser.add_argument(
+        "--backend",
+        default=None,
+        help="Graph backend. Supported: falkordb (default). Overrides GRAPH_BACKEND.",
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument(
@@ -32,6 +37,8 @@ def main() -> None:
     from graph_memory_mcp.config import load_mcp_server_config
 
     memory_cfg = load_mcp_server_config()
+    if args.backend:
+        memory_cfg.graph_backend = args.backend
 
     if args.simple:
         from graph_memory_mcp.server_simple import GraphMemorySimpleMCP

@@ -11,7 +11,6 @@ from graph_memory_mcp.graph_memory.database import FalkorDBClient
 from graph_memory_mcp.graph_memory.mcp_handlers_search import search
 from graph_memory_mcp.graph_memory.utils import (
     ensure_text,
-    execute_query,
     mcp_handler,
     normalize_owner_id,
     require_node_id,
@@ -28,50 +27,17 @@ def _load_edges_between_nodes(
     if not node_ids:
         return []
 
-    edges_query = """
-    MATCH (n)-[r]->(m)
-    WHERE n.uid IN $node_ids AND m.uid IN $node_ids
-      AND n.owner_id = $owner_id AND m.owner_id = $owner_id
-    RETURN DISTINCT
-        n.uid as from_id,
-        type(r) as relation_type,
-        m.uid as to_id,
-        properties(r) as relation_props
-    """
     edges: List[Dict] = []
-    edges_result = execute_query(
-        db,
-        edges_query,
-        {
-            "node_ids": [str(node_id) for node_id in node_ids],
-            "owner_id": owner_id,
-        },
-    )
-    if edges_result and hasattr(edges_result, "result_set"):
-        for row in edges_result.result_set:
-            edges.append(
-                {
-                    "from_id": str(row[0]),
-                    "to_id": str(row[2]),
-                    "relation_type": ensure_text(row[1]),
-                    "properties": row[3] if len(row) > 3 else {},
-                }
-            )
+    for row in db.edges_between(node_ids, owner_id):
+        edges.append(
+            {
+                "from_id": str(row[0]),
+                "to_id": str(row[2]),
+                "relation_type": ensure_text(row[1]),
+                "properties": row[3] if len(row) > 3 else {},
+            }
+        )
     return edges
-
-
-_BFS_INIT_QUERY = """
-    MATCH (n)
-    WHERE n.uid IN $ids AND n.owner_id = $owner_id
-    RETURN n.uid, labels(n)[0], n.text,
-           coalesce(n.updated_at, n.created_at), coalesce(n.access_count, 0)
-"""
-
-# Neighbors only (seeds always loaded): active and not past expires_at.
-_ACTIVE_NEIGHBOR = (
-    "(coalesce(m.status, 'active') = 'active' "
-    "AND (m.expires_at IS NULL OR m.expires_at > timestamp()))"
-)
 
 
 def _bfs_expand(
@@ -91,10 +57,8 @@ def _bfs_expand(
     labels propagate to neighbors for per-seed hop ranking.
     """
     visited: Dict[str, Dict[str, Any]] = {}
-    init = execute_query(
-        db, _BFS_INIT_QUERY, {"ids": list(seed_labels), "owner_id": owner_id}
-    )
-    for row in (init.result_set if init else [])[:budget]:
+    init_rows = db.bfs_init_rows(list(seed_labels), owner_id)
+    for row in init_rows[:budget]:
         uid = str(row[0])
         visited[uid] = {
             "node_id": uid,
@@ -105,29 +69,20 @@ def _bfs_expand(
             "seed_hops": dict(seed_labels.get(uid, {uid: 0})),
         }
 
-    status_filter = "" if include_outdated else f" AND {_ACTIVE_NEIGHBOR}"
     frontier = list(visited)
     for hop in range(1, depth + 1):
         remaining = budget - len(visited)
         if remaining <= 0 or not frontier:
             break
-        step_query = f"""
-    MATCH (n)-[r]-(m)
-    WHERE n.uid IN $frontier AND m.owner_id = $owner_id
-      AND NOT m.uid IN $seen{status_filter}
-    WITH m, collect(DISTINCT n.uid) AS parents
-    RETURN m.uid, labels(m)[0], m.text,
-           coalesce(m.updated_at, m.created_at), coalesce(m.access_count, 0),
-           parents
-    LIMIT {int(remaining)}
-    """
-        result = execute_query(
-            db,
-            step_query,
-            {"frontier": frontier, "seen": list(visited), "owner_id": owner_id},
+        step_rows = db.bfs_step_rows(
+            frontier=frontier,
+            seen=list(visited),
+            owner_id=owner_id,
+            remaining=remaining,
+            include_outdated=include_outdated,
         )
         new_frontier: List[str] = []
-        for row in result.result_set if result else []:
+        for row in step_rows:
             uid = str(row[0])
             if uid in visited:
                 continue
@@ -231,15 +186,6 @@ def get_context(
 
     nodes: Dict[str, Dict[str, Any]] = {}
     edges: List[Dict] = []
-    neighbor_ok = (
-        "true"
-        if include_outdated
-        else (
-            "(coalesce(connected.status, 'active') = 'active'"
-            " AND (connected.expires_at IS NULL OR connected.expires_at > timestamp()))"
-        )
-    )
-
     if offset == 0:
         # Iterative BFS with a node budget — no [*0..depth] path explosion.
         visited = _bfs_expand(
@@ -259,34 +205,20 @@ def get_context(
         paginated = False
     else:
         # Paginated (operator/explorer) path: full expansion with stable order.
-        nodes_query = f"""
-    MATCH path = (center)-[*0..{depth}]-(connected)
-    WHERE center.uid = $node_id
-      AND center.owner_id = $owner_id
-      AND connected.owner_id = $owner_id
-      AND (connected.uid = center.uid OR {neighbor_ok})
-    WITH DISTINCT connected
-    ORDER BY id(connected)
-    SKIP {offset}
-    LIMIT {effective_max_nodes}
-    RETURN
-        connected.uid as node_id,
-        labels(connected)[0] as node_type,
-        connected.text as text
-    """
-        nodes_result = execute_query(
-            db,
-            nodes_query,
-            {"node_id": node_id, "owner_id": owner_id},
-        )
-        if nodes_result and hasattr(nodes_result, "result_set"):
-            for row in nodes_result.result_set:
-                current_id = str(row[0])
-                nodes[current_id] = {
-                    "node_id": current_id,
-                    "node_type": row[1],
-                    "text": ensure_text(row[2]),
-                }
+        for row in db.context_page_rows(
+            depth=depth,
+            offset=offset,
+            limit=effective_max_nodes,
+            include_outdated=include_outdated,
+            node_id=node_id,
+            owner_id=owner_id,
+        ):
+            current_id = str(row[0])
+            nodes[current_id] = {
+                "node_id": current_id,
+                "node_type": row[1],
+                "text": ensure_text(row[2]),
+            }
         paginated = True
 
     if nodes:
@@ -320,54 +252,17 @@ def get_trace(
     from_id = require_node_id(from_id, "from_id")
     to_id = require_node_id(to_id, "to_id")
 
-    if directed:
-        # shortestPath in FalkorDB supports directed traversals only.
-        query = f"""
-    MATCH (a), (b)
-    WHERE a.uid = $from_id AND b.uid = $to_id
-      AND a.owner_id = $owner_id AND b.owner_id = $owner_id
-    WITH shortestPath((a)-[*..{int(max_depth)}]->(b)) as path
-    RETURN [n in nodes(path) | {{
-        node_id: n.uid,
-        node_type: labels(n)[0],
-        text: n.text
-    }}] as nodes,
-    [r in relationships(path) | {{
-        relation_type: type(r)
-    }}] as relations
-    """
-    else:
-        query = f"""
-    MATCH path = (a)-[*..{int(max_depth)}]-(b)
-    WHERE a.uid = $from_id AND b.uid = $to_id
-      AND a.owner_id = $owner_id AND b.owner_id = $owner_id
-    WITH path
-    ORDER BY length(path) ASC
-    LIMIT 1
-    RETURN [n in nodes(path) | {{
-        node_id: n.uid,
-        node_type: labels(n)[0],
-        text: n.text
-    }}] as nodes,
-    [r in relationships(path) | {{
-        relation_type: type(r)
-    }}] as relations
-    """
-
-    result = execute_query(
-        db,
-        query,
-        {
-            "from_id": from_id,
-            "to_id": to_id,
-            "owner_id": owner_id,
-        },
+    rows = db.shortest_path_row(
+        directed=directed,
+        max_depth=max_depth,
+        from_id=from_id,
+        to_id=to_id,
+        owner_id=owner_id,
     )
-
-    if not result:
+    if not rows:
         return success_response(nodes=[], relations=[], message="No path found")
 
-    row = result.result_set[0]
+    row = rows[0]
     nodes = row[0] if len(row) > 0 and row[0] else []
     relations = row[1] if len(row) > 1 and row[1] else []
     if not nodes:
