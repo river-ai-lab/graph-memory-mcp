@@ -47,6 +47,7 @@ asyncio_mode = "auto"
 
 markers = [
   "integration: requires running FalkorDB (docker compose up -d)",
+  "vela: embedded Vela backend; does not need FalkorDB",
 ]
 
 [tool.basedpyright]

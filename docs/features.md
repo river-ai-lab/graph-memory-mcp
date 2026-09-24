@@ -2,7 +2,7 @@
 
 Normative tool signatures. Jobs: [background_jobs.md](./background_jobs.md). Agents: [memory_policies_for_LLM.md](./memory_policies_for_LLM.md). Admin: [admin.md](./admin.md).
 
-**Storage:** one FalkorDB graph per `owner_id` (`{FALKORDB_GRAPH}_{owner_id}`). **IDs:** tools use stable `node_id` (= `uid`, UUID hex); legacy nodes backfilled at startup.
+**Storage:** `GRAPH_BACKEND=falkordb` (default) keeps one FalkorDB graph per `owner_id` (`{FALKORDB_GRAPH}_{owner_id}`). `GRAPH_BACKEND=vela` stores each owner in an embedded Vela file under `VELA_PATH` (Vela is a disk-native Kuzu fork; search is exact cosine). **IDs:** tools use stable `node_id` (= `uid`, UUID hex); legacy nodes backfilled at startup.
 
 ## Data model
 

@@ -30,14 +30,16 @@ def test_connection(db: FalkorDBClient) -> Dict:
 def health_check(db: FalkorDBClient, embedding_service: Any) -> Dict:
     """Comprehensive health check."""
     falkordb_ok = False
+    vela_ok = False
     embeddings_ok = False
     vector_ok = False
 
     try:
         health = db.health_check()
         falkordb_ok = bool(health.get("falkordb_connected"))
+        vela_ok = bool(health.get("vela_connected"))
     except Exception as exc:
-        logger.error("health_check: falkordb probe failed: %s", exc)
+        logger.error("health_check: graph probe failed: %s", exc)
 
     try:
         embeddings_ok = (
@@ -58,11 +60,13 @@ def health_check(db: FalkorDBClient, embedding_service: Any) -> Dict:
     except Exception as exc:
         logger.error("health_check: vector index probe failed: %s", exc)
 
+    store_ok = falkordb_ok or vela_ok
     return success_response(
         falkordb=falkordb_ok,
+        vela=vela_ok,
         embeddings=embeddings_ok,
         vector_index=vector_ok,
-        healthy=falkordb_ok and embeddings_ok and vector_ok,
+        healthy=store_ok and embeddings_ok and vector_ok,
         cache=db.cache.stats(),
     )
 

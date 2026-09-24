@@ -73,7 +73,7 @@ Graph Memory MCP is built for systems that require:
 - **Background jobs** (deduplication, archival)
 - **MCP-native API** (FastMCP)
 
-Backed by **FalkorDB** (pluggable storage layer).
+Backed by **FalkorDB** by default. `GRAPH_BACKEND=vela` uses embedded **Vela** (a disk-native Kuzu fork) through the same storage API.
 
 ---
 
@@ -146,6 +146,10 @@ Key defaults live in `graph_memory_mcp/config.py` within the `MCPServerConfig` c
 - `RELATION_POLICY_ENFORCE` — `off` | `warn` (default) | `enforce`
 - `RELATION_ALLOWED_TYPES` — comma-separated allowlist for new edges
 - Agent link guidance: `docs/memory_policies_for_LLM.md`
+
+## Vela (embedded)
+
+Set `GRAPH_BACKEND=vela` to store each `owner_id` in its own Vela database file under `VELA_PATH` (default `data/vela`, file `{VELA_GRAPH}_{owner_id}`). Vela is the [Vela-Engineering/kuzu](https://github.com/Vela-Engineering/kuzu) fork. Install a release wheel from that repo (`import kuzu`); the PyPI `kuzu` package is the archived upstream. Semantic search on this backend is exact cosine distance. FalkorDB stays the default when `GRAPH_BACKEND` is unset.
 
 ## Running FalkorDB
 

@@ -42,8 +42,12 @@ class MCPServerConfig(BaseSettings):
         validation_alias="MCP_SERVER_DESCRIPTION",
     )
 
-    # Graph backend. Only falkordb is implemented; the factory rejects other names.
+    # Graph backend. falkordb (default) keeps the existing server. vela is embedded.
     graph_backend: str = Field(default="falkordb", validation_alias="GRAPH_BACKEND")
+
+    # Vela (embedded Kuzu fork). Used only when graph_backend=vela.
+    vela_path: str = Field(default="data/vela", validation_alias="VELA_PATH")
+    vela_graph: str = Field(default="memory", validation_alias="VELA_GRAPH")
 
     # FalkorDB
     falkordb_host: str = "localhost"

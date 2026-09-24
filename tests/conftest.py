@@ -1,7 +1,7 @@
 """
 Pytest configuration.
 
-All tests require a running FalkorDB (see docker-compose.yml / scripts/falkordb-up.sh).
+Tests need a running FalkorDB unless they are marked ``vela`` (embedded backend).
 """
 
 from __future__ import annotations
@@ -26,13 +26,21 @@ def falkordb_is_available(host: str, port: int, password: str | None) -> bool:
         return False
 
 
-@pytest.fixture(scope="session", autouse=True)
-def require_falkordb() -> None:
-    """Fail fast when FalkorDB is not running — required for every test run."""
+_FALKOR_OK: bool | None = None
+
+
+@pytest.fixture(autouse=True)
+def require_falkordb(request: pytest.FixtureRequest) -> None:
+    """Fail fast when FalkorDB is not running. Vela tests do not need it."""
+    if request.node.get_closest_marker("vela"):
+        return
+    global _FALKOR_OK
     cfg = load_mcp_server_config()
-    if falkordb_is_available(
-        cfg.falkordb_host, cfg.falkordb_port, cfg.falkordb_password
-    ):
+    if _FALKOR_OK is None:
+        _FALKOR_OK = falkordb_is_available(
+            cfg.falkordb_host, cfg.falkordb_port, cfg.falkordb_password
+        )
+    if _FALKOR_OK:
         return
 
     pytest.fail(

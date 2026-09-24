@@ -1,7 +1,7 @@
 """Graph store entry point.
 
-`FalkorDBClient` remains the name used across the process. The implementation
-lives in `backends.falkor` so a second backend can be added beside it.
+`FalkorDBClient` remains the name used across handlers. `open_store` picks
+FalkorDB or Vela from `GRAPH_BACKEND` (default `falkordb`).
 """
 
 from graph_memory_mcp.graph_memory.backends.falkor import FalkorDBClient
