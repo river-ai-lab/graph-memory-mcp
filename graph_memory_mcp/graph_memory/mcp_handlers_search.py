@@ -5,6 +5,7 @@ from typing import Dict, List, Optional
 
 from graph_memory_mcp.config import MCPServerConfig
 from graph_memory_mcp.graph_memory.cache import hash_query
+from graph_memory_mcp.graph_memory.compact_recall import decorate_search_response
 from graph_memory_mcp.graph_memory.database import FalkorDBClient
 from graph_memory_mcp.graph_memory.owner_scoped_search import (
     SearchType,
@@ -227,6 +228,7 @@ def search(
     include_outdated: bool = False,
     search_type: Optional[str] = None,
     metadata_filter: Optional[Dict] = None,
+    compact: bool = False,
 ) -> Dict:
     """Search for nodes by semantic similarity."""
     owner_id = normalize_owner_id(owner_id)
@@ -251,8 +253,19 @@ def search(
         metadata_filter=metadata_filter,
     )
 
+    def _decorate(payload: Dict) -> Dict:
+        return decorate_search_response(
+            payload,
+            compact=compact,
+            snippet_chars=config.compact_snippet_chars,
+            token_budget=config.compact_recall_token_budget,
+            query=query,
+            owner_id=owner_id,
+            metadata_filter=metadata_filter,
+        )
+
     if cached := db.cache.get_search(cache_key):
-        return cached
+        return _decorate(cached)
 
     limit = max(1, min(limit or config.default_search_limit, config.max_search_limit))
     similarity_threshold = (
@@ -276,7 +289,7 @@ def search(
 
     embedding = db.get_embedding(query, kind="query")
     if not embedding:
-        return success_response(results=[], facts=[], entities=[])
+        return _decorate(success_response(results=[], facts=[], entities=[]))
 
     max_distance = 1.0 - similarity_threshold
     results: List[Dict] = []
@@ -308,7 +321,7 @@ def search(
     db.cache.set_search(cache_key, final_response)
     touch_nodes(db, [r["node_id"] for r in results], owner_id)
 
-    return final_response
+    return _decorate(final_response)
 
 
 @mcp_handler

@@ -4,6 +4,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+- GROW ritual in agent policies / AGENTS.md (Ground → Record → Orient → Write after meaningful work)
+- Compact recall: `compact` on `search` / `recall_context`; responses always include `suggested_next`, `do_not`, `budget` (snippets under `COMPACT_RECALL_TOKEN_BUDGET`)
+
 ## [0.2.0] - 2026-07-20
 
 Owner-scoped memory hardening on top of 0.1.1. **Breaking:** one FalkorDB graph per `owner_id` (`{FALKORDB_GRAPH}_{owner_id}`); old shared-graph data is not migrated.

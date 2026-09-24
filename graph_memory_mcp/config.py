@@ -101,6 +101,17 @@ class MCPServerConfig(BaseSettings):
         default=0.7,
         validation_alias="RECALL_CONTEXT_HOP_DECAY",
     )
+    # Compact recall: snippet + estimated-token budget for search/recall_context
+    compact_recall_token_budget: int = Field(
+        default=800,
+        validation_alias="COMPACT_RECALL_TOKEN_BUDGET",
+        description="Max estimated tokens for texts when compact=true",
+    )
+    compact_snippet_chars: int = Field(
+        default=180,
+        validation_alias="COMPACT_SNIPPET_CHARS",
+        description="Max characters per snippet when compact=true",
+    )
     # Time-aware recall: score ×= (1-w) + w * 0.5^(age_days/half_life) and
     # ×= (1-w) + w * usage. Weights 0 disable the corresponding factor.
     recall_recency_weight: float = Field(

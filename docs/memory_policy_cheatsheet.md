@@ -7,15 +7,17 @@ Constants from your operator (apply, never invent): `<OWNER_ID>` required — pa
 1. `search` before `create_node`; one durable fact per node; no chat logs / secrets / scratchpad.
 2. Fact became wrong → `mark_outdated` + `create_node`. Typo/metadata → `update_node`.
 3. `possible_duplicates` in response: duplicate → link/update; conflict → `CONTRADICTS` or `mark_outdated`.
+4. After meaningful work — GROW before final reply (Ground → Record → Orient? → Write); skip if nothing durable.
 
 ## Situation → tool
 
 | Situation | Call |
 |-----------|------|
+| After meaningful work | GROW: Ground → Record → Orient? → Write (`project`+`created_by`); skip if nothing durable |
 | Session start | `get_brief(owner_id)` |
-| "What do we know about X?" | `search(query="X")` → `get_context(node_id=<best hit>)` |
+| "What do we know about X?" | `search(query="X", compact=true)` → follow `suggested_next` / `get_context` |
 | Path between two known IDs | `get_trace(from_id, to_id)` (directed; retry `directed=false`) |
-| Quick one-call recall | `recall_context(query, depth=1)` |
+| Quick one-call recall | `recall_context(query, depth=1, compact=true)` |
 | Store a fact | `create_node(text, owner_id, metadata)` |
 | Document/conversation → knowledge | extract → `ingest_knowledge(document={"ref": ...}, facts=[{text, ref?, ...}, ...], triplets=[...])` — prefer `facts[].ref`; re-ingest updates in place |
 | Link nodes | `create_relation(from_id, to_id, RELATED_TO \| MENTIONS \| SUMMARIZES \| FOLLOWS_FROM \| CONTRADICTS)` |

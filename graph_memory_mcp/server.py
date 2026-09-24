@@ -423,7 +423,9 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
                 "Supports multi-tenant isolation via owner_id. "
                 "search_type: pre_filter (filter owner first, best for large/multi-tenant graphs) "
                 "or post_filter (global ANN then filter, best for small graphs); "
-                "defaults to server SEARCH_TYPE when omitted."
+                "defaults to server SEARCH_TYPE when omitted. "
+                "Always includes suggested_next / do_not guidance. "
+                "Set compact=true for snippets under a token budget (expand via get_node / get_context)."
             ),
             annotations=ToolAnnotations(readOnlyHint=True),
         )
@@ -437,6 +439,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
             include_outdated: bool = False,
             search_type: str | None = None,
             metadata_filter: dict | None = None,
+            compact: bool = False,
         ) -> dict:
             return mcp_handlers_search.search(
                 db,
@@ -450,6 +453,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
                 include_outdated=include_outdated,
                 search_type=search_type,
                 metadata_filter=metadata_filter,
+                compact=compact,
             )
 
         @mcp.tool(
@@ -703,7 +707,9 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
                 "Default recall workflow is search → get_context → get_trace (see memory policies). "
                 "Use on small/sparse owner graphs; prefer depth=1. "
                 "Set include_paths=true only when you need an approximate path hint "
-                "between the top two seeds."
+                "between the top two seeds. "
+                "Always includes suggested_next / do_not. "
+                "Set compact=true for snippets under a token budget."
             ),
             annotations=ToolAnnotations(readOnlyHint=True),
         )
@@ -718,6 +724,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
             search_type: str | None = None,
             include_paths: bool = False,
             metadata_filter: dict | None = None,
+            compact: bool = False,
         ) -> dict:
             return mcp_handlers_graph.recall_context(
                 db,
@@ -732,6 +739,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
                 search_type=search_type,
                 include_paths=include_paths,
                 metadata_filter=metadata_filter,
+                compact=compact,
             )
 
         @mcp.tool(

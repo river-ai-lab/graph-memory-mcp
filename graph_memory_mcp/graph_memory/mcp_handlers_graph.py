@@ -6,6 +6,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from graph_memory_mcp.config import MCPServerConfig
+from graph_memory_mcp.graph_memory.compact_recall import decorate_recall_response
 from graph_memory_mcp.graph_memory.database import FalkorDBClient
 from graph_memory_mcp.graph_memory.mcp_handlers_search import search
 from graph_memory_mcp.graph_memory.utils import (
@@ -389,6 +390,7 @@ def recall_context(
     search_type: Optional[str] = None,
     include_paths: bool = False,
     metadata_filter: Optional[Dict] = None,
+    compact: bool = False,
 ) -> Dict:
     """Hybrid semantic search + graph expansion for agent recall."""
     owner_id = normalize_owner_id(owner_id)
@@ -422,13 +424,15 @@ def recall_context(
         include_outdated=include_outdated,
         search_type=search_type,
         metadata_filter=metadata_filter,
+        compact=False,
     )
     if not search_result.get("success"):
         return search_result
 
-    seeds = search_result.get("results", [])
+    # Drop search envelope fields; recall builds its own guidance.
+    seeds = list(search_result.get("results") or [])
     if not seeds:
-        return success_response(
+        empty = success_response(
             query=query,
             seeds=[],
             nodes=[],
@@ -437,6 +441,13 @@ def recall_context(
             depth=depth,
             max_nodes=effective_max_nodes,
             seed_limit=seed_limit,
+        )
+        return decorate_recall_response(
+            empty,
+            compact=compact,
+            snippet_chars=config.compact_snippet_chars,
+            token_budget=config.compact_recall_token_budget,
+            owner_id=owner_id,
         )
 
     similarity_by_seed = {
@@ -507,13 +518,19 @@ def recall_context(
 
     touch_nodes(db, node_ids, owner_id)
 
-    return success_response(
-        query=query,
-        seeds=seeds,
-        nodes=ranked_nodes,
-        edges=edges,
-        paths=paths,
-        depth=depth,
-        max_nodes=effective_max_nodes,
-        seed_limit=seed_limit,
+    return decorate_recall_response(
+        success_response(
+            query=query,
+            seeds=seeds,
+            nodes=ranked_nodes,
+            edges=edges,
+            paths=paths,
+            depth=depth,
+            max_nodes=effective_max_nodes,
+            seed_limit=seed_limit,
+        ),
+        compact=compact,
+        snippet_chars=config.compact_snippet_chars,
+        token_budget=config.compact_recall_token_budget,
+        owner_id=owner_id,
     )
