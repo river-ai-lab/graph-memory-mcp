@@ -42,7 +42,7 @@ class MCPServerConfig(BaseSettings):
         validation_alias="MCP_SERVER_DESCRIPTION",
     )
 
-    # Graph backend. Only falkordb is implemented; the factory rejects other names.
+    # Graph backend. falkordb is the default. arcadedb is the other implemented store.
     graph_backend: str = Field(default="falkordb", validation_alias="GRAPH_BACKEND")
 
     # FalkorDB
@@ -50,6 +50,13 @@ class MCPServerConfig(BaseSettings):
     falkordb_port: int = 6379
     falkordb_graph: str = "memory"
     falkordb_password: str = ""
+
+    # ArcadeDB server. Each owner is a database named {ARCADE_DATABASE}_{owner_id}.
+    arcade_host: str = Field(default="localhost", validation_alias="ARCADE_HOST")
+    arcade_port: int = Field(default=2480, validation_alias="ARCADE_PORT")
+    arcade_user: str = Field(default="root", validation_alias="ARCADE_USER")
+    arcade_password: str = Field(default="", validation_alias="ARCADE_PASSWORD")
+    arcade_database: str = Field(default="memory", validation_alias="ARCADE_DATABASE")
 
     # Embeddings
     embedding_model: str = "intfloat/multilingual-e5-base"
