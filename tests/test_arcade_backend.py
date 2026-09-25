@@ -234,10 +234,37 @@ def test_owner_isolation_and_delete(store):
     ids = [row["node_id"] for row in found["results"]]
     assert own["node_id"] in ids
     assert other["node_id"] not in ids
+    assert store.database_name(alpha) == f"{_DATABASE}_{alpha}"
+    assert store.database_name(beta) == f"{_DATABASE}_{beta}"
+    assert store.database_name(alpha) != store.database_name(beta)
+    assert store.get_vector_index_status(alpha)["Fact"] is True
+    assert store.get_vector_index_status(beta)["Fact"] is True
+    with store.owner_scope(beta):
+        leaked = store.query(
+            "SELECT uid FROM Fact WHERE uid = :uid", {"uid": own["node_id"]}
+        )
+    assert leaked == []
+    with store.owner_scope(alpha):
+        foreign = store.query(
+            "SELECT uid FROM Fact WHERE uid = :uid", {"uid": other["node_id"]}
+        )
+    assert foreign == []
     assert store.delete_owner_graph(beta) is True
     assert beta not in store.list_owners()
+    assert store.database_name(beta) not in store.list_database_names()
     assert alpha in store.list_owners()
     assert get_node(store, node_id=other["node_id"], owner_id=beta)["code"] == "memory_not_found"
+
+
+def test_default_owner_has_its_own_database(store):
+    config = _config()
+    node = _create(store, config, "default", "near")
+    assert store.database_name("default") == f"{_DATABASE}_default"
+    assert "default" in store.list_owners()
+    fetched = get_node(store, node_id=node["node_id"], owner_id="default")
+    assert fetched["success"]
+    assert fetched["node"]["text"] == "near"
+    assert store.get_vector_index_status("default")["Fact"] is True
 
 
 def test_find_similar_excludes_seed(store):

@@ -1,10 +1,10 @@
 """ArcadeDB graph adapter.
 
-ArcadeDB is a server: many clients share one database. Owners are not separate
-databases. Each vertex type uses ``partitioned('owner_id')`` so a vector
-lookup enters only that owner's HNSW buckets. The embedding is a property on
-the vertex, written in the same statement or transaction as the vertex and
-its edges.
+ArcadeDB is a server: many clients share it. Each owner_id is its own database,
+named ``{ARCADE_DATABASE}_{owner_id}``, the same layout as a Falkor graph.
+That database holds only that owner's vertices, edges, and HNSW indexes.
+The embedding is a property on the vertex, written in the same statement or
+transaction as the vertex and its edges.
 
 FalkorDB stays the default. This module does not import FalkorDB.
 """
@@ -18,8 +18,10 @@ import re
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, Dict, Iterator, List, Optional
 
 from graph_memory_mcp import __version__
@@ -32,7 +34,7 @@ _DB_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 _OWNER = re.compile(r"^[a-zA-Z0-9_@-]+$")
 VERTEX_TYPES = ("Fact", "Entity", "Collection", "FactVersion")
 VECTOR_TYPES = ("Fact", "Entity")
-BUCKETS = 32
+_ACTIVE_DB: ContextVar[str | None] = ContextVar("arcade_owner_db", default=None)
 
 
 class ArcadeDBError(RuntimeError):
@@ -40,7 +42,7 @@ class ArcadeDBError(RuntimeError):
 
 
 class ArcadeDBClient(ArcadeOps):
-    """HTTP client for one ArcadeDB database shared by every owner."""
+    """HTTP client. One ArcadeDB database per owner_id."""
 
     def __init__(self, config):
         self.config = config
@@ -48,9 +50,10 @@ class ArcadeDBClient(ArcadeOps):
         self._embedding_service: Any | None = None
         self.start_time = time.time()
         self._lock = threading.Lock()
-        self._schema_ready = False
+        self._ready: set[str] = set()
         self._vector_dim: Dict[str, int] = {}
-        self._edge_types: set[str] = set()
+        self._model_dim: int | None = None
+        self._edge_types: Dict[str, set[str]] = {}
         self.last_vector_search: Dict[str, Any] = {}
         host = getattr(config, "arcade_host", None) or "localhost"
         port = int(getattr(config, "arcade_port", None) or 2480)
@@ -60,25 +63,44 @@ class ArcadeDBClient(ArcadeOps):
         database = getattr(config, "arcade_database", None) or "memory"
         if not _DB_NAME.match(str(database)):
             raise ValueError(f"Invalid ArcadeDB database name: {database!r}")
-        self.database = str(database)
+        self.database_prefix = str(database)
         token = base64.b64encode(f"{self._user}:{self._password}".encode()).decode()
         self._auth = f"Basic {token}"
         logger.info(
-            "ArcadeDB client initialized (url=%s, database=%s, layout=partitioned-owner)",
+            "ArcadeDB client initialized (url=%s, database prefix=%s, layout=database-per-owner)",
             self._base,
-            self.database,
+            self.database_prefix,
         )
 
     def owner_literal(self, owner_id: str) -> str:
-        """Owner id safe to inline. Partition pruning only sees a SQL literal."""
+        """Owner id safe to interpolate. The database name is the isolation boundary."""
         if not isinstance(owner_id, str) or not _OWNER.match(owner_id):
             raise ValueError("Invalid owner_id format (use alphanumeric, -, _, @)")
         return owner_id
 
+    def database_name(self, owner_id: str) -> str:
+        """``{ARCADE_DATABASE}_{owner_id}``, matching Falkor's graph name."""
+        return f"{self.database_prefix}_{self.owner_literal(owner_id)}"
+
+    @contextmanager
+    def owner_scope(self, owner_id: str) -> Iterator[str]:
+        """Create the owner database if needed and point later SQL at it."""
+        name = self.database_name(owner_id)
+        current = _ACTIVE_DB.get()
+        if current == name:
+            yield name
+            return
+        self._create_database(name)
+        token = _ACTIVE_DB.set(name)
+        try:
+            self._ensure_schema(name)
+            yield name
+        finally:
+            _ACTIVE_DB.reset(token)
+
     def connect(self) -> bool:
         try:
-            self.ensure_ready()
-            self.query("SELECT name FROM schema:types LIMIT 1")
+            self.list_database_names()
             return True
         except Exception as exc:  # noqa: BLE001
             logger.error("Failed to connect to ArcadeDB: %s", exc)
@@ -86,7 +108,7 @@ class ArcadeDBClient(ArcadeOps):
 
     def health_check(self) -> Dict[str, Any]:
         try:
-            self.query("SELECT name FROM schema:types LIMIT 1")
+            self.list_database_names()
             return {
                 "status": "healthy",
                 "arcade_connected": True,
@@ -150,55 +172,67 @@ class ArcadeDBClient(ArcadeOps):
             return [[] for _ in texts]
 
     def ensure_ready(self) -> None:
-        if self._schema_ready:
-            return
-        with self._lock:
-            if self._schema_ready:
-                return
-            self.ensure_database()
-            for label in VERTEX_TYPES:
-                self._ensure_vertex_type(label)
-            self._ensure_meta_type()
-            self._load_vector_dims()
-            self._schema_ready = True
+        name = self._require_db()
+        self._ensure_schema(name)
 
-    def ensure_database(self) -> None:
+    def _create_database(self, name: str) -> None:
         try:
-            self._server(f"create database {self.database}")
+            self._server(f"create database {name}")
         except ArcadeDBError as exc:
             if "already exists" not in str(exc).lower():
                 raise
 
     def drop_database(self) -> None:
-        self._schema_ready = False
-        self._vector_dim.clear()
+        """Drop every owner database for this prefix. Used by tests."""
+        prefix = self.database_prefix + "_"
+        for name in self.list_database_names():
+            if not name.startswith(prefix):
+                continue
+            try:
+                self._server(f"drop database {name}")
+            except ArcadeDBError as exc:
+                message = str(exc).lower()
+                if "not found" not in message and "does not exist" not in message:
+                    raise
+        self._ready.clear()
         self._edge_types.clear()
-        try:
-            self._server(f"drop database {self.database}")
-        except ArcadeDBError as exc:
-            if "not found" not in str(exc).lower() and "does not exist" not in str(exc).lower():
-                raise
+        self._vector_dim.clear()
+
+    def list_database_names(self) -> List[str]:
+        body = self._request("GET", "/api/v1/databases")
+        result = body.get("result") if isinstance(body, dict) else None
+        if not isinstance(result, list):
+            return []
+        return [str(name) for name in result]
+
+    def _ensure_schema(self, name: str) -> None:
+        if name in self._ready:
+            return
+        with self._lock:
+            if name in self._ready:
+                return
+            if _ACTIVE_DB.get() != name:
+                raise ArcadeDBError(f"Schema setup left database {name}")
+            for label in VERTEX_TYPES:
+                self._ensure_vertex_type(label)
+            self._ensure_meta_type()
+            self._load_vector_dims()
+            if self._model_dim:
+                for label in VECTOR_TYPES:
+                    if not self._index_exists(label):
+                        self._ensure_one_vector_index(label, self._model_dim)
+            self._ready.add(name)
 
     def _ensure_vertex_type(self, label: str) -> None:
         self.command(f"CREATE VERTEX TYPE {label} IF NOT EXISTS")
         self.command(f"CREATE PROPERTY {label}.owner_id IF NOT EXISTS STRING")
         self.command(f"CREATE PROPERTY {label}.uid IF NOT EXISTS STRING")
+        self.command(f"CREATE INDEX IF NOT EXISTS ON {label} (uid) UNIQUE")
         if label in VECTOR_TYPES:
             self.command(
                 f"CREATE PROPERTY {label}.embedding IF NOT EXISTS ARRAY_OF_FLOATS"
             )
             self.command(f"CREATE PROPERTY {label}.project IF NOT EXISTS STRING")
-        strategy = self._bucket_strategy(label)
-        if strategy != "partitioned":
-            self.command(f"CREATE INDEX IF NOT EXISTS ON {label} (owner_id) UNIQUE")
-            for i in range(BUCKETS):
-                bucket = f"{label.lower()}_p{i:02d}"
-                self.command(f"ALTER TYPE {label} BUCKET +{bucket}")
-            self.command(
-                f"ALTER TYPE {label} BucketSelectionStrategy `partitioned('owner_id')`"
-            )
-            self.command(f"DROP INDEX `{label}[owner_id]`")
-        self.command(f"CREATE INDEX IF NOT EXISTS ON {label} (owner_id, uid) UNIQUE")
 
     def _ensure_meta_type(self) -> None:
         self.command("CREATE VERTEX TYPE GmMeta IF NOT EXISTS")
@@ -206,25 +240,18 @@ class ArcadeDBClient(ArcadeOps):
         self.command("CREATE PROPERTY GmMeta.dimensions IF NOT EXISTS INTEGER")
         self.command("CREATE INDEX IF NOT EXISTS ON GmMeta (label) UNIQUE")
 
-    def _bucket_strategy(self, label: str) -> str:
-        rows = self.command(
-            "var t = database.getSchema().getType('"
-            + label
-            + "'); t == null ? 'missing' : t.getBucketSelectionStrategy().getName()",
-            language="js",
-        )
-        if not rows:
-            return "missing"
-        value = rows[0].get("value") if isinstance(rows[0], dict) else rows[0]
-        return str(value or "missing")
-
     def _load_vector_dims(self) -> None:
+        database = self._require_db()
         rows = self.query("SELECT label, dimensions FROM GmMeta")
         for row in rows:
             label = row.get("label")
             dim = row.get("dimensions")
-            if label and dim:
-                self._vector_dim[str(label)] = int(dim)
+            if not label or not dim:
+                continue
+            dim = int(dim)
+            self._vector_dim[f"{database}:{label}"] = dim
+            if self._model_dim is None:
+                self._model_dim = dim
 
     def _index_exists(self, label: str) -> bool:
         rows = self.query(
@@ -234,29 +261,38 @@ class ArcadeDBClient(ArcadeOps):
         return any(str(row.get("indexType") or "") == "LSM_VECTOR" for row in rows)
 
     def ensure_vector_index(self, label: str, dimension: int) -> None:
-        """Create the cosine HNSW index, or reject a different dimension."""
+        """Create this database's cosine HNSW indexes, or reject another dimension."""
         if label not in VECTOR_TYPES:
             raise ValueError(f"Vector search is not indexed for {label}")
         dim = int(dimension)
         if dim <= 0:
             raise ValueError("Embedding dimension must be positive")
         self.ensure_ready()
-        known = self._vector_dim.get(label)
-        if known is not None and known != dim:
+        if self._model_dim is not None and self._model_dim != dim:
             raise ValueError(
-                f"Embedding dimension {dim} does not match index dimension {known} for {label}"
+                f"Embedding dimension {dim} does not match index dimension {self._model_dim}"
+            )
+        for vector_label in VECTOR_TYPES:
+            self._ensure_one_vector_index(vector_label, dim)
+        self._model_dim = dim
+
+    def _ensure_one_vector_index(self, label: str, dimension: int) -> None:
+        key = f"{self._require_db()}:{label}"
+        known = self._vector_dim.get(key)
+        if known is not None and known != dimension:
+            raise ValueError(
+                f"Embedding dimension {dimension} does not match index dimension {known} for {label}"
             )
         if self._index_exists(label):
-            if known is None:
-                self._vector_dim[label] = dim
-                self._store_vector_dim(label, dim)
+            self._vector_dim[key] = dimension
+            self._store_vector_dim(label, dimension)
             return
-        metadata = json.dumps({"dimensions": dim, "similarity": "COSINE"})
+        metadata = json.dumps({"dimensions": dimension, "similarity": "COSINE"})
         self.command(
             f"CREATE INDEX IF NOT EXISTS ON {label} (embedding) LSM_VECTOR METADATA {metadata}"
         )
-        self._vector_dim[label] = dim
-        self._store_vector_dim(label, dim)
+        self._vector_dim[key] = dimension
+        self._store_vector_dim(label, dimension)
 
     def _store_vector_dim(self, label: str, dimension: int) -> None:
         existing = self.query(
@@ -281,14 +317,16 @@ class ArcadeDBClient(ArcadeOps):
         dimension: int | None = None,
         similarity_function: str = "cosine",
     ) -> Dict[str, bool]:
-        del owner_id, similarity_function
-        dim = int(dimension or getattr(self._embedding_service, "dimension", 0) or 0)
-        if dim <= 0:
-            return self.get_vector_index_status()
-        for label in VECTOR_TYPES:
-            if not self.get_vector_index_status().get(label):
-                self.ensure_vector_index(label, dim)
-        return self.get_vector_index_status()
+        del similarity_function
+        with self.owner_scope(owner_id):
+            dim = int(dimension or getattr(self._embedding_service, "dimension", 0) or 0)
+            if dim <= 0:
+                return self._vector_status_here()
+            status = self._vector_status_here()
+            for label in VECTOR_TYPES:
+                if not status.get(label):
+                    self.ensure_vector_index(label, dim)
+            return self._vector_status_here()
 
     def ensure_search_indexes_if_missing(
         self,
@@ -297,20 +335,26 @@ class ArcadeDBClient(ArcadeOps):
         dimension: int | None = None,
         similarity_function: str = "cosine",
     ) -> Dict[str, Any]:
-        vector_status = self.ensure_vector_indexes_if_missing(
-            owner_id=owner_id,
-            dimension=dimension,
-            similarity_function=similarity_function,
-        )
-        for label in VECTOR_TYPES:
-            self.command(f"CREATE INDEX IF NOT EXISTS ON {label} (project) NOTUNIQUE")
-        return {"vector": vector_status}
+        with self.owner_scope(owner_id):
+            vector_status = self.ensure_vector_indexes_if_missing(
+                owner_id=owner_id,
+                dimension=dimension,
+                similarity_function=similarity_function,
+            )
+            for label in VECTOR_TYPES:
+                self.command(f"CREATE INDEX IF NOT EXISTS ON {label} (project) NOTUNIQUE")
+            return {"vector": vector_status}
 
     def get_vector_index_status(self, owner_id: str = "default") -> Dict[str, Any]:
-        del owner_id
+        name = self.database_name(owner_id)
+        if name not in set(self.list_database_names()):
+            return {"Fact": False, "Entity": False}
+        with self.owner_scope(owner_id):
+            return self._vector_status_here()
+
+    def _vector_status_here(self) -> Dict[str, bool]:
         status = {"Fact": False, "Entity": False}
         try:
-            self.ensure_database()
             rows = self.query("SELECT name, indexType, typeName FROM schema:indexes")
             for row in rows:
                 if str(row.get("indexType") or "") != "LSM_VECTOR":
@@ -328,8 +372,9 @@ class ArcadeDBClient(ArcadeOps):
         similarity_function: str = "cosine",
         owner_id: str = "default",
     ) -> bool:
-        del similarity_function, owner_id
-        self.ensure_vector_index("Fact", dimension)
+        del similarity_function
+        with self.owner_scope(owner_id):
+            self.ensure_vector_index("Fact", dimension)
         return True
 
     def create_entity_vector_index(
@@ -338,15 +383,17 @@ class ArcadeDBClient(ArcadeOps):
         similarity_function: str = "cosine",
         owner_id: str = "default",
     ) -> bool:
-        del similarity_function, owner_id
-        self.ensure_vector_index("Entity", dimension)
+        del similarity_function
+        with self.owner_scope(owner_id):
+            self.ensure_vector_index("Entity", dimension)
         return True
 
     def count_labeled(self, node_type: str, owner_id: str) -> int:
         owner = self.owner_literal(owner_id)
-        rows = self.query(
-            f"SELECT count(*) AS c FROM {node_type} WHERE owner_id = '{owner}'"
-        )
+        with self.owner_scope(owner_id):
+            rows = self.query(
+                f"SELECT count(*) AS c FROM {node_type} WHERE owner_id = '{owner}'"
+            )
         if not rows:
             return 0
         return int(rows[0].get("c") or 0)
@@ -354,26 +401,38 @@ class ArcadeDBClient(ArcadeOps):
     def ensure_edge_type(self, rel_type: str) -> None:
         if not re.fullmatch(r"[A-Z][A-Z0-9_]*", rel_type):
             raise ValueError(f"Invalid relation type: {rel_type!r}")
-        if rel_type in self._edge_types:
+        database = self._require_db()
+        known = self._edge_types.setdefault(database, set())
+        if rel_type in known:
             return
         self.command(f"CREATE EDGE TYPE {rel_type} IF NOT EXISTS")
-        self._edge_types.add(rel_type)
+        known.add(rel_type)
 
     @contextmanager
     def transaction(self) -> Iterator[str]:
         """One HTTP session. Commit writes the vertex, its vector, and edges together."""
-        self.ensure_database()
-        session = self._begin()
+        database = self._require_db()
+        session = self._begin(database)
         try:
             yield session
         except Exception:
             try:
-                self._rollback(session)
+                self._rollback(database, session)
             except Exception:  # noqa: BLE001
                 logger.exception("ArcadeDB rollback failed")
             raise
         else:
-            self._commit(session)
+            self._commit(database, session)
+
+    def _require_db(self) -> str:
+        name = _ACTIVE_DB.get()
+        if not name:
+            raise ArcadeDBError("No owner database selected")
+        return name
+
+    def _db_path(self, database: str | None = None) -> str:
+        name = database or self._require_db()
+        return urllib.parse.quote(name, safe="")
 
     def query(
         self,
@@ -409,7 +468,7 @@ class ArcadeDBClient(ArcadeOps):
             payload["params"] = params
         body = self._request(
             "POST",
-            f"/api/v1/{kind}/{self.database}",
+            f"/api/v1/{kind}/{self._db_path()}",
             payload,
             session=session,
         )
@@ -422,18 +481,20 @@ class ArcadeDBClient(ArcadeOps):
             return [result]
         return [{"value": result}]
 
-    def _begin(self) -> str:
-        status, headers, _raw = self._raw("POST", f"/api/v1/begin/{self.database}")
+    def _begin(self, database: str) -> str:
+        status, headers, _raw = self._raw(
+            "POST", f"/api/v1/begin/{self._db_path(database)}"
+        )
         session = headers.get("arcadedb-session-id")
         if status not in (200, 204) or not session:
             raise ArcadeDBError("ArcadeDB did not start a transaction")
         return session
 
-    def _commit(self, session: str) -> None:
-        self._raw("POST", f"/api/v1/commit/{self.database}", session=session)
+    def _commit(self, database: str, session: str) -> None:
+        self._raw("POST", f"/api/v1/commit/{self._db_path(database)}", session=session)
 
-    def _rollback(self, session: str) -> None:
-        self._raw("POST", f"/api/v1/rollback/{self.database}", session=session)
+    def _rollback(self, database: str, session: str) -> None:
+        self._raw("POST", f"/api/v1/rollback/{self._db_path(database)}", session=session)
 
     def _server(self, command: str) -> None:
         self._request("POST", "/api/v1/server", {"command": command})

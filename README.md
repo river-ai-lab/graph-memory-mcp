@@ -249,7 +249,7 @@ See [`docs/memory_policies_for_LLM.md`](docs/memory_policies_for_LLM.md) and [`d
 
 ## ArcadeDB
 
-Optional second graph backend. Leave `GRAPH_BACKEND` unset (or `falkordb`) to keep FalkorDB. Set `GRAPH_BACKEND=arcadedb` and the `ARCADE_*` variables in `.env` to use a shared ArcadeDB server. Owners share that database; each vertex type is `partitioned(owner_id)`, and the embedding is a property on the vertex. Search uses that owner's HNSW (`vector.neighbors`), with status, expiry, and metadata passed as a RID filter.
+Optional second graph backend. Leave `GRAPH_BACKEND` unset (or `falkordb`) to keep FalkorDB. Set `GRAPH_BACKEND=arcadedb` and the `ARCADE_*` variables in `.env` to use an ArcadeDB server. Each `owner_id` gets its own database, `{ARCADE_DATABASE}_{owner_id}`, with its own vertices, edges, and HNSW indexes. The embedding is a property on the vertex. Search inside that database uses `vector.neighbors`, with status, expiry, and metadata passed as a RID filter.
 
 ## Development
 

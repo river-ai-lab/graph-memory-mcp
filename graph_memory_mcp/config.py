@@ -51,7 +51,7 @@ class MCPServerConfig(BaseSettings):
     falkordb_graph: str = "memory"
     falkordb_password: str = ""
 
-    # ArcadeDB (shared server, partitioned owner buckets). Used when GRAPH_BACKEND=arcadedb.
+    # ArcadeDB server. Each owner is a database named {ARCADE_DATABASE}_{owner_id}.
     arcade_host: str = Field(default="localhost", validation_alias="ARCADE_HOST")
     arcade_port: int = Field(default=2480, validation_alias="ARCADE_PORT")
     arcade_user: str = Field(default="root", validation_alias="ARCADE_USER")

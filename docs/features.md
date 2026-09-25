@@ -2,7 +2,7 @@
 
 Normative tool signatures. Jobs: [background_jobs.md](./background_jobs.md). Agents: [memory_policies_for_LLM.md](./memory_policies_for_LLM.md). Admin: [admin.md](./admin.md).
 
-**Storage:** FalkorDB by default, one graph per `owner_id` (`{FALKORDB_GRAPH}_{owner_id}`). `GRAPH_BACKEND=arcadedb` uses one ArcadeDB database and a `partitioned(owner_id)` bucket per vertex type. **IDs:** tools use stable `node_id` (= `uid`, UUID hex); legacy nodes backfilled at startup.
+**Storage:** FalkorDB by default, one graph per `owner_id` (`{FALKORDB_GRAPH}_{owner_id}`). `GRAPH_BACKEND=arcadedb` uses one ArcadeDB database per owner (`{ARCADE_DATABASE}_{owner_id}`), with that owner's own HNSW indexes. **IDs:** tools use stable `node_id` (= `uid`, UUID hex); legacy nodes backfilled at startup.
 
 ## Data model
 

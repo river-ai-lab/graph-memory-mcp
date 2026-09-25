@@ -1,8 +1,7 @@
 """ArcadeDB vector search.
 
-Owner isolation is the partitioned bucket on ``owner_id``: ``vector.neighbors``
-is issued ``FROM <type> WHERE owner_id = '<literal>'`` so the planner walks
-that owner's HNSW only.
+Each owner has a separate database, so the HNSW index in that database is
+only that owner's. ``vector.neighbors`` runs inside it.
 
 Status, expiry, and metadata are not a post-filter. Those predicates become a
 RID list passed as ``vector.neighbors`` ``filter``, so the HNSW walk only
@@ -141,9 +140,39 @@ def neighbor_rows(
     exclude_node_id: Optional[str] = None,
     ann_k: int | None = None,
 ) -> List[List[Any]]:
-    """Top-k cosine neighbors from the owner's HNSW index."""
+    """Top-k cosine neighbors from this owner's own HNSW index."""
     if node_type not in ("Fact", "Entity"):
         raise ValueError(f"Vector search is not indexed for {node_type}")
+    with store.owner_scope(owner_id):
+        return _neighbor_rows(
+            store,
+            node_type=node_type,
+            embedding=embedding,
+            owner_id=owner_id,
+            limit=limit,
+            max_distance=max_distance,
+            include_outdated=include_outdated,
+            status=status,
+            metadata_filter=metadata_filter,
+            exclude_node_id=exclude_node_id,
+            ann_k=ann_k,
+        )
+
+
+def _neighbor_rows(
+    store: Any,
+    *,
+    node_type: str,
+    embedding: List[float],
+    owner_id: str,
+    limit: int,
+    max_distance: float,
+    include_outdated: bool,
+    status: Optional[str],
+    metadata_filter: Optional[Dict[str, Any]],
+    exclude_node_id: Optional[str],
+    ann_k: int | None,
+) -> List[List[Any]]:
     owner = store.owner_literal(owner_id)
     k = max(int(limit), 1)
     dim = len(embedding)

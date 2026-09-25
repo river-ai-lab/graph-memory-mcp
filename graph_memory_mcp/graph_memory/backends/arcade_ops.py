@@ -3,10 +3,14 @@
 Cypher fragments that handlers build for Falkor (SET clauses, edge property
 assignments, relation patterns, page clauses) are interpreted here. They are
 not sent to ArcadeDB as Cypher.
+
+Each public method that carries an owner runs inside that owner's database.
 """
 
 from __future__ import annotations
 
+import functools
+import inspect
 import logging
 import re
 import time
@@ -73,6 +77,57 @@ def _page_sql(page_clause: str) -> str:
     return f" SKIP {int(match.group(1))} LIMIT {int(match.group(2))}"
 
 
+_NO_OWNER_SCOPE = frozenset(
+    {
+        "embedding_literal",
+        "updated_at_assignment",
+        "similarity_rows",
+        "ann_rows",
+        "list_owners",
+        "delete_owner_graph",
+        "prune_empty_owner_graphs",
+        "fact_neighbor_rows",
+    }
+)
+
+
+def _scoped_kw(fn):
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        bound = inspect.signature(fn).bind(self, *args, **kwargs)
+        bound.apply_defaults()
+        with self.owner_scope(str(bound.arguments["owner_id"])):
+            return fn(self, *args, **kwargs)
+
+    return wrapper
+
+
+def _scoped_params(fn):
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        bound = inspect.signature(fn).bind(self, *args, **kwargs)
+        bound.apply_defaults()
+        owner_id = bound.arguments["params"]["owner_id"]
+        with self.owner_scope(str(owner_id)):
+            return fn(self, *args, **kwargs)
+
+    return wrapper
+
+
+def _route_owners(cls):
+    """Send each owner-scoped method to that owner's database."""
+    for name, fn in list(vars(cls).items()):
+        if name.startswith("_") or name in _NO_OWNER_SCOPE or not callable(fn):
+            continue
+        params = inspect.signature(fn).parameters
+        if "owner_id" in params:
+            setattr(cls, name, _scoped_kw(fn))
+        elif "params" in params:
+            setattr(cls, name, _scoped_params(fn))
+    return cls
+
+
+@_route_owners
 class ArcadeOps:
     """Methods mixed into the ArcadeDB client."""
 
@@ -99,32 +154,42 @@ class ArcadeOps:
         return True, record.get("embedding")
 
     def list_owners(self) -> list[str]:
-        self.ensure_ready()
-        owners: set[str] = set()
-        for label in _VERTEX_TYPES:
-            rows = self.query(
-                f"SELECT DISTINCT owner_id AS owner_id FROM {label} "
-                "WHERE owner_id IS NOT NULL"
-            )
-            for row in rows:
-                owner = row.get("owner_id")
-                if owner:
-                    owners.add(str(owner))
-        return sorted(owners)
+        prefix = self.database_prefix + "_"
+        owners = []
+        for name in self.list_database_names():
+            if name.startswith(prefix):
+                owners.append(name[len(prefix) :])
+        return sorted(set(owners))
 
     def delete_owner_graph(self, owner_id: str) -> bool:
-        owner = self.owner_literal(owner_id)
-        self.ensure_ready()
+        """Drop the owner's database, including its vertices and HNSW indexes."""
+        name = self.database_name(owner_id)
+        self._ready.discard(name)
+        self._edge_types.pop(name, None)
         try:
-            for label in _VERTEX_TYPES:
-                self.command(f"DELETE FROM {label} WHERE owner_id = '{owner}'")
+            self._server(f"drop database {name}")
         except Exception as exc:  # noqa: BLE001
-            logger.error("Failed to delete owner %s: %s", owner_id, exc)
+            message = str(exc).lower()
+            if "not found" in message or "does not exist" in message or "not available" in message:
+                return True
+            logger.error("Failed to delete owner database %s: %s", name, exc)
             return False
+        logger.info("Deleted owner database %s", name)
         return True
 
     def prune_empty_owner_graphs(self) -> list[str]:
-        return []
+        pruned: list[str] = []
+        for owner_id in self.list_owners():
+            with self.owner_scope(owner_id):
+                empty = True
+                for label in _VERTEX_TYPES:
+                    rows = self.query(f"SELECT count(*) AS c FROM {label}")
+                    if rows and int(rows[0].get("c") or 0) > 0:
+                        empty = False
+                        break
+            if empty and self.delete_owner_graph(owner_id):
+                pruned.append(owner_id)
+        return pruned
 
     def backfill_all_owners(self) -> None:
         for owner_id in self.list_owners():
@@ -1117,16 +1182,23 @@ class ArcadeOps:
         return [[row[0]] for row in rows]
 
     def fact_neighbor_rows(self, fact_id: str) -> list:
-        rows = self.query(
-            "SELECT @rid AS rid FROM Fact WHERE uid = :uid LIMIT 1",
-            {"uid": fact_id},
-        )
-        if not rows:
-            return []
-        neighbors = self.query(
-            f"SELECT expand(both()) FROM Fact WHERE @rid = {_rid(rows[0].get('rid'))}"
-        )
-        return [[record.get("@type"), record.get("status")] for record in neighbors]
+        """Find the fact in whichever owner database holds that uid."""
+        for owner_id in self.list_owners():
+            with self.owner_scope(owner_id):
+                rows = self.query(
+                    "SELECT @rid AS rid FROM Fact WHERE uid = :uid LIMIT 1",
+                    {"uid": fact_id},
+                )
+                if not rows:
+                    continue
+                neighbors = self.query(
+                    "SELECT expand(both()) FROM Fact WHERE @rid = "
+                    f"{_rid(rows[0].get('rid'))}"
+                )
+                return [
+                    [record.get("@type"), record.get("status")] for record in neighbors
+                ]
+        return []
 
     def _merge_entity(
         self,
@@ -1235,11 +1307,6 @@ class ArcadeOps:
     ) -> Any:
         if not fields:
             return None
-        # ArcadeDB refuses to modify an LSM_VECTOR property on a partitioned
-        # type. Rewrite the vertex (and its edges) in one transaction instead.
-        if "embedding" in fields:
-            self._rewrite_vertex(label, uid, owner_id, fields, session=session)
-            return None
         owner = self.owner_literal(owner_id)
         columns, params = _bind_fields(fields)
         params["uid"] = uid
@@ -1248,64 +1315,6 @@ class ArcadeOps:
             params,
             session=session,
         )
-
-    def _rewrite_vertex(
-        self,
-        label: str,
-        uid: str,
-        owner_id: str,
-        fields: dict,
-        *,
-        session: str | None,
-    ) -> None:
-        """Replace a vertex so a new embedding is indexed with the same uid."""
-
-        def _run(active: str) -> None:
-            owner = self.owner_literal(owner_id)
-            rows = self.query(
-                f"SELECT FROM {label} WHERE uid = :uid AND owner_id = '{owner}' LIMIT 1",
-                {"uid": uid},
-                session=active,
-            )
-            if not rows:
-                return
-            record = rows[0]
-            rid = _rid(record.get("@rid"))
-            incident: list[tuple[str, str, str, dict]] = []
-            for direction, expander, other_key in (
-                ("out", "outE()", "@in"),
-                ("in", "inE()", "@out"),
-            ):
-                for edge in self.query(
-                    f"SELECT expand({expander}) FROM {label} WHERE @rid = {rid}",
-                    session=active,
-                ):
-                    edge_type = str(edge.get("@type") or "")
-                    other = str(edge.get(other_key) or "")
-                    if not re.fullmatch(r"[A-Z][A-Z0-9_]*", edge_type) or not _RID.match(other):
-                        continue
-                    incident.append((direction, edge_type, other, _plain(edge)))
-            merged = _plain(record)
-            merged.update(fields)
-            merged["uid"] = uid
-            merged["owner_id"] = owner
-            self.command(
-                f"DELETE FROM {label} WHERE @rid = {rid}",
-                session=active,
-            )
-            created = self._insert(label, merged, session=active)
-            new_rid = _rid(created.get("@rid"))
-            for direction, edge_type, other, props in incident:
-                if direction == "out":
-                    self._insert_edge(edge_type, new_rid, other, props, session=active)
-                else:
-                    self._insert_edge(edge_type, other, new_rid, props, session=active)
-
-        if session is not None:
-            _run(session)
-            return
-        with self.transaction() as active:
-            _run(active)
 
     def _insert_edge(
         self,
