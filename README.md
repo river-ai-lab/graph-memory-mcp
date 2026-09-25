@@ -247,9 +247,13 @@ All MCP tools support `owner_id` (default from `DEFAULT_OWNER_ID`, usually `"def
 
 See [`docs/memory_policies_for_LLM.md`](docs/memory_policies_for_LLM.md) and [`docs/memory_faq.md`](docs/memory_faq.md) for operational guidance.
 
+## ArcadeDB
+
+Optional second graph backend. Leave `GRAPH_BACKEND` unset (or `falkordb`) to keep FalkorDB. Set `GRAPH_BACKEND=arcadedb` and the `ARCADE_*` variables in `.env` to use a shared ArcadeDB server. Owners share that database; each vertex type is `partitioned(owner_id)`, and the embedding is a property on the vertex. Search uses that owner's HNSW (`vector.neighbors`), with status, expiry, and metadata passed as a RID filter.
+
 ## Development
 
-Tests require FalkorDB (see [Running FalkorDB](#running-falkordb)):
+The default test run requires FalkorDB (see [Running FalkorDB](#running-falkordb)). ArcadeDB tests are marked `arcade` and need a server on `ARCADE_PORT` (default 2480):
 
 ```bash
 ./scripts/test.sh

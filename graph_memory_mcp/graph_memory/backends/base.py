@@ -8,8 +8,8 @@ from typing import Any, Protocol
 class GraphStore(Protocol):
     """Operations the MCP handlers and jobs need from a graph backend.
 
-    Falkor implements these today. A later backend (Vela) implements the same
-    methods and owns its own query text.
+    FalkorDB implements these today. ArcadeDB implements the same methods and
+    owns its own SQL.
     """
 
     config: Any

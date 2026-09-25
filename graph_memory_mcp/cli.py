@@ -12,7 +12,7 @@ def main() -> None:
     parser.add_argument(
         "--backend",
         default=None,
-        help="Graph backend. Supported: falkordb (default). Overrides GRAPH_BACKEND.",
+        help="Graph backend. Supported: falkordb (default), arcadedb. Overrides GRAPH_BACKEND.",
     )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
