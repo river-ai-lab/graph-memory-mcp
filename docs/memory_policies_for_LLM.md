@@ -9,6 +9,18 @@ You have access to **Graph Memory MCP** — a long-term knowledge base shared ac
 3. **Never store**: chat logs, scratchpad reasoning, secrets/PII, transient execution state, low-confidence guesses (unless labeled in metadata).
 4. **Update protocol**: substantive change → `mark_outdated(fact_id, reason)` + `create_node(new text)`. Typos/metadata → `update_node`.
 5. **Heed `possible_duplicates`** in write responses: duplicate → link or update instead; conflict → add `CONTRADICTS` or `mark_outdated` the stale fact.
+6. **GROW after meaningful work** — before the final reply: Ground → Record → Orient (if recurring) → Write. Do not defer to “end of session”.
+
+## After meaningful work (GROW)
+
+Before the final user reply — not at “end of session” — run this binary checklist:
+
+1. **Ground** — name one durable change (decision, root cause, architecture). If none → stop; do not write.
+2. **Record** — `search` first → `create_node`, or `mark_outdated` + `create_node` if a prior fact is wrong.
+3. **Orient** — only if the work can recur: `tags=["pattern"]` and/or a relation; skip otherwise.
+4. **Write** — set `metadata.project` and `metadata.created_by` on writes.
+
+Do not invent noise to satisfy the checklist.
 
 ## Scoping (operator sets these constants in your rules — apply, never invent)
 
@@ -25,11 +37,11 @@ You have access to **Graph Memory MCP** — a long-term knowledge base shared ac
 | Situation | Call |
 |-----------|------|
 | Session start | `get_brief(owner_id)` — top facts, contradictions, stale facts, stats |
-| "What do we know about X?" | `search(query="X")` → `get_context(node_id=<best hit>)` for neighbors |
+| "What do we know about X?" | `search(query="X", compact=true)` → follow `suggested_next` (usually `get_context` on best hits) |
 | Relation between two known IDs | `get_trace(from_id, to_id)` — directed; retry `directed=false` if empty |
-| Quick one-call recall | `recall_context(query, depth=1)` — search + expansion; shortcut, not the primary API |
+| Quick one-call recall | `recall_context(query, depth=1, compact=true)` — search + expansion; shortcut, not the primary API |
 
-`search` / `get_context` / `recall_context`: active-only by default (`include_outdated=true` for outdated/expired/archived neighbors too); `similarity_threshold` and `limit` tune noise; omit `search_type` (server default).
+`search` / `get_context` / `recall_context`: active-only by default (`include_outdated=true` for outdated/expired/archived neighbors too); `similarity_threshold` and `limit` tune noise; omit `search_type` (server default). Prefer `compact=true` on `search` / `recall_context` when exploring — responses include `snippet`s under a token budget plus `suggested_next` / `do_not`. If `budget.truncated`, follow `suggested_next` (expand 1–3 ids); do not broaden the same query. Returned text/snippets count as already read.
 
 ## Write: situation → tool
 

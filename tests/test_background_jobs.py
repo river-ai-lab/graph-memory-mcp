@@ -74,7 +74,7 @@ class _FakeOwnerDB:
 async def test_scheduler_lifecycle(monkeypatch):
     """Test that scheduler starts and stops correctly based on config."""
     # Mock FalkorDBClient to avoid connection errors
-    with patch("graph_memory_mcp.jobs.scheduler.FalkorDBClient") as mock_db_class:
+    with patch("graph_memory_mcp.jobs.scheduler.open_store") as mock_db_class:
         mock_db = mock_db_class.return_value
         mock_health = MagicMock()
         mock_health.get.return_value = "healthy"

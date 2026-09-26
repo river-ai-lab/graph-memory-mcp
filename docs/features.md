@@ -2,7 +2,7 @@
 
 Normative tool signatures. Jobs: [background_jobs.md](./background_jobs.md). Agents: [memory_policies_for_LLM.md](./memory_policies_for_LLM.md). Admin: [admin.md](./admin.md).
 
-**Storage:** one FalkorDB graph per `owner_id` (`{FALKORDB_GRAPH}_{owner_id}`). **IDs:** tools use stable `node_id` (= `uid`, UUID hex); legacy nodes backfilled at startup.
+**Storage:** FalkorDB by default, one graph per `owner_id` (`{FALKORDB_GRAPH}_{owner_id}`). `GRAPH_BACKEND=arcadedb` uses one ArcadeDB database per owner (`{ARCADE_DATABASE}_{owner_id}`), with that owner's own HNSW indexes. **IDs:** tools use stable `node_id` (= `uid`, UUID hex); legacy nodes backfilled at startup.
 
 ## Data model
 
@@ -63,10 +63,10 @@ Defaults: `owner_id` from `DEFAULT_OWNER_ID` (env, default `"default"`). Pass `o
 
 **`get_node`** — `node_id`; opt `as_of` (unix ms, needs versioning snapshots).
 **`get_node_change_history`** — `node_id`.
-**`search`** — `query`; opt `limit` (cap `MAX_SEARCH_LIMIT`), `node_types`, `status`, `similarity_threshold`, `include_outdated`, `search_type` (`pre_filter`|`post_filter`), `metadata_filter` (`project`/`created_by`/`type`/`tags`/`confidence_min`). Bumps access counters.
+**`search`** — `query`; opt `limit` (cap `MAX_SEARCH_LIMIT`), `node_types`, `status`, `similarity_threshold`, `include_outdated`, `search_type` (`pre_filter`|`post_filter`), `metadata_filter` (`project`/`created_by`/`type`/`tags`/`confidence_min`), `compact` (snippets + token budget). Always returns `suggested_next`, `do_not`, `budget`. Bumps access counters.
 **`find_similar`** — `fact_id`.
 **`get_context`** — `node_id`; opt `depth`, `max_nodes`, `offset`, `include_outdated` (default false — skip outdated/expired neighbors). Iterative BFS when `offset=0`.
-**`recall_context`** — shortcut search+expand (small graphs). Opt `depth`, `limit`, `max_nodes`, `include_outdated`, `include_paths`, `metadata_filter`, time-aware ranking weights.
+**`recall_context`** — shortcut search+expand (small graphs). Opt `depth`, `limit`, `max_nodes`, `include_outdated`, `include_paths`, `metadata_filter`, `compact`, time-aware ranking weights. Always returns `suggested_next` / `do_not` / `budget`.
 **`get_trace`** — `from_id`, `to_id`; opt `max_depth`, `directed` (default true).
 **`get_brief`** — warm-up: top facts, `CONTRADICTS`, stale facts, stats.
 **`get_stats`** / **`health_check`** — Fact/Entity counts; component flags + `healthy`.

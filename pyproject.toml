@@ -47,6 +47,7 @@ asyncio_mode = "auto"
 
 markers = [
   "integration: requires running FalkorDB (docker compose up -d)",
+  "arcade: requires a running ArcadeDB server",
 ]
 
 [tool.basedpyright]

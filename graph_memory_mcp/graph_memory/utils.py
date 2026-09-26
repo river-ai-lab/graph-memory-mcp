@@ -269,21 +269,5 @@ def execute_query(db: Any, query: str, params: Optional[Dict] = None) -> Any:
 
 
 def touch_nodes(db: Any, node_ids: List[str], owner_id: str) -> None:
-    """Record recall usage: bump access_count / last_accessed_at (best-effort)."""
-    if not node_ids:
-        return
-    try:
-        db.query(
-            """
-            MATCH (n)
-            WHERE n.uid IN $node_ids AND n.owner_id = $owner_id
-            SET n.access_count = coalesce(n.access_count, 0) + 1,
-                n.last_accessed_at = timestamp()
-            """,
-            params={
-                "node_ids": [str(node_id) for node_id in node_ids],
-                "owner_id": owner_id,
-            },
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("touch_nodes failed: %s", exc)
+    """Record recall usage. The backend must implement ``touch_nodes``."""
+    db.touch_nodes(node_ids, owner_id)

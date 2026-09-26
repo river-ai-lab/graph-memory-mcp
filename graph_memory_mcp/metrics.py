@@ -90,12 +90,7 @@ def _refresh_graph_size_gauges(db: Any) -> None:
     OWNER_GRAPHS.set(len(owners))
     totals: dict[str, int] = {}
     for owner_id in owners:
-        result = db.query(
-            "MATCH (n) WHERE n:Fact OR n:Entity "
-            "RETURN labels(n)[0] as label, count(n)",
-            owner_id=owner_id,
-        )
-        for row in getattr(result, "result_set", None) or []:
+        for row in db.graph_size_rows(owner_id):
             totals[str(row[0])] = totals.get(str(row[0]), 0) + int(row[1])
     for label, count in totals.items():
         GRAPH_NODES.labels(label=label).set(count)
