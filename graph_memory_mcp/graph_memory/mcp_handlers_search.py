@@ -1,6 +1,7 @@
 """Search handlers for MCP Graph Memory."""
 
 import logging
+import time
 from typing import Dict, List, Optional
 
 from graph_memory_mcp.config import MCPServerConfig
@@ -12,6 +13,7 @@ from graph_memory_mcp.graph_memory.owner_scoped_search import (
     build_metadata_filter_clauses,
     normalize_search_type,
 )
+from graph_memory_mcp.graph_memory.search_rank import rerank_results
 from graph_memory_mcp.graph_memory.utils import (
     ensure_text,
     error_response,
@@ -93,6 +95,7 @@ def _search_nodes_post_filter(
     include_outdated: bool = False,
     status: Optional[str] = None,
     metadata_filter: Optional[Dict] = None,
+    include_ttl: bool = False,
 ) -> List[Dict]:
     """post_filter: global ANN (queryNodes), then owner/status filters."""
     ann_k = _vector_ann_k(limit, _count_labeled_nodes(db, node_type, owner_id), config)
@@ -107,6 +110,7 @@ def _search_nodes_post_filter(
             include_outdated=include_outdated,
             status=status,
             metadata_filter=metadata_filter,
+            include_ttl=include_ttl,
         )
     )
 
@@ -121,6 +125,7 @@ def _search_nodes_pre_filter(
     include_outdated: bool = False,
     status: Optional[str] = None,
     metadata_filter: Optional[Dict] = None,
+    include_ttl: bool = False,
 ) -> List[Dict]:
     """pre_filter: owner/status filters first, then exact cosine distance."""
     return _rows_to_search_results(
@@ -133,8 +138,28 @@ def _search_nodes_pre_filter(
             include_outdated=include_outdated,
             status=status,
             metadata_filter=metadata_filter,
+            include_ttl=include_ttl,
         )
     )
+
+
+def _contradiction_pairs(
+    db: FalkorDBClient, owner_id: str, results: List[Dict]
+) -> List[Dict]:
+    """Pairs in `results` that already have a CONTRADICTS edge."""
+    ids = [str(item["node_id"]) for item in results if item.get("node_id")]
+    if len(ids) < 2:
+        return []
+    pairs = []
+    for row in db.contradicts_among(owner_id, ids):
+        pairs.append(
+            {
+                "from_id": str(row[0]),
+                "to_id": str(row[1]),
+                "relation_type": "CONTRADICTS",
+            }
+        )
+    return pairs
 
 
 def _search_nodes_by_type(
@@ -150,6 +175,7 @@ def _search_nodes_by_type(
     include_outdated: bool = False,
     status: Optional[str] = None,
     metadata_filter: Optional[Dict] = None,
+    include_ttl: bool = False,
 ) -> List[Dict]:
     if search_type == "pre_filter":
         return _search_nodes_pre_filter(
@@ -162,6 +188,7 @@ def _search_nodes_by_type(
             include_outdated,
             status,
             metadata_filter,
+            include_ttl,
         )
     return _search_nodes_post_filter(
         db,
@@ -174,6 +201,7 @@ def _search_nodes_by_type(
         include_outdated,
         status,
         metadata_filter,
+        include_ttl,
     )
 
 
@@ -192,6 +220,7 @@ def search(
     search_type: Optional[str] = None,
     metadata_filter: Optional[Dict] = None,
     compact: bool = False,
+    include_ttl: bool = False,
 ) -> Dict:
     """Search for nodes by semantic similarity."""
     owner_id = normalize_owner_id(owner_id)
@@ -214,6 +243,7 @@ def search(
         include_outdated=include_outdated,
         search_type=resolved_search_type,
         metadata_filter=metadata_filter,
+        include_ttl=include_ttl,
     )
 
     def _decorate(payload: Dict) -> Dict:
@@ -252,9 +282,12 @@ def search(
 
     embedding = db.get_embedding(query, kind="query")
     if not embedding:
-        return _decorate(success_response(results=[], facts=[], entities=[]))
+        return _decorate(
+            success_response(results=[], facts=[], entities=[], contradiction_pairs=[])
+        )
 
     max_distance = 1.0 - similarity_threshold
+    candidate_limit = min(config.max_search_limit, max(limit * 5, limit))
     results: List[Dict] = []
 
     for node_type in node_types:
@@ -263,23 +296,36 @@ def search(
             config,
             node_type,
             embedding,
-            limit,
+            candidate_limit,
             max_distance,
             owner_id,
             search_type=resolved_search_type,
             include_outdated=include_outdated,
             status=status,
             metadata_filter=metadata_filter,
+            include_ttl=include_ttl,
         )
         results.extend(type_results)
 
-    results.sort(key=lambda x: x.get("similarity", 0), reverse=True)
-    results = results[:limit]
+    results = rerank_results(
+        results,
+        query=query,
+        now_ms=int(time.time() * 1000),
+        lexical_weight=config.search_lexical_weight,
+        recency_weight=config.search_recency_weight,
+        half_life_days=config.search_recency_half_life_days,
+    )[:limit]
 
     facts = [n for n in results if n.get("node_type") == "Fact"]
     entities = [n for n in results if n.get("node_type") == "Entity"]
+    contradiction_pairs = _contradiction_pairs(db, owner_id, results)
 
-    final_response = success_response(results=results, facts=facts, entities=entities)
+    final_response = success_response(
+        results=results,
+        facts=facts,
+        entities=entities,
+        contradiction_pairs=contradiction_pairs,
+    )
 
     db.cache.set_search(cache_key, final_response)
     touch_nodes(db, [r["node_id"] for r in results], owner_id)

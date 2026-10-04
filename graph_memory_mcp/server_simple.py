@@ -74,10 +74,13 @@ class GraphMemorySimpleMCP(GraphMemoryMCP):
                 "(same semantics as the full server's `source` object, without nesting), "
                 "`auto_link` (Facts only), `ttl_days` (Facts only), "
                 "`links` (create relations immediately after creation). "
-                "Note: auto_link=true (default) on Facts adds MENTIONS to similar Entity nodes; "
+                "Note: auto_link defaults to false. Pass true on a Fact to add MENTIONS to similar Entity nodes; "
                 "use create_relation for other pairs. "
-                "Set ttl_days for automatic archival. "
-                "Response may include possible_duplicates — review before keeping both."
+                "Set ttl_days for a temporary fact (the server never assigns it). "
+                "After expires_at the archive job sets status=archived. "
+                "`check_duplicates` (default true) blocks a near-paraphrase before write. "
+                "Pass false when the nearby fact is a different one. "
+                "A very long text is warned in `warnings` and still stored."
             ),
         )
         def create_node(
@@ -94,9 +97,10 @@ class GraphMemorySimpleMCP(GraphMemoryMCP):
             status: Literal["active", "outdated", "archived"] | None = None,
             ttl_days: float | None = None,
             entity_type: str | None = None,
-            auto_link: bool = True,
+            auto_link: bool = False,
             semantic_threshold: float | None = None,
             links: list[dict] | None = None,
+            check_duplicates: bool = True,
         ) -> dict:
             source = _provenance_source(
                 ref=ref,
@@ -120,6 +124,7 @@ class GraphMemorySimpleMCP(GraphMemoryMCP):
                 auto_link=auto_link,
                 semantic_threshold=semantic_threshold,
                 links=links,
+                check_duplicates=check_duplicates,
             )
 
         @mcp.tool(
@@ -147,7 +152,7 @@ class GraphMemorySimpleMCP(GraphMemoryMCP):
             ttl_days: float | None = None,
             versioning: bool | None = None,
             entity_type: str | None = None,
-            auto_link: bool = True,
+            auto_link: bool = False,
             semantic_threshold: float | None = None,
             links: list[dict] | None = None,
             description: str | None = None,

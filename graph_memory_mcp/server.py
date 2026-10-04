@@ -105,9 +105,12 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
         @mcp.tool(
             title="Get brief",
             description=(
-                "Session warm-up in one call: top facts for the owner "
-                "(by connectivity and recency), open CONTRADICTS pairs, and stats. "
-                "Call at session start before deeper search/get_context."
+                "Session warm-up: optional project anchor (source.ref=about), "
+                "recent active facts without TTL (by time, not connectivity), "
+                "open CONTRADICTS pairs, stale facts, and stats. "
+                "This is where the project stands, not a search for the task. "
+                "After it, search(..., compact=true) for the task topic. "
+                "Keep the about fact current via upsert_node(source.ref='about')."
             ),
             annotations=ToolAnnotations(readOnlyHint=True),
         )
@@ -175,11 +178,14 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
                 "`metadata`, `source` (provenance dict with keys like ref/type/uri/content_hash/updated_at/version), "
                 "`auto_link` (Facts only), `ttl_days` (Facts only), "
                 "`links` (create relations immediately after creation). "
-                "Note: auto_link=true (default) on Facts adds MENTIONS edges to similar Entity nodes "
+                "Note: auto_link defaults to false. Pass true on a Fact to add MENTIONS edges to similar Entity nodes "
                 "(vector search on Entity index; threshold AUTO_LINKING_SEMANTIC_THRESHOLD). "
                 "Use create_relation for links between arbitrary node pairs. "
-                "Set ttl_days for automatic archival. "
-                "Response may include possible_duplicates — review before keeping both."
+                "Set ttl_days for a temporary fact (the server never assigns it). "
+                "After expires_at the archive job sets status=archived. "
+                "`check_duplicates` (default true) blocks a near-paraphrase before write. "
+                "Pass false when the nearby fact is similar by distance but is a different fact. "
+                "A very long text is warned in `warnings` and still stored."
             ),
         )
         def create_node(
@@ -191,9 +197,10 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
             status: Literal["active", "outdated", "archived"] | None = None,
             ttl_days: float | None = None,
             entity_type: str | None = None,
-            auto_link: bool = True,
+            auto_link: bool = False,
             semantic_threshold: float | None = None,
             links: list[dict] | None = None,
+            check_duplicates: bool = True,
         ) -> dict:
             return mcp_handlers_nodes.create_node(
                 db,
@@ -209,6 +216,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
                 auto_link=auto_link,
                 semantic_threshold=semantic_threshold,
                 links=links,
+                check_duplicates=check_duplicates,
             )
 
         @mcp.tool(
@@ -230,7 +238,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
             ttl_days: float | None = None,
             versioning: bool | None = None,
             entity_type: str | None = None,
-            auto_link: bool = True,
+            auto_link: bool = False,
             semantic_threshold: float | None = None,
             links: list[dict] | None = None,
             description: str | None = None,
@@ -418,8 +426,15 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
             title="Search",
             description=(
                 "Semantic search using embedding similarity (cosine distance). "
-                "Returns active nodes by default (use include_outdated=true to include outdated and archived nodes). "
-                "Results ranked by similarity to query text. "
+                "Returns active durable nodes by default. "
+                "Facts with ttl_days are omitted until include_ttl=true "
+                "(still-living temporary facts only). "
+                "Use include_outdated=true to include outdated and archived nodes. "
+                "Results ranked by a hybrid score: cosine, plus a boost when the "
+                "query's identifiers (job/RUN id, symbol, S3 path, size) occur in the text, "
+                "plus a smaller recency boost. Raw cosine stays in `similarity`. "
+                "If two hits already have a CONTRADICTS edge, they are listed in "
+                "`contradiction_pairs` and suggested_next points at get_trace / mark_outdated. "
                 "Supports multi-tenant isolation via owner_id. "
                 "search_type: pre_filter (filter owner first, best for large/multi-tenant graphs) "
                 "or post_filter (global ANN then filter, best for small graphs); "
@@ -437,6 +452,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
             status: str | None = None,
             similarity_threshold: float | None = None,
             include_outdated: bool = False,
+            include_ttl: bool = False,
             search_type: str | None = None,
             metadata_filter: dict | None = None,
             compact: bool = False,
@@ -451,6 +467,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
                 status=status,
                 similarity_threshold=similarity_threshold,
                 include_outdated=include_outdated,
+                include_ttl=include_ttl,
                 search_type=search_type,
                 metadata_filter=metadata_filter,
                 compact=compact,
@@ -677,7 +694,10 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
                 "Returns nodes and edges within specified depth. "
                 "Pass offset (with max_nodes as page size) for paginated neighbor loading. "
                 "Useful for building agent context from related facts and entities. "
-                "Depth defaults to config (SUBGRAPH_DEFAULT_DEPTH, default 1)."
+                "Depth defaults to config (SUBGRAPH_DEFAULT_DEPTH, default 1). "
+                "Neighbors that have ttl_days are omitted unless include_ttl=true. "
+                "The node budget is filled with CONTRADICTS, then FOLLOWS_FROM, then other allowlist edges; MENTIONS last. "
+                "relation_priority overrides that order. exclude_relation_types drops those edges."
             ),
             annotations=ToolAnnotations(readOnlyHint=True),
         )
@@ -688,6 +708,9 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
             max_nodes: int | None = None,
             offset: int = 0,
             include_outdated: bool = False,
+            include_ttl: bool = False,
+            relation_priority: list[str] | None = None,
+            exclude_relation_types: list[str] | None = None,
         ) -> dict:
             return mcp_handlers_graph.get_context(
                 db,
@@ -698,6 +721,9 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
                 max_nodes=max_nodes,
                 offset=offset,
                 include_outdated=include_outdated,
+                include_ttl=include_ttl,
+                relation_priority=relation_priority,
+                exclude_relation_types=exclude_relation_types,
             )
 
         @mcp.tool(
@@ -709,7 +735,9 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
                 "Set include_paths=true only when you need an approximate path hint "
                 "between the top two seeds. "
                 "Always includes suggested_next / do_not. "
-                "Set compact=true for snippets under a token budget."
+                "Set compact=true for snippets under a token budget. "
+                "Facts with ttl_days are omitted unless include_ttl=true. "
+                "Expansion fills the node budget with CONTRADICTS and FOLLOWS_FROM before MENTIONS."
             ),
             annotations=ToolAnnotations(readOnlyHint=True),
         )
@@ -721,10 +749,13 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
             max_nodes: int | None = None,
             similarity_threshold: float | None = None,
             include_outdated: bool = False,
+            include_ttl: bool = False,
             search_type: str | None = None,
             include_paths: bool = False,
             metadata_filter: dict | None = None,
             compact: bool = False,
+            relation_priority: list[str] | None = None,
+            exclude_relation_types: list[str] | None = None,
         ) -> dict:
             return mcp_handlers_graph.recall_context(
                 db,
@@ -736,10 +767,13 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
                 max_nodes=max_nodes,
                 similarity_threshold=similarity_threshold,
                 include_outdated=include_outdated,
+                include_ttl=include_ttl,
                 search_type=search_type,
                 include_paths=include_paths,
                 metadata_filter=metadata_filter,
                 compact=compact,
+                relation_priority=relation_priority,
+                exclude_relation_types=exclude_relation_types,
             )
 
         @mcp.tool(

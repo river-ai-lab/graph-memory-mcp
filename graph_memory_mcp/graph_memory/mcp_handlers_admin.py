@@ -111,17 +111,30 @@ def get_brief(
     owner_id: str = "default",
     limit: int = 10,
 ) -> Dict:
-    """Session warm-up: top facts (by connectivity/recency), contradictions, stats."""
+    """Session warm-up: project anchor, recent facts, open contradictions, stats."""
     owner_id = normalize_owner_id(owner_id)
     limit = max(1, min(int(limit), 50))
+    about_ref = (
+        getattr(getattr(db, "config", None), "about_source_ref", None) or "about"
+    )
+
+    about = None
+    about_rows = db.brief_about(owner_id, about_ref)
+    if about_rows:
+        row = about_rows[0]
+        about = {
+            "node_id": str(row[0]),
+            "text": ensure_text(row[1]),
+            "source_ref": ensure_text(row[2]) or about_ref,
+        }
+
     top_facts = []
-    for row in db.brief_top_facts(owner_id, limit):
+    for row in db.brief_top_facts(owner_id, limit, about_ref):
         top_facts.append(
             {
                 "node_id": str(row[0]),
                 "text": ensure_text(row[1]),
-                "degree": row[2],
-                "created_at": row[3],
+                "created_at": row[2],
             }
         )
 
@@ -152,6 +165,7 @@ def get_brief(
     stats_result = get_stats(db, owner_id=owner_id)
 
     return success_response(
+        about=about,
         top_facts=top_facts,
         contradictions=contradictions,
         stale_facts=stale_facts,

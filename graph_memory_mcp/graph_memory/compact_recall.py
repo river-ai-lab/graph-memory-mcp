@@ -42,6 +42,7 @@ def suggested_next_for_search(
     metadata_filter: Optional[Dict] = None,
     compact: bool = False,
     truncated: bool = False,
+    contradiction_pairs: Optional[List[Dict]] = None,
 ) -> List[str]:
     """Next tool calls an agent should prefer after search."""
     mf = _fmt_metadata_filter(metadata_filter)
@@ -51,8 +52,20 @@ def suggested_next_for_search(
             f'search(query="{query}", owner_id="{owner_id}", similarity_threshold=0.4{mf})',
         ]
 
-    top = results[:3]
     suggestions: List[str] = []
+    for pair in contradiction_pairs or []:
+        left = pair.get("from_id")
+        right = pair.get("to_id")
+        if not left or not right:
+            continue
+        suggestions.append(
+            f'get_trace(from_id="{left}", to_id="{right}", owner_id="{owner_id}")'
+        )
+        suggestions.append(
+            f'mark_outdated(fact_id="{left}" or "{right}", owner_id="{owner_id}")'
+        )
+
+    top = results[:3]
     best = top[0]
     suggestions.append(
         f'get_context(node_id="{best["node_id"]}", owner_id="{owner_id}", depth=1)'
@@ -179,6 +192,7 @@ def decorate_search_response(
         metadata_filter=metadata_filter,
         compact=compact,
         truncated=truncated,
+        contradiction_pairs=out.get("contradiction_pairs") or [],
     )
     out["do_not"] = (
         "Do not broaden the same search; pick 1-3 node_ids and expand "

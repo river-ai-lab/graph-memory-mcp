@@ -76,6 +76,7 @@ def _property_filter_clauses(
     include_outdated: bool,
     status: Optional[str],
     node_alias: str = "node",
+    include_ttl: bool = False,
 ) -> Tuple[str, Dict[str, Any]]:
     clauses: list[str] = []
     params: Dict[str, Any] = {}
@@ -87,11 +88,15 @@ def _property_filter_clauses(
             f" AND ({node_alias}.status IS NULL OR {node_alias}.status = 'active')"
         )
 
-    if node_type == "Fact":
-        if status == "active" or (status is None and not include_outdated):
+    if node_type == "Fact" and (status is None or status == "active"):
+        if include_outdated:
+            pass
+        elif include_ttl:
             clauses.append(
                 f" AND ({node_alias}.expires_at IS NULL OR {node_alias}.expires_at > timestamp())"
             )
+        else:
+            clauses.append(f" AND {node_alias}.expires_at IS NULL")
     return "".join(clauses), params
 
 
@@ -106,12 +111,14 @@ def build_owner_scoped_similarity_query(
     status: Optional[str] = None,
     exclude_node_id: Optional[str] = None,
     metadata_filter: Optional[Dict[str, Any]] = None,
+    include_ttl: bool = False,
 ) -> Tuple[str, Dict[str, Any]]:
     """Cypher + params: owner-scoped nodes, exact vec.cosineDistance, ORDER BY score."""
     property_filters, params = _property_filter_clauses(
         node_type,
         include_outdated=include_outdated,
         status=status,
+        include_ttl=include_ttl,
     )
     meta_clauses, meta_params = build_metadata_filter_clauses(metadata_filter)
     property_filters += meta_clauses
@@ -172,6 +179,7 @@ def similarity_rows(
     status: Optional[str] = None,
     exclude_node_id: Optional[str] = None,
     metadata_filter: Optional[Dict[str, Any]] = None,
+    include_ttl: bool = False,
 ) -> List[List[Any]]:
     query, params = build_owner_scoped_similarity_query(
         node_type=node_type,
@@ -183,6 +191,7 @@ def similarity_rows(
         status=status,
         exclude_node_id=exclude_node_id,
         metadata_filter=metadata_filter,
+        include_ttl=include_ttl,
     )
     return store.rows(query, params)
 
@@ -200,6 +209,7 @@ def ann_rows(
     status: Optional[str] = None,
     metadata_filter: Optional[Dict[str, Any]] = None,
     exclude_node_id: Optional[str] = None,
+    include_ttl: bool = False,
 ) -> List[List[Any]]:
     """Falkor HNSW lookup, then owner/status filters."""
     params: Dict[str, Any] = {
@@ -219,10 +229,15 @@ def ann_rows(
     if exclude_node_id is not None:
         filters += " AND node.uid <> $exclude_uid"
         params["exclude_uid"] = str(exclude_node_id)
-    if node_type == "Fact" and (
-        status == "active" or (status is None and not include_outdated)
+    if (
+        node_type == "Fact"
+        and (status is None or status == "active")
+        and not include_outdated
     ):
-        filters += " AND (node.expires_at IS NULL OR node.expires_at > timestamp())"
+        if include_ttl:
+            filters += " AND (node.expires_at IS NULL OR node.expires_at > timestamp())"
+        else:
+            filters += " AND node.expires_at IS NULL"
 
     query = f"""
     CALL db.idx.vector.queryNodes('{node_type}', 'embedding', {int(ann_k)}, vecf32($embedding))

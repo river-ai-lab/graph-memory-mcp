@@ -18,7 +18,16 @@ def new_uid() -> str:
 
 
 def normalize_owner_id(owner_id: Optional[str], *, default: str = "default") -> str:
-    """Normalize and validate owner_id; raises ValueError on invalid format."""
+    """Normalize and validate owner_id; raises ValueError on invalid format.
+
+    During an MCP HTTP request with OWNER_SCOPE=header, the tool argument is
+    replaced by X-Owner-Id. Jobs and direct handler calls are unchanged.
+    """
+    from graph_memory_mcp.graph_memory.owner_scope import pinned_owner_argument
+
+    pinned = pinned_owner_argument()
+    if pinned is not None:
+        owner_id = pinned
     if owner_id is None:
         return default
     if isinstance(owner_id, bytes):

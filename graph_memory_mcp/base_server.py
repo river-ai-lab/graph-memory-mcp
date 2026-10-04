@@ -16,6 +16,10 @@ from mcp.server.fastmcp import FastMCP
 from graph_memory_mcp.config import MCPServerConfig
 from graph_memory_mcp.graph_memory.database import open_store
 from graph_memory_mcp.graph_memory.embedding_service import EmbeddingService
+from graph_memory_mcp.graph_memory.owner_scope import (
+    OwnerHeaderMiddleware,
+    configure_owner_scope,
+)
 from graph_memory_mcp.jobs.scheduler import shutdown_scheduler, start_scheduler
 
 logger = logging.getLogger(__name__)
@@ -56,6 +60,7 @@ class BaseGraphMemoryMCP:
     def __init__(self, server_config: MCPServerConfig):
         self.server_config = server_config
         self.config = server_config
+        configure_owner_scope(server_config.owner_scope)
         self.db_client = open_store(server_config)
         self._db_connected = self.db_client.connect()
         if not self._db_connected:
@@ -116,6 +121,9 @@ class BaseGraphMemoryMCP:
     def get_mcp_app(self):
         """Get MCP app with /metrics, /admin/* and optional scheduler support."""
         app = self.mcp.streamable_http_app()
+        if not getattr(app.state, "_owner_scope_wrapped", False):
+            app.add_middleware(OwnerHeaderMiddleware)
+            app.state._owner_scope_wrapped = True
 
         from starlette.routing import Route
 
@@ -126,6 +134,8 @@ class BaseGraphMemoryMCP:
             Route("/metrics", lambda request: metrics_response(db), methods=["GET"])
         )
         for route in self._admin_routes():
+            app.router.routes.append(route)
+        for route in self._internal_routes():
             app.router.routes.append(route)
         # Wire background scheduler into Starlette lifespan (config-driven).
         cfg = self.server_config.config or {}
@@ -257,3 +267,34 @@ class BaseGraphMemoryMCP:
                 "/admin/prune-empty-owners", admin_prune_empty_owners, methods=["POST"]
             ),
         ]
+
+    def _internal_routes(self) -> list:
+        """Gateway-only calls. Not MCP tools, not published to agents.
+
+        Owner comes from X-Owner-Id in both scope modes. There is no owner
+        query parameter, so a forwarded tool argument cannot select a graph.
+        """
+        from starlette.responses import JSONResponse
+        from starlette.routing import Route
+
+        from graph_memory_mcp.graph_memory.owner_scope import graph_size_payload
+        from graph_memory_mcp.graph_memory.utils import normalize_owner_id
+
+        db = self.db_client
+
+        async def graph_size(request):
+            raw = request.headers.get("x-owner-id")
+            if raw is None or not str(raw).strip():
+                return JSONResponse(
+                    {"success": False, "error": "X-Owner-Id header is required"},
+                    status_code=400,
+                )
+            try:
+                owner_id = normalize_owner_id(str(raw).strip())
+            except ValueError as exc:
+                return JSONResponse(
+                    {"success": False, "error": str(exc)}, status_code=400
+                )
+            return JSONResponse(graph_size_payload(db, owner_id))
+
+        return [Route("/internal/graph-size", graph_size, methods=["GET"])]

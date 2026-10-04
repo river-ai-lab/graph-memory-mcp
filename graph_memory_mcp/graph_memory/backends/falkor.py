@@ -145,6 +145,24 @@ class FalkorDBClient(FalkorOps):
         """Underlying Redis connection (used for distributed job locks)."""
         return getattr(self.db, "connection", None)
 
+    def graph_memory_bytes(self, owner_id: str) -> int | None:
+        """Redis memory of this owner's graph key, or None if it cannot be read.
+
+        A missing key is 0. The gateway uses this for a storage quota; request
+        rate stays on the gateway.
+        """
+        client = self.redis_client
+        if client is None:
+            return None
+        try:
+            usage = client.memory_usage(self.graph_name(owner_id))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("MEMORY USAGE failed for %s: %s", owner_id, exc)
+            return None
+        if usage is None:
+            return 0
+        return int(usage)
+
     def set_embedding_service(self, service: Any) -> None:
         """Attach embedding service instance."""
         self._embedding_service = service

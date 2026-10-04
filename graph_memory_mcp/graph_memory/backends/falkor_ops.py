@@ -433,27 +433,44 @@ class FalkorOps:
         owner_id: str,
         remaining: int,
         include_outdated: bool,
+        include_ttl: bool = False,
+        rank_expr: str = "",
+        exclude_types: list | None = None,
     ) -> list:
         status_filter = ""
         if not include_outdated:
+            if include_ttl:
+                expiry = "(m.expires_at IS NULL OR m.expires_at > timestamp())"
+            else:
+                expiry = "m.expires_at IS NULL"
             status_filter = (
-                " AND (coalesce(m.status, 'active') = 'active' "
-                "AND (m.expires_at IS NULL OR m.expires_at > timestamp()))"
+                " AND (coalesce(m.status, 'active') = 'active' " f"AND {expiry})"
             )
+        exclude_clause = ""
+        params: dict = {"frontier": frontier, "seen": seen, "owner_id": owner_id}
+        if exclude_types:
+            exclude_clause = " AND NOT type(r) IN $exclude_types"
+            params["exclude_types"] = list(exclude_types)
+        order_clause = ""
+        rank_select = ""
+        if rank_expr:
+            rank_select = ", collect(DISTINCT type(r)) AS rels"
+            order_clause = f"""
+    UNWIND rels AS t
+    WITH m, parents, min({rank_expr}) AS prio
+    ORDER BY prio ASC, m.uid ASC"""
         query = f"""
     MATCH (n)-[r]-(m)
     WHERE n.uid IN $frontier AND m.owner_id = $owner_id
-      AND NOT m.uid IN $seen{status_filter}
-    WITH m, collect(DISTINCT n.uid) AS parents
+      AND NOT m.uid IN $seen{status_filter}{exclude_clause}
+    WITH m, collect(DISTINCT n.uid) AS parents{rank_select}
+    {order_clause}
     RETURN m.uid, labels(m)[0], m.text,
            coalesce(m.updated_at, m.created_at), coalesce(m.access_count, 0),
            parents
     LIMIT {int(remaining)}
     """
-        return self.rows(
-            query,
-            {"frontier": frontier, "seen": seen, "owner_id": owner_id},
-        )
+        return self.rows(query, params)
 
     def context_page_rows(
         self,
@@ -464,21 +481,33 @@ class FalkorOps:
         include_outdated: bool,
         node_id: str,
         owner_id: str,
+        include_ttl: bool = False,
+        exclude_types: list | None = None,
     ) -> list:
-        neighbor_ok = (
-            "true"
-            if include_outdated
-            else (
+        if include_outdated:
+            neighbor_ok = "true"
+        elif include_ttl:
+            neighbor_ok = (
                 "(coalesce(connected.status, 'active') = 'active'"
                 " AND (connected.expires_at IS NULL OR connected.expires_at > timestamp()))"
             )
-        )
+        else:
+            neighbor_ok = (
+                "(coalesce(connected.status, 'active') = 'active'"
+                " AND connected.expires_at IS NULL)"
+            )
+        params = {"node_id": node_id, "owner_id": owner_id}
+        exclude_clause = ""
+        if exclude_types:
+            exclude_clause = " AND ALL(rel IN relationships(path) WHERE NOT type(rel) IN $exclude_types)"
+            params["exclude_types"] = list(exclude_types)
         query = f"""
     MATCH path = (center)-[*0..{depth}]-(connected)
     WHERE center.uid = $node_id
       AND center.owner_id = $owner_id
       AND connected.owner_id = $owner_id
       AND (connected.uid = center.uid OR {neighbor_ok})
+      {exclude_clause}
     WITH DISTINCT connected
     ORDER BY id(connected)
     SKIP {offset}
@@ -488,7 +517,7 @@ class FalkorOps:
         labels(connected)[0] as node_type,
         connected.text as text
     """
-        return self.rows(query, {"node_id": node_id, "owner_id": owner_id})
+        return self.rows(query, params)
 
     def shortest_path_row(
         self,
@@ -569,18 +598,35 @@ class FalkorOps:
             {"owner_id": owner_id},
         )
 
-    def brief_top_facts(self, owner_id: str, limit: int) -> list:
+    def brief_about(self, owner_id: str, source_ref: str) -> list:
+        """Single active project-anchor fact, if an agent upserted source.ref."""
+        return self.rows(
+            """
+    MATCH (f:Fact)
+    WHERE f.owner_id = $owner_id
+      AND f.source_ref = $source_ref
+      AND (f.status IS NULL OR f.status = 'active')
+      AND f.expires_at IS NULL
+    RETURN f.uid, f.text, f.source_ref
+    ORDER BY coalesce(f.updated_at, f.created_at) DESC
+    LIMIT 1
+    """,
+            {"owner_id": owner_id, "source_ref": source_ref},
+        )
+
+    def brief_top_facts(self, owner_id: str, limit: int, about_ref: str) -> list:
+        """Recent active facts with no TTL. Not a degree ranking."""
         query = f"""
     MATCH (f:Fact)
     WHERE f.owner_id = $owner_id
       AND (f.status IS NULL OR f.status = 'active')
-    OPTIONAL MATCH (f)-[r]-()
-    WITH f, count(r) as degree
-    ORDER BY degree DESC, f.created_at DESC
+      AND f.expires_at IS NULL
+      AND (f.source_ref IS NULL OR f.source_ref <> $about_ref)
+    RETURN f.uid as node_id, f.text as text, f.created_at as created_at
+    ORDER BY f.created_at DESC
     LIMIT {int(limit)}
-    RETURN f.uid as node_id, f.text as text, degree, f.created_at as created_at
     """
-        return self.rows(query, {"owner_id": owner_id})
+        return self.rows(query, {"owner_id": owner_id, "about_ref": about_ref})
 
     def brief_contradictions(self, owner_id: str) -> list:
         return self.rows(
@@ -588,10 +634,28 @@ class FalkorOps:
     MATCH (a)-[r:CONTRADICTS]-(b)
     WHERE a.owner_id = $owner_id AND b.owner_id = $owner_id
       AND a.uid < b.uid
+      AND (a.status IS NULL OR a.status = 'active')
+      AND (b.status IS NULL OR b.status = 'active')
+      AND a.expires_at IS NULL AND b.expires_at IS NULL
     RETURN a.uid, a.text, b.uid, b.text
     LIMIT 10
     """,
             {"owner_id": owner_id},
+        )
+
+    def contradicts_among(self, owner_id: str, node_ids: list) -> list:
+        """Existing CONTRADICTS edges whose both ends are in node_ids."""
+        if not node_ids:
+            return []
+        return self.rows(
+            """
+    MATCH (a)-[:CONTRADICTS]-(b)
+    WHERE a.owner_id = $owner_id AND b.owner_id = $owner_id
+      AND a.uid IN $ids AND b.uid IN $ids
+      AND a.uid < b.uid
+    RETURN a.uid, b.uid
+    """,
+            {"owner_id": owner_id, "ids": [str(node_id) for node_id in node_ids]},
         )
 
     def brief_stale_facts(self, owner_id: str, cutoff_ms: int) -> list:
@@ -600,6 +664,7 @@ class FalkorOps:
     MATCH (f:Fact)
     WHERE f.owner_id = $owner_id
       AND (f.status IS NULL OR f.status = 'active')
+      AND f.expires_at IS NULL
       AND coalesce(f.last_accessed_at, f.created_at) < $cutoff_ms
     RETURN f.uid, f.text, f.last_accessed_at, f.access_count
     ORDER BY coalesce(f.last_accessed_at, f.created_at) ASC

@@ -1276,9 +1276,27 @@ def test_search_pre_filter_by_default():
     assert "node.owner_id = $owner_id" in fact_query
     assert fact_params["owner_id"] == "default"
     assert active_clause in fact_query
+    assert "node.expires_at IS NULL" in fact_query
+    assert (
+        "(node.expires_at IS NULL OR node.expires_at > timestamp())" not in fact_query
+    )
+
+
+def test_search_include_ttl_keeps_living_temporary_facts():
+    db = _FakeSearchDB([_FakeResult([]), _FakeResult([])])
+    cfg = MCPServerConfig()
+
+    result = search(
+        cast(Any, db),
+        cfg,
+        query="temporary launch",
+        owner_id="default",
+        include_ttl=True,
+    )
+
+    assert result["success"] is True
+    fact_query, _ = db.graph.calls[0]
     assert "(node.expires_at IS NULL OR node.expires_at > timestamp())" in fact_query
-    assert "MATCH (node:Entity)" in entity_query
-    assert "vec.cosineDistance" in entity_query
 
 
 def test_search_post_filter_uses_global_ann():

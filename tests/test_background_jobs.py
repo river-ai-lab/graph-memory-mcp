@@ -547,8 +547,8 @@ async def test_deduplicate_facts_stays_within_owner_and_keeps_oldest_primary(
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_archive_respects_active_relations(monkeypatch, db_client):
-    """Test that archive job doesn't archive facts with active relations."""
+async def test_archive_expired_ttl_despite_relations(monkeypatch, db_client):
+    """Expired TTL is archived even when the fact has an active relation."""
     owner_id = f"pytest_archive_rel_{uuid.uuid4().hex[:8]}"
     monkeypatch.setenv("JOBS_ENABLED", "true")
     monkeypatch.setenv("JOB_ARCHIVE_ENABLED", "true")
@@ -603,9 +603,7 @@ async def test_archive_respects_active_relations(monkeypatch, db_client):
     # Run archive job
     await archive_old_facts(db=db, config=cfg)
 
-    # Fact should NOT be archived because it has active relation to Entity
+    # Fact is archived because its TTL expired. A relation does not keep it active.
     get_result = mcp_handlers_nodes.get_node(db, node_id=fact_id, owner_id=owner_id)
     assert get_result.get("success")
-    assert (
-        get_result["node"]["status"] == "active"
-    ), "Fact with active Entity relation should not be archived"
+    assert get_result["node"]["status"] == "archived"

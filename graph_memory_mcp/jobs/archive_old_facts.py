@@ -224,7 +224,10 @@ async def archive_old_facts(db: FalkorDBClient, config: MCPServerConfig) -> None
                             has_active_neighbour = True
                             break
 
-                if has_active_neighbour:
+                if (
+                    has_active_neighbour
+                    and reason_by_id.get(fact_id) != "archived_by_cleanup_job"
+                ):
                     skipped_active_relations += 1
                     continue
 

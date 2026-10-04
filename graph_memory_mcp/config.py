@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -13,6 +13,11 @@ class MCPServerConfig(BaseSettings):
 
     default_owner_id: str = Field(
         default="default", validation_alias="DEFAULT_OWNER_ID"
+    )
+    # client: tool argument owner_id (trusted local / company).
+    # header: ignore the tool argument; owner is the X-Owner-Id request header.
+    owner_scope: Literal["client", "header"] = Field(
+        default="client", validation_alias="OWNER_SCOPE"
     )
 
     model_config = SettingsConfigDict(
@@ -122,6 +127,25 @@ class MCPServerConfig(BaseSettings):
         validation_alias="COMPACT_SNIPPET_CHARS",
         description="Max characters per snippet when compact=true",
     )
+    about_source_ref: str = Field(
+        default="about",
+        validation_alias="ABOUT_SOURCE_REF",
+        description="source.ref of the optional project-anchor fact returned by get_brief",
+    )
+    search_lexical_weight: float = Field(
+        default=0.35,
+        validation_alias="SEARCH_LEXICAL_WEIGHT",
+        description="Hybrid rank weight for identifier matches; 0 disables",
+    )
+    search_recency_weight: float = Field(
+        default=0.10,
+        validation_alias="SEARCH_RECENCY_WEIGHT",
+        description="Hybrid rank weight for created_at recency; 0 disables",
+    )
+    search_recency_half_life_days: float = Field(
+        default=14.0,
+        validation_alias="SEARCH_RECENCY_HALF_LIFE_DAYS",
+    )
     # Time-aware recall: score ×= (1-w) + w * 0.5^(age_days/half_life) and
     # ×= (1-w) + w * usage. Weights 0 disable the corresponding factor.
     recall_recency_weight: float = Field(
@@ -134,6 +158,16 @@ class MCPServerConfig(BaseSettings):
         default=0.1, validation_alias="RECALL_USAGE_WEIGHT"
     )
     duplicate_similarity_threshold: float = 0.85
+    create_duplicate_block_threshold: float = Field(
+        default=0.92,
+        validation_alias="CREATE_DUPLICATE_BLOCK_THRESHOLD",
+        description="Block create_node when a nearer active fact is at least this similar",
+    )
+    long_text_warn_chars: int = Field(
+        default=600,
+        validation_alias="LONG_TEXT_WARN_CHARS",
+        description="create_node warns when text is longer; it still writes",
+    )
     duplicate_max_group_size: int = 10
     duplicate_top_k: int = 100
     summary_similarity_threshold: float = 0.7

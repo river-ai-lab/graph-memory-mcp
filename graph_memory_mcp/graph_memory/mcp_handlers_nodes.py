@@ -1,6 +1,7 @@
 """Node handlers for MCP Graph Memory (Fact/Entity CRUD)."""
 
 import logging
+import re
 import time
 from typing import Any, Dict, List, Literal, Optional
 
@@ -233,9 +234,10 @@ def create_node(
     status: Optional[Literal["active", "outdated", "archived"]] = None,
     ttl_days: Optional[float] = None,
     entity_type: Optional[str] = None,
-    auto_link: bool = True,
+    auto_link: bool = False,
     semantic_threshold: Optional[float] = None,
     links: Optional[List[Dict]] = None,
+    check_duplicates: bool = True,
 ) -> Dict:
     """Create a Fact or Entity node."""
     if error := validate_inputs(locals(), config):
@@ -247,6 +249,19 @@ def create_node(
     possible_duplicates = _find_possible_duplicates(
         db, config, node_type=node_type, embedding=embedding, owner_id=owner_id
     )
+    if check_duplicates and node_type == "Fact":
+        blocked = _blocking_duplicates(config, text, possible_duplicates)
+        if blocked:
+            return error_response(
+                "Near-duplicate already exists. "
+                "Update that node, mark_outdated it, or pass check_duplicates=false "
+                "if this fact is different.",
+                code="memory_duplicate",
+            ) | {
+                "possible_duplicates": blocked,
+            }
+
+    warnings = _long_text_warnings(config, text)
 
     # Calculate expires_at
     expires_at = None
@@ -344,6 +359,8 @@ def create_node(
     response = success_response(node=node)
     if possible_duplicates:
         response["possible_duplicates"] = possible_duplicates
+    if warnings:
+        response["warnings"] = warnings
     return _response_with_link_fields(response, link_errors, link_warnings)
 
 
@@ -454,7 +471,7 @@ def upsert_node(
     ttl_days: Optional[float] = None,
     versioning: Optional[bool] = None,
     entity_type: Optional[str] = None,
-    auto_link: bool = True,
+    auto_link: bool = False,
     semantic_threshold: Optional[float] = None,
     links: Optional[List[Dict]] = None,
 ) -> Dict:
@@ -942,6 +959,7 @@ def _find_possible_duplicates(
             owner_id=owner_id,
             limit=limit,
             max_distance=1.0 - threshold,
+            include_ttl=True,
         )
         return [
             {
@@ -954,6 +972,38 @@ def _find_possible_duplicates(
     except Exception as exc:  # noqa: BLE001
         logger.debug("possible_duplicates check failed: %s", exc)
         return []
+
+
+def _diff_hint(new_text: str, existing_text: str) -> str:
+    """Word-level contrast. No domain identifier list."""
+    new_words = set(re.findall(r"\w{4,}", new_text.lower()))
+    old_words = set(re.findall(r"\w{4,}", (existing_text or "").lower()))
+    only_new = sorted(new_words - old_words)[:8] or ["—"]
+    only_old = sorted(old_words - new_words)[:8] or ["—"]
+    return f"words only in new: {only_new}; words only in existing: {only_old}"
+
+
+def _blocking_duplicates(
+    config: Any, text: str, possible_duplicates: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """Hits at or above the duplicate threshold. Similarity only."""
+    threshold = float(getattr(config, "create_duplicate_block_threshold", 0.92))
+    blocked = []
+    for item in possible_duplicates:
+        if float(item.get("similarity") or 0) < threshold:
+            continue
+        blocked.append({**item, "diff_hint": _diff_hint(text, item.get("text") or "")})
+    return blocked
+
+
+def _long_text_warnings(config: Any, text: str) -> List[str]:
+    limit = int(getattr(config, "long_text_warn_chars", 600) or 0)
+    if limit > 0 and len(text) > limit:
+        return [
+            f"text is long ({len(text)} chars, warn after {limit}); "
+            "prefer one statement. Write was not blocked."
+        ]
+    return []
 
 
 def _add_to_collection(

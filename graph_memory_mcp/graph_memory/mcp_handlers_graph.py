@@ -9,6 +9,11 @@ from graph_memory_mcp.config import MCPServerConfig
 from graph_memory_mcp.graph_memory.compact_recall import decorate_recall_response
 from graph_memory_mcp.graph_memory.database import FalkorDBClient
 from graph_memory_mcp.graph_memory.mcp_handlers_search import search
+from graph_memory_mcp.graph_memory.relation_policy import (
+    allowed_relation_types,
+    clean_relation_types,
+    neighbor_rank_expr,
+)
 from graph_memory_mcp.graph_memory.utils import (
     ensure_text,
     mcp_handler,
@@ -40,6 +45,17 @@ def _load_edges_between_nodes(
     return edges
 
 
+def _neighbor_walk(
+    config: Any,
+    relation_priority: Optional[List[str]],
+    exclude_relation_types: Optional[List[str]],
+) -> tuple[str, List[str]]:
+    priority = clean_relation_types(relation_priority)
+    exclude = clean_relation_types(exclude_relation_types)
+    expr = neighbor_rank_expr(priority or None, allowed_relation_types(config))
+    return expr, exclude
+
+
 def _bfs_expand(
     db: FalkorDBClient,
     *,
@@ -48,6 +64,9 @@ def _bfs_expand(
     depth: int,
     budget: int,
     include_outdated: bool = False,
+    include_ttl: bool = False,
+    rank_expr: str = "",
+    exclude_types: Optional[List[str]] = None,
 ) -> Dict[str, Dict[str, Any]]:
     """Iterative multi-source BFS with a total node budget.
 
@@ -80,6 +99,9 @@ def _bfs_expand(
             owner_id=owner_id,
             remaining=remaining,
             include_outdated=include_outdated,
+            include_ttl=include_ttl,
+            rank_expr=rank_expr,
+            exclude_types=exclude_types,
         )
         new_frontier: List[str] = []
         for row in step_rows:
@@ -172,6 +194,9 @@ def get_context(
     max_nodes: Optional[int] = None,
     offset: int = 0,
     include_outdated: bool = False,
+    include_ttl: bool = False,
+    relation_priority: Optional[List[str]] = None,
+    exclude_relation_types: Optional[List[str]] = None,
 ) -> Dict:
     """Get subgraph context around a node."""
     owner_id = normalize_owner_id(owner_id)
@@ -183,6 +208,9 @@ def get_context(
         max_nodes or config.subgraph_default_max_nodes, config.subgraph_max_nodes_limit
     )
     offset = max(0, offset)
+    rank_expr, exclude_types = _neighbor_walk(
+        config, relation_priority, exclude_relation_types
+    )
 
     nodes: Dict[str, Dict[str, Any]] = {}
     edges: List[Dict] = []
@@ -195,6 +223,9 @@ def get_context(
             depth=depth,
             budget=effective_max_nodes,
             include_outdated=include_outdated,
+            include_ttl=include_ttl,
+            rank_expr=rank_expr,
+            exclude_types=exclude_types,
         )
         for uid, record in visited.items():
             nodes[uid] = {
@@ -212,6 +243,8 @@ def get_context(
             include_outdated=include_outdated,
             node_id=node_id,
             owner_id=owner_id,
+            include_ttl=include_ttl,
+            exclude_types=exclude_types,
         ):
             current_id = str(row[0])
             nodes[current_id] = {
@@ -286,6 +319,9 @@ def recall_context(
     include_paths: bool = False,
     metadata_filter: Optional[Dict] = None,
     compact: bool = False,
+    include_ttl: bool = False,
+    relation_priority: Optional[List[str]] = None,
+    exclude_relation_types: Optional[List[str]] = None,
 ) -> Dict:
     """Hybrid semantic search + graph expansion for agent recall."""
     owner_id = normalize_owner_id(owner_id)
@@ -308,6 +344,9 @@ def recall_context(
         config.subgraph_max_nodes_limit,
     )
     hop_decay = config.recall_context_hop_decay
+    rank_expr, exclude_types = _neighbor_walk(
+        config, relation_priority, exclude_relation_types
+    )
 
     search_result = search(
         db,
@@ -320,6 +359,7 @@ def recall_context(
         search_type=search_type,
         metadata_filter=metadata_filter,
         compact=False,
+        include_ttl=include_ttl,
     )
     if not search_result.get("success"):
         return search_result
@@ -358,6 +398,9 @@ def recall_context(
         depth=depth,
         budget=effective_max_nodes,
         include_outdated=include_outdated,
+        include_ttl=include_ttl,
+        rank_expr=rank_expr,
+        exclude_types=exclude_types,
     )
 
     expanded: List[Dict] = []
