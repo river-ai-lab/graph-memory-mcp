@@ -26,11 +26,11 @@ Normative tool signatures. Jobs: [background_jobs.md](./background_jobs.md). Age
 | `owner_id` | `[A-Za-z0-9_@-]+` | |
 | `relation_type` | `[A-Za-z0-9_]+` | |
 
-Errors: `{success:false, error, code}` — `memory_validation_error`, `memory_not_found`, `memory_duplicate`, `memory_relation_policy_error`, `memory_service_error`, `connection_error`, `falkordb_error`. `memory_duplicate` also returns `possible_duplicates` (each item has `diff_hint`). The node is not written.
+Errors: `{success:false, error, code}` — `memory_validation_error`, `memory_not_found`, `memory_duplicate`, `memory_relation_policy_error`, `memory_service_error`, `memory_conflict`, `memory_embedding_error`, `connection_error`. `memory_duplicate` also returns `possible_duplicates` (each item has `diff_hint`). The node is not written. `memory_embedding_error` means search did not run: an empty result list is not used for a missing vector. `memory_conflict` is the Falkor Redis lock when two upserts hit the same `(owner_id, node_type, source.ref)`. Arcade has no Redis client, so that lock is skipped.
 
 ## Cache
 
-LRU embeddings + TTL search (defaults in `env.example`). Search cache cleared on mutations. In-process only (multi-instance → see roadmap). Stats in `health_check` / `/metrics`.
+LRU embeddings + TTL search (defaults in `env.example`). Search cache cleared on mutations. In-process only. Falkor locks upsert and jobs with Redis. Arcade is one process and does not. Stats in `health_check` / `/metrics`.
 
 ## `--simple` profile
 
@@ -47,7 +47,7 @@ Defaults: `owner_id` from `DEFAULT_OWNER_ID` (env, default `"default"`). Pass `o
 **`create_node`** — `text`; opt: `node_type`, `owner_id`, `metadata`, `description`, `status`, `ttl_days`, `source`, `entity_type`, `auto_link` (default false), `semantic_threshold`, `links[{to_id,relation_type,properties?}]`, `check_duplicates` (default true). The server never sets `ttl_days`. A Fact near-paraphrase at or above `CREATE_DUPLICATE_BLOCK_THRESHOLD` (0.92) is rejected (`memory_duplicate`, with `diff_hint`) before write. A similar but different fact is written with `check_duplicates=false`. Text longer than `LONG_TEXT_WARN_CHARS` (600) adds `warnings` and is still stored. `auto_link=true` adds `MENTIONS` to similar Entities (threshold `AUTO_LINKING_SEMANTIC_THRESHOLD`).
 → success `{node, possible_duplicates?, warnings?, link_errors?, link_warnings?}`
 
-**`upsert_node`** — `text`, `source.ref`; same opts as `create_node` (including `auto_link` default false) + `versioning`. Redis-locked per `(owner_id,node_type,ref)`. → `{success, node, operation}`
+**`upsert_node`** — `text`, `source.ref`; same write fields as `create_node` except `check_duplicates` (upsert updates the node for that ref, including a revised `about`). Opt `auto_link` (default false) + `versioning`. On Falkor, Redis-locked per `(owner_id, node_type, ref)`. Arcade does not take that lock. → `{success, node, operation}`
 
 **`create_nodes`** — `items[{text,…}]` ≤200; opt `node_type`, `owner_id`. No auto_link / duplicates.
 
