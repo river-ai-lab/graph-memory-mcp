@@ -6,8 +6,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- `OWNER_SCOPE=client` (default) keeps the tool `owner_id`. `OWNER_SCOPE=header` ignores it and requires `X-Owner-Id` on `/mcp`. `GET /internal/graph-size` reports one owner's graph size for a gateway storage quota.
 - GROW ritual in agent policies / AGENTS.md (Ground → Record → Orient → Write after meaningful work)
 - Compact recall: `compact` on `search` / `recall_context`; responses always include `suggested_next`, `do_not`, `budget` (snippets under `COMPACT_RECALL_TOKEN_BUDGET`)
+- `get_brief` returns an optional `about` anchor (`source.ref=about`) and recent facts without TTL, not a degree ranking
+- Search rank is hybrid (`score` = cosine + identifier match + recency). Hits joined by an existing `CONTRADICTS` edge are returned in `contradiction_pairs`
+- Default `search`, `recall_context`, and `get_context` omit facts that have `ttl_days`. `include_ttl=true` returns ones that have not expired. The server never assigns TTL. Expired TTL facts are archived even if they have relations.
+- `create_node` / `upsert_node`: `auto_link` defaults to false. Pass true to add `MENTIONS` from a Fact to similar Entities.
+- `get_context` and `recall_context` fill the node budget with `CONTRADICTS` and `FOLLOWS_FROM` before `MENTIONS`. `relation_priority` overrides the order; `exclude_relation_types` drops those edges.
+- Task start is `get_brief`, then `search(..., compact=true)`. `suggested_next` hints at a possible next call; the agent chooses. A near-duplicate write returns `memory_duplicate` and must not be paraphrased again.
 
 ## [0.2.0] - 2026-07-20
 

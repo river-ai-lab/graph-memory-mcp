@@ -36,8 +36,8 @@ For this repo specifically:
 
 ### Обязательный ритуал
 
-1. **Старт задачи** — `get_brief(owner_id="riverlab")` → при теме задачи `search(..., compact=true)` → follow `suggested_next` / `get_context` на лучших hits; путь между двумя id — `get_trace` (directed; пусто → `directed=false`).
-2. **Новое устойчивое знание** — `search` → нет дубля → `create_node`; смотри `possible_duplicates` в ответе (дубль → link/update; конфликт → `CONTRADICTS` или `mark_outdated`).
+1. **Старт задачи** — `get_brief(owner_id="riverlab")` (якорь `about`, если есть; свежие факты без TTL; открытые `CONTRADICTS` — это «где мы», не тема) → `search(..., compact=true)` по теме. `suggested_next` подсказывает возможный следующий вызов — решай сам. Если в выдаче `contradiction_pairs` — ребро уже есть. Якорь проекта: `upsert_node` с `source.ref="about"`.
+2. **Новое устойчивое знание** — `search` → `create_node`. Ответ `memory_duplicate` или `possible_duplicates` значит: третий парафраз не писать. Обнови узел, либо `mark_outdated` + `create_node`. `check_duplicates=false` — только если факт другой.
 3. **После meaningful work (GROW)** — перед финальным ответом пользователю (не откладывай на «конец сессии»):
    1. **Ground** — что устойчивого изменилось? (если ничего — стоп, не пиши)
    2. **Record** — `search` → `create_node` / `mark_outdated`+`create_node`

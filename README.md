@@ -63,12 +63,14 @@ Graph Memory MCP is built for systems that require:
 
 ## What it provides (currently - limited functionality)
 
-- **Fact storage** with embeddings (semantic search)
+- **Fact storage** with embeddings (semantic search; hybrid rank: cosine + identifier match + recency)
+- **Session start** — `get_brief` (project state, not the task) then `search(..., compact=true)`; `suggested_next` is a hint, the agent chooses the next call
 - **Entity & triplet graph** (subject–predicate–object)
-- **Context subgraph extraction** (`get_context`) and paths (`get_trace`)
+- **Context subgraph extraction** (`get_context`) and paths (`get_trace`). The node budget prefers `CONTRADICTS` and `FOLLOWS_FROM` over `MENTIONS`
 - **Optional hybrid shortcut** (`recall_context`) — one-call search + expand on small graphs
-- **Fact versioning & soft-deletion** (outdated knowledge)
-- **Fact auto-linking** — new Facts can auto-create `MENTIONS` edges to similar Entity nodes (`auto_link=true` by default)
+- **Fact versioning & soft-deletion** (outdated knowledge). Temporary facts stay out of default search until `include_ttl=true`; the agent sets `ttl_days`
+- **Fact auto-linking** — optional: `auto_link=true` on a Fact adds `MENTIONS` to similar Entity nodes (default is false)
+- **Near-duplicate writes** refused before insert (`memory_duplicate`); a different fact uses `check_duplicates=false`
 - **Multi-tenant isolation** via `owner_id`
 - **Background jobs** (deduplication, archival)
 - **MCP-native API** (FastMCP)
@@ -145,6 +147,7 @@ Key defaults live in `graph_memory_mcp/config.py` within the `MCPServerConfig` c
 
 - `RELATION_POLICY_ENFORCE` — `off` | `warn` (default) | `enforce`
 - `RELATION_ALLOWED_TYPES` — comma-separated allowlist for new edges
+- `OWNER_SCOPE` — `client` (default) | `header`. See [Owner isolation](#owner-isolation).
 - Agent link guidance: `docs/memory_policies_for_LLM.md`
 
 ## Running FalkorDB
@@ -243,7 +246,19 @@ Isolation is **physical**: every `owner_id` lives in its own FalkorDB graph (`{F
 - **Isolate agents**: Each agent/team has its own `owner_id` (= its own graph)
 - **Share knowledge**: Use the same `owner_id` for shared knowledge base
 
-All MCP tools support `owner_id` (default from `DEFAULT_OWNER_ID`, usually `"default"`). Agents should pass `owner_id` explicitly rather than relying on the default.
+Who picks that owner is `OWNER_SCOPE` (default `client`):
+
+| | `OWNER_SCOPE=client` | `OWNER_SCOPE=header` |
+|---|---|---|
+| When | Local or company deploy on a trusted network. No API keys. | Process behind the SaaS gateway |
+| Owner | Tool argument `owner_id`. Empty falls back to `DEFAULT_OWNER_ID` (usually `"default"`). | `X-Owner-Id` on the HTTP request. The tool argument is ignored. |
+| Missing owner | Server default | Call is rejected. It does not fall back to `DEFAULT_OWNER_ID`. |
+
+Tool names and arguments stay the same in both modes. Agents should still pass `owner_id` explicitly: in `client` that value is the graph; in `header` the gateway's header wins, so a client cannot name someone else's graph.
+
+`/admin/*` always takes the owner from the path or body (operator, optional `ADMIN_TOKEN`). It is not published on the SaaS edge. Background jobs keep the owner they were started with; they do not read `X-Owner-Id`.
+
+Storage quota for the gateway: `GET /internal/graph-size` with `X-Owner-Id` (no owner query parameter). Response: `node_count`, `relation_count`, `nodes`, and `bytes` (Redis memory of that graph key, or `null`). Request rate and request counts are the gateway's job. Details: [`docs/admin.md`](docs/admin.md). Keys, Stripe, and plans are not in this repository.
 
 See [`docs/memory_policies_for_LLM.md`](docs/memory_policies_for_LLM.md) and [`docs/memory_faq.md`](docs/memory_faq.md) for operational guidance.
 

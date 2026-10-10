@@ -2,8 +2,30 @@
 
 ## Recall
 
-- **About X?** → `search(query="X")` → `get_context` on best hits (skips outdated/expired neighbors unless `include_outdated=true`). `recall_context` only on small/sparse graphs.
-- **X ↔ Y?** → `search` both → `get_trace(from_id, to_id)` (`directed=false` if empty).
+Task start is two reads, then stop:
+
+1. `get_brief(owner_id)` — project state: `about` if an agent stored `source.ref=about`, recent facts **without** TTL, open `CONTRADICTS`. Not the task, and not a ranking by how many edges a node has.
+2. `search(query=<task>, compact=true)` — the task. `suggested_next` hints at a possible next call; you decide what to do.
+
+`search` / `get_context` / `recall_context` hide facts that have `ttl_days` until `include_ttl=true` (still living) or `include_outdated=true` (also outdated, archived, expired). If two hits already have a `CONTRADICTS` edge, they come back in `contradiction_pairs` and `suggested_next` leads with `get_trace` / `mark_outdated`.
+
+`get_context` fills its node budget (default 20, hard cap 50) with `CONTRADICTS`, then `FOLLOWS_FROM`, then other allowlist edges; `MENTIONS` last. `relation_priority` overrides that order. `exclude_relation_types` drops those edges.
+
+`recall_context` is a shortcut on small graphs, not the default path.
+
+- **X ↔ Y?** → `get_trace(from_id, to_id)` (`directed=false` if empty).
+
+## Write
+
+One durable sentence per Fact. Do not put metric tables or dumps in `text`. A number that is the fact itself stays in the sentence.
+
+`create_node(check_duplicates=true)` refuses a near-paraphrase before write (`memory_duplicate`, similarity ≥ `CREATE_DUPLICATE_BLOCK_THRESHOLD`, default 0.92) and returns `diff_hint`. Do not write a third wording. Update the existing node, or `mark_outdated` + `create_node`. Pass `check_duplicates=false` only when the fact is similar by distance but different. Text longer than `LONG_TEXT_WARN_CHARS` (600) is warned in `warnings` and still stored.
+
+The server never sets `ttl_days` and does not infer it from `metadata.type`. A decision or durable outcome has no TTL. A run, pod, launch, or debug note passes `ttl_days` (typically 14–30). After `expires_at`, the archive job sets `status=archived` even if the fact has relations.
+
+`auto_link` defaults to false. Pass `auto_link=true` on a Fact to add `MENTIONS` to similar Entities. An edge you mean is `create_relation` or `links`.
+
+There is no `supersede_node`. A changed opinion is `mark_outdated` + `create_node`.
 
 ## Forget
 
@@ -25,9 +47,11 @@ Fact + Entity vector indexes: auto on first `search` / `find_similar` / Fact `au
 
 Each `owner_id` = own FalkorDB graph. Same `owner_id` → shared memory. Soft split inside owner: `metadata.project`. Always pass `owner_id` explicitly (server default: `DEFAULT_OWNER_ID`, usually `"default"`).
 
+`OWNER_SCOPE=client` (default, trusted network) uses that argument. `OWNER_SCOPE=header` (behind the SaaS gateway) ignores it and uses `X-Owner-Id`. Passing the argument is still correct: the tool schema is the same, and a local server needs the value.
+
 ## Lifecycle
 
-`active` (default search) · `outdated` (soft-delete Fact) · `archived` (TTL/stale job). Use `include_outdated` / `status` to see non-active.
+`active` (default search, and only facts with no TTL) · `outdated` (soft-delete Fact) · `archived` (TTL expiry or stale job). `include_ttl=true` adds still-living temporary facts. `include_outdated` / `status` show non-active.
 
 ## Agent vs Explorer
 

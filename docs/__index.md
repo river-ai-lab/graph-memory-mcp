@@ -1,7 +1,7 @@
 # Docs
 
 - [features.md](./features.md) — API contract
-- [admin.md](./admin.md) — `/admin/*`, `/metrics`
+- [admin.md](./admin.md) — `/admin/*`, `/internal/graph-size`, `/metrics`
 - [background_jobs.md](./background_jobs.md) — optional jobs
 - [memory_policies_for_LLM.md](./memory_policies_for_LLM.md) — full agent policy
 - [memory_policy_cheatsheet.md](./memory_policy_cheatsheet.md) — short agent sheet

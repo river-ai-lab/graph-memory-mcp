@@ -4,12 +4,13 @@ You have access to **Graph Memory MCP** — a long-term knowledge base shared ac
 
 ## Core rules
 
-1. **Recall before write**: at task start and before `create_node` — `search` first.
-2. **One durable declarative fact per node.** Good: "Production Redis is at redis.internal". Bad: "we discussed infrastructure".
+1. **Start with two reads.** `get_brief(owner_id)` is project state: `about` if present, recent facts without TTL, open `CONTRADICTS`. It is not the task. Then `search(query=<task>, compact=true)`. `suggested_next` lists possible next calls; you decide which, if any, to take. Before `create_node`, `search` first.
+2. **One durable declarative fact per node.** Good: "Production Redis is at redis.internal". Bad: "we discussed infrastructure". Do not put metric tables or dumps (including APE tables) in `text`. A number that is the fact itself stays in the sentence.
 3. **Never store**: chat logs, scratchpad reasoning, secrets/PII, transient execution state, low-confidence guesses (unless labeled in metadata).
 4. **Update protocol**: substantive change → `mark_outdated(fact_id, reason)` + `create_node(new text)`. Typos/metadata → `update_node`.
-5. **Heed `possible_duplicates`** in write responses: duplicate → link or update instead; conflict → add `CONTRADICTS` or `mark_outdated` the stale fact.
+5. **No third paraphrase.** `create_node` returns `memory_duplicate` before write when a near-copy already exists. Update that node or `mark_outdated` it. Pass `check_duplicates=false` only when the new fact is different. A `possible_duplicates` list on a successful write is the same stop: do not create another wording of it.
 6. **GROW after meaningful work** — before the final reply: Ground → Record → Orient (if recurring) → Write. Do not defer to “end of session”.
+7. **Temporary facts carry `ttl_days`.** The server never sets it and does not infer it from `metadata.type`. A decision or durable outcome has no TTL. A run, pod, launch, or debug note uses `ttl_days` (typically 14–30). Do not store a pod lifecycle; store the decision and the outcome. A wrong prior fact is `mark_outdated` + `create_node`.
 
 ## After meaningful work (GROW)
 
@@ -26,7 +27,7 @@ Do not invent noise to satisfy the checklist.
 
 | Constant | Meaning | Usage |
 |----------|---------|-------|
-| `<OWNER_ID>` (required) | Hard isolation boundary — a company, team, or person; everyone inside sees everything | Pass `owner_id` explicitly on **every** call. Format: alphanumeric + `-` `_` `@` |
+| `<OWNER_ID>` (required) | Hard isolation boundary — a company, team, or person; everyone inside sees everything | Pass `owner_id` explicitly on **every** call. Format: alphanumeric + `-` `_` `@`. On a trusted server this value selects the graph. Behind the SaaS gateway the server ignores it and uses the gateway header; still pass it. |
 | `<PROJECT>` (optional) | Soft partition inside the owner | Writes: `metadata={"project": "<PROJECT>"}`. Reads: `metadata_filter={"project": "<PROJECT>"}`; omit the filter for cross-project recall |
 | `<AGENT_ID>` (optional) | Attribution | Writes: `metadata={"created_by": "<AGENT_ID>"}` (e.g. `"agent:codegen"`, `"user:ivan"`) |
 
@@ -36,18 +37,18 @@ Do not invent noise to satisfy the checklist.
 
 | Situation | Call |
 |-----------|------|
-| Session start | `get_brief(owner_id)` — top facts, contradictions, stale facts, stats |
-| "What do we know about X?" | `search(query="X", compact=true)` → follow `suggested_next` (usually `get_context` on best hits) |
+| Session start | `get_brief(owner_id)` (state, not the task) → `search(query=<task>, compact=true)`. `suggested_next` hints at a possible next call; you decide. Keep `about` via `upsert_node(..., source.ref="about")`. |
+| "What do we know about X?" | `search(query="X", compact=true)`. `suggested_next` is a hint; choose the next call yourself. |
 | Relation between two known IDs | `get_trace(from_id, to_id)` — directed; retry `directed=false` if empty |
 | Quick one-call recall | `recall_context(query, depth=1, compact=true)` — search + expansion; shortcut, not the primary API |
 
-`search` / `get_context` / `recall_context`: active-only by default (`include_outdated=true` for outdated/expired/archived neighbors too); `similarity_threshold` and `limit` tune noise; omit `search_type` (server default). Prefer `compact=true` on `search` / `recall_context` when exploring — responses include `snippet`s under a token budget plus `suggested_next` / `do_not`. If `budget.truncated`, follow `suggested_next` (expand 1–3 ids); do not broaden the same query. Returned text/snippets count as already read.
+`search` / `get_context` / `recall_context`: active durable facts by default. A fact with `ttl_days` is omitted until `include_ttl=true` (still living) or `include_outdated=true` (also outdated, archived, expired). `get_brief` never returns TTL facts. `similarity_threshold` and `limit` tune noise; omit `search_type` (server default). Prefer `compact=true` on `search` / `recall_context` when exploring — responses include `snippet`s under a token budget plus `suggested_next` / `do_not`. `suggested_next` is a hint. If `budget.truncated`, the full text is a `get_node` away. Returned text/snippets count as already read.
 
 ## Write: situation → tool
 
 | Situation | Call |
 |-----------|------|
-| Store one fact | `search` first → `create_node(text, owner_id, metadata)` |
+| Store one fact | `search` first → `create_node`. On `memory_duplicate`, do not paraphrase again. |
 | Sync from an external system | `upsert_node(text, source={"ref": <stable key>})` — idempotent |
 | Many facts at once | `create_nodes(items=[...])` (bulk, no auto_link) |
 | Read a document/conversation | extract → **one** `ingest_knowledge(document={"ref": ...}, facts=[{text, ref?, metadata?}, …], triplets=[…])`; prefer `facts[].ref` (else key=`hash(text)`); same ref updates in place |
@@ -56,7 +57,7 @@ Do not invent noise to satisfy the checklist.
 
 ## Relations
 
-Allowed types (default): `RELATED_TO` (generic), `MENTIONS`, `SUMMARIZES`, `FOLLOWS_FROM`, `CONTRADICTS`, plus team allowlist (`RUNS_ON`, `USES`, …). Do not invent types — the server may warn or reject. `create_relation` is idempotent per type. `auto_link=true` (default on single `create_node`) adds `MENTIONS` from Facts to similar Entities; disable for bulk.
+Allowed types (default): `RELATED_TO` (generic), `MENTIONS`, `SUMMARIZES`, `FOLLOWS_FROM`, `CONTRADICTS`, plus team allowlist (`RUNS_ON`, `USES`, …). Do not invent types — the server may warn or reject. `create_relation` is idempotent per type. `auto_link` defaults to false. Pass `auto_link=true` only when a Fact should gain `MENTIONS` to similar Entities. Prefer `create_relation` or `links` for an edge you mean. `get_context` fills its node budget with `CONTRADICTS` and `FOLLOWS_FROM` before `MENTIONS`.
 
 ## Versioning & time
 
