@@ -11,6 +11,7 @@ from graph_memory_mcp.config import MCPServerConfig
 from graph_memory_mcp.graph_memory.backends import open_store
 from graph_memory_mcp.graph_memory.mcp_handlers_admin import (
     export_owner,
+    get_brief,
     health_check,
     import_owner,
 )
@@ -446,6 +447,84 @@ def test_error_paths(store):
         assert mismatch["code"] == "memory_validation_error"
     finally:
         store.set_embedding_service(_Vectors())
+
+
+def test_search_hides_ttl_until_asked(store):
+    config = _config()
+    owner_id = _owner()
+    temporary = _create(store, config, owner_id, "near", ttl_days=14)
+    found = search(
+        store, config, query="near", owner_id=owner_id, similarity_threshold=0.99
+    )
+    assert found["success"], found
+    assert temporary["node_id"] not in [row["node_id"] for row in found["results"]]
+    shown = search(
+        store,
+        config,
+        query="near",
+        owner_id=owner_id,
+        similarity_threshold=0.99,
+        include_ttl=True,
+    )
+    assert temporary["node_id"] in [row["node_id"] for row in shown["results"]]
+
+
+def test_brief_is_about_and_recency_not_degree(store):
+    config = _config()
+    owner_id = _owner()
+    about = _create(
+        store,
+        config,
+        owner_id,
+        "near",
+        source={"ref": "about"},
+    )
+    newer = _create(store, config, owner_id, "mid")
+    brief = get_brief(store, owner_id=owner_id, limit=10)
+    assert brief["success"], brief
+    assert brief["about"]["node_id"] == about["node_id"]
+    ids = [row["node_id"] for row in brief["top_facts"]]
+    assert about["node_id"] not in ids
+    assert ids[0] == newer["node_id"]
+    assert "created_at" in brief["top_facts"][0]
+
+
+def test_context_budget_keeps_contradiction_ahead_of_mentions(store):
+    config = _config()
+    owner_id = _owner()
+    center = _create(store, config, owner_id, "near")
+    mention = _create(store, config, owner_id, "side", node_type="Entity")
+    other = _create(store, config, owner_id, "far")
+    assert create_relation(
+        store,
+        from_id=center["node_id"],
+        to_id=mention["node_id"],
+        relation_type="MENTIONS",
+        owner_id=owner_id,
+        config=config,
+    )["success"]
+    assert create_relation(
+        store,
+        from_id=center["node_id"],
+        to_id=other["node_id"],
+        relation_type="CONTRADICTS",
+        owner_id=owner_id,
+        config=config,
+    )["success"]
+    context = get_context(
+        store,
+        config,
+        node_id=center["node_id"],
+        owner_id=owner_id,
+        depth=1,
+        max_nodes=2,
+    )
+    neighbor_ids = [
+        node["node_id"]
+        for node in context["nodes"]
+        if node["node_id"] != center["node_id"]
+    ]
+    assert neighbor_ids == [other["node_id"]]
 
 
 def test_health_reports_arcade_without_dropping_falkor_key(store):
