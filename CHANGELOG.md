@@ -6,7 +6,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
-- `OWNER_SCOPE=client` (default) keeps the tool `owner_id`. `OWNER_SCOPE=header` ignores it and requires `X-Owner-Id` on `/mcp`. `GET /internal/graph-size` reports one owner's graph size for a gateway storage quota.
+- `OWNER_SCOPE=client` (default) keeps the tool `owner_id`. `OWNER_SCOPE=header` ignores it and requires `X-Owner-Id` on `/mcp`.
 - GROW ritual in agent policies / AGENTS.md (Ground → Record → Orient → Write after meaningful work)
 - Compact recall: `compact` on `search` / `recall_context`; responses always include `suggested_next`, `do_not`, `budget` (snippets under `COMPACT_RECALL_TOKEN_BUDGET`)
 - `get_brief` returns an optional `about` anchor (`source.ref=about`) and recent facts without TTL, not a degree ranking

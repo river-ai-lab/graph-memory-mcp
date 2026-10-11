@@ -47,7 +47,7 @@ Fact + Entity vector indexes: auto on first `search` / `find_similar` / Fact `au
 
 Each `owner_id` = own FalkorDB graph. Same `owner_id` → shared memory. Soft split inside owner: `metadata.project`. Always pass `owner_id` explicitly (server default: `DEFAULT_OWNER_ID`, usually `"default"`).
 
-`OWNER_SCOPE=client` (default, trusted network) uses that argument. `OWNER_SCOPE=header` (behind the SaaS gateway) ignores it and uses `X-Owner-Id`. Passing the argument is still correct: the tool schema is the same, and a local server needs the value.
+`OWNER_SCOPE=client` (default, trusted network) uses that argument. `OWNER_SCOPE=header` (when a reverse proxy or middleware controls ownership) ignores it and uses `X-Owner-Id`. Passing the argument is still correct: the tool schema is the same, and `client` mode needs the value.
 
 ## Lifecycle
 

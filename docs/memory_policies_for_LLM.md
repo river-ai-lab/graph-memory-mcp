@@ -27,7 +27,7 @@ Do not invent noise to satisfy the checklist.
 
 | Constant | Meaning | Usage |
 |----------|---------|-------|
-| `<OWNER_ID>` (required) | Hard isolation boundary — a company, team, or person; everyone inside sees everything | Pass `owner_id` explicitly on **every** call. Format: alphanumeric + `-` `_` `@`. On a trusted server this value selects the graph. Behind the SaaS gateway the server ignores it and uses the gateway header; still pass it. |
+| `<OWNER_ID>` (required) | Hard isolation boundary — a company, team, or person; everyone inside sees everything | Pass `owner_id` explicitly on **every** call. Format: alphanumeric + `-` `_` `@`. On a trusted server this value selects the graph. When `OWNER_SCOPE=header`, the server uses the `X-Owner-Id` HTTP header instead; still pass the argument for compatibility. |
 | `<PROJECT>` (optional) | Soft partition inside the owner | Writes: `metadata={"project": "<PROJECT>"}`. Reads: `metadata_filter={"project": "<PROJECT>"}`; omit the filter for cross-project recall |
 | `<AGENT_ID>` (optional) | Attribution | Writes: `metadata={"created_by": "<AGENT_ID>"}` (e.g. `"agent:codegen"`, `"user:ivan"`) |
 

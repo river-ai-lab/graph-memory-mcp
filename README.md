@@ -273,13 +273,11 @@ Who picks that owner is `OWNER_SCOPE` (default `client`):
 
 | | `OWNER_SCOPE=client` | `OWNER_SCOPE=header` |
 |---|---|---|
-| When | Local or company deploy on a trusted network. No API keys. | Process behind a SaaS gateway |
+| When | Trusted network; clients pass the owner directly | A reverse proxy or other middleware in front of the server sets the owner per request |
 | Owner | Tool argument `owner_id`. Empty falls back to `DEFAULT_OWNER_ID` (usually `"default"`). | `X-Owner-Id` on the HTTP request. The tool argument is ignored. |
 | Missing owner | Server default | Call is rejected. It does not fall back to `DEFAULT_OWNER_ID`. |
 
-Tool names and arguments stay the same in both modes. Agents should still pass `owner_id` explicitly: in `client` that value is the graph; in `header` the gateway's header wins, so a client cannot name someone else's graph.
-
-`OWNER_SCOPE=header` lets a gateway pin the owner per request, so one server can handle many tenants without the client choosing the owner. See [`docs/admin.md`](docs/admin.md) for gateway deployment details.
+Tool names and arguments stay the same in both modes. Agents should still pass `owner_id` explicitly: in `client` that value is the graph; in `header` the HTTP header wins, so a client cannot name someone else's graph.
 
 See [`docs/memory_policies_for_LLM.md`](docs/memory_policies_for_LLM.md) and [`docs/memory_faq.md`](docs/memory_faq.md) for operational guidance.
 
