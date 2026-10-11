@@ -28,3 +28,35 @@ curl -s -H "X-Owner-Id: team_a" localhost:8000/internal/graph-size
 `OWNER_SCOPE=header` applies only to `/mcp`: the tool argument `owner_id` is dropped and `X-Owner-Id` is required. `OWNER_SCOPE=client` (default) keeps the tool argument. See [README](../README.md#owner-isolation).
 
 Backups: [README](../README.md). Re-expose as MCP: `MCP_EXPOSE_ADMIN_TOOLS=true`.
+
+## SaaS Gateway Deployment
+
+When Graph Memory MCP runs behind a gateway (e.g., for multi-tenant SaaS):
+
+- Set `OWNER_SCOPE=header` so the gateway controls which owner each request accesses via `X-Owner-Id`.
+- The gateway handles API keys, authentication, rate limiting, and request counts.
+- `/admin/*` and `/internal/*` routes are not published on the public edge; they run on an internal network or require `ADMIN_TOKEN`.
+- Background jobs keep the owner they were started with; they do not read `X-Owner-Id`.
+
+### Storage Quota
+
+`GET /internal/graph-size` reports one owner's graph size for quota enforcement. The owner is `X-Owner-Id` (required; no fallback to a query parameter).
+
+Response:
+```json
+{
+  "owner_id": "team_a",
+  "nodes": [...],
+  "node_count": 150,
+  "relation_count": 220,
+  "bytes": 2048576
+}
+```
+
+`bytes` is the Redis `MEMORY USAGE` of that owner's graph key on FalkorDB, or `null` if it cannot be read. On ArcadeDB, `bytes` is `null` (use `node_count` and `relation_count` for quota logic).
+
+A missing `X-Owner-Id` header returns HTTP 400.
+
+### Not in This Repository
+
+API keys, Stripe integration, billing plans, and rate-limit buckets are the gateway's responsibility and are not in this codebase.
