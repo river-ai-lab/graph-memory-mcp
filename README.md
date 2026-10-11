@@ -4,6 +4,7 @@
 
 <h1 align="center">Graph Memory MCP</h1>
 
+<p><em>Semantic, persistent knowledge graph memory for LLM agents via MCP</em></p>
 <p align="center">
   <strong>Memory for agents that doesn't turn into a dump</strong>
 </p>
