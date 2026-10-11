@@ -9,6 +9,11 @@ def main() -> None:
         prog="graph-memory-mcp",
         description="Run MCP Graph Memory server (FastMCP HTTP).",
     )
+    parser.add_argument(
+        "--backend",
+        default=None,
+        help="Graph backend. Supported: falkordb (default), arcadedb. Overrides GRAPH_BACKEND.",
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument(
@@ -16,13 +21,22 @@ def main() -> None:
         default="INFO",
         choices=["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"],
     )
-    parser.add_argument(
+    profile = parser.add_mutually_exclusive_group()
+    profile.add_argument(
         "--simple",
         action="store_true",
         help=(
             "Use graph_memory_mcp.server_simple: like the default server but "
             "provenance is flat fields (ref, provenance_type, …) instead of a nested "
             "`source` object."
+        ),
+    )
+    profile.add_argument(
+        "--extended",
+        action="store_true",
+        help=(
+            "Use graph_memory_mcp.server_extended: same tools as the default server, "
+            "plus description, shared_with_ids, and collection_id on writes."
         ),
     )
     args = parser.parse_args()
@@ -32,11 +46,17 @@ def main() -> None:
     from graph_memory_mcp.config import load_mcp_server_config
 
     memory_cfg = load_mcp_server_config()
+    if args.backend:
+        memory_cfg.graph_backend = args.backend
 
     if args.simple:
         from graph_memory_mcp.server_simple import GraphMemorySimpleMCP
 
         server = GraphMemorySimpleMCP(memory_cfg)
+    elif args.extended:
+        from graph_memory_mcp.server_extended import GraphMemoryExtendedMCP
+
+        server = GraphMemoryExtendedMCP(memory_cfg)
     else:
         from graph_memory_mcp.server import GraphMemoryMCP
 

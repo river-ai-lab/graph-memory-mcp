@@ -1,28 +1,15 @@
 """
 Pytest configuration.
 
-This repository is laid out as a *package directory* (the repo root contains
-`__init__.py`). To import it as `graph_memory_mcp.*`, Python needs the *parent*
-directory of the repo on `sys.path`.
-
-All tests require a running FalkorDB (see docker-compose.yml / scripts/falkordb-up.sh).
+FalkorDB is required except for tests marked ``arcade`` (those need ArcadeDB).
 """
 
 from __future__ import annotations
-
-import sys
-from pathlib import Path
 
 import pytest
 import redis
 
 from graph_memory_mcp.config import load_mcp_server_config
-
-
-def pytest_configure() -> None:
-    repo_root = Path(__file__).resolve().parents[1]
-    repo_parent = repo_root.parent
-    sys.path.insert(0, str(repo_parent))
 
 
 def falkordb_is_available(host: str, port: int, password: str | None) -> bool:
@@ -39,15 +26,23 @@ def falkordb_is_available(host: str, port: int, password: str | None) -> bool:
         return False
 
 
-@pytest.fixture(scope="session", autouse=True)
-def require_falkordb() -> None:
-    """Fail fast when FalkorDB is not running — required for every test run."""
-    cfg = load_mcp_server_config()
-    if falkordb_is_available(
-        cfg.falkordb_host, cfg.falkordb_port, cfg.falkordb_password
-    ):
-        return
+_falkor_up: bool | None = None
 
+
+@pytest.fixture(autouse=True)
+def require_falkordb(request: pytest.FixtureRequest) -> None:
+    """FalkorDB is required for tests that are not marked arcade."""
+    if request.node.get_closest_marker("arcade"):
+        return
+    global _falkor_up
+    if _falkor_up is None:
+        cfg = load_mcp_server_config()
+        _falkor_up = falkordb_is_available(
+            cfg.falkordb_host, cfg.falkordb_port, cfg.falkordb_password
+        )
+    if _falkor_up:
+        return
+    cfg = load_mcp_server_config()
     pytest.fail(
         "FalkorDB is required but unavailable at "
         f"{cfg.falkordb_host}:{cfg.falkordb_port}. "

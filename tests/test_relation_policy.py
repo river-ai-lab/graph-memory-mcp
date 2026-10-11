@@ -51,6 +51,13 @@ class _FakeDB:
     graph = _FakeGraph()
     cache = _FakeCache()
 
+    def query(self, query, params=None, owner_id=None):
+        return self.graph.query(query, params=params)
+
+    def merge_relation(self, **kwargs):
+        del kwargs
+        return [[1]]
+
 
 def _extract_tool_json(result) -> dict:
     content = getattr(result, "content", None)
@@ -229,6 +236,7 @@ def test_create_node_links_surface_policy_errors():
         node_type="Fact",
         owner_id=owner_id,
         auto_link=False,
+        check_duplicates=False,
         links=[
             {
                 "to_id": target_id,
@@ -321,6 +329,7 @@ async def test_mcp_create_relation_policy_enforce():
                             "text": "MCP policy fact B",
                             "owner_id": owner_id,
                             "auto_link": False,
+                            "check_duplicates": False,
                         },
                     )
                 )

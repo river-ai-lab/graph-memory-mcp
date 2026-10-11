@@ -1,16 +1,4 @@
-"""
-HTTP Server Example
-===================
-
-This example runs the Graph Memory MCP server as a standalone HTTP service
-using Uvicorn.
-
-Usage:
-    python examples/run_server.py
-
-This exposes the MCP Streamable HTTP endpoint at:
-    http://127.0.0.1:8000/mcp
-"""
+"""Default-profile MCP server at http://127.0.0.1:8000/mcp."""
 
 import uvicorn
 
@@ -25,6 +13,6 @@ def create_app():
 
 
 if __name__ == "__main__":
-    print("Starting Embedded MCP Server...")
+    print("Starting MCP server...")
     print("MCP Endpoint: http://127.0.0.1:8000/mcp")
     uvicorn.run(create_app(), host="127.0.0.1", port=8000)

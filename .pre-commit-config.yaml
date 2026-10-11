@@ -5,21 +5,15 @@ repos:
       - id: trailing-whitespace
       - id: end-of-file-fixer
       - id: check-yaml
+      - id: check-toml
+      - id: check-json
+      - id: check-merge-conflict
       - id: check-added-large-files
-
-  - repo: https://github.com/psf/black
-    rev: 26.1.0
-    hooks:
-      - id: black
-
-  - repo: https://github.com/pycqa/isort
-    rev: 7.0.0
-    hooks:
-      - id: isort
+      - id: debug-statements
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.8.4
+    rev: v0.17.0
     hooks:
-      - id: ruff
+      - id: ruff-check
         args: [--fix]
-        # Check for unused imports (F401), unused variables (F841), etc.
+      - id: ruff-format

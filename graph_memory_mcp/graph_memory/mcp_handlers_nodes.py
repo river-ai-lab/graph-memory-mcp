@@ -1,8 +1,11 @@
 """Node handlers for MCP Graph Memory (Fact/Entity CRUD)."""
 
 import logging
+import re
 import time
 from typing import Any, Dict, List, Literal, Optional
+
+from pydantic import BaseModel, ConfigDict
 
 from graph_memory_mcp.graph_memory.database import FalkorDBClient
 from graph_memory_mcp.graph_memory.mcp_handlers_relations import create_relation
@@ -14,37 +17,55 @@ from graph_memory_mcp.graph_memory.utils import (
     dump_json,
     ensure_text,
     error_response,
-    escape_value,
-    execute_query,
-    format_vecf32,
     load_json,
     mcp_handler,
+    new_uid,
+    normalize_entity_name,
     normalize_owner_id,
     normalize_unix_ms,
+    require_node_id,
     success_response,
     validate_inputs,
 )
+from graph_memory_mcp.jobs.lock import job_lock
 
 logger = logging.getLogger(__name__)
 
 
-def _node_return_fields(alias: str = "n") -> str:
-    """Return a consistent node projection for reads and mutation responses."""
-    return f"""
-        id({alias}) as node_id,
-        labels({alias})[0] as node_type,
-        {alias}.text as text,
-        {alias}.description as description,
-        {alias}.status as status,
-        {alias}.created_at as created_at,
-        {alias}.updated_at as updated_at,
-        {alias}.metadata_str as metadata_str,
-        {alias}.shared_with_ids as shared_with_ids,
-        {alias}.ttl_days as ttl_days,
-        {alias}.expires_at as expires_at,
-        {alias}.type as entity_type,
-        {alias}.source_str as source_str
+class ReservedMetadata(BaseModel):
+    """Typed contract for reserved metadata keys (promoted to flat properties).
+
+    Scoping model: `owner_id` is the hard isolation boundary (its own graph);
+    `project` is a soft partition inside an owner (filterable, indexed);
+    `created_by` is optional attribution ("user:<id>" / "agent:<id>").
+    All fields are optional; any non-reserved keys pass through freely
+    (extra="allow") and live only in the metadata JSON.
     """
+
+    model_config = ConfigDict(extra="allow")
+
+    project: Optional[str] = None
+    created_by: Optional[str] = None
+    tags: Optional[List[str]] = None
+    type: Optional[str] = None
+    confidence: Optional[float] = None
+
+
+def metadata_promoted_props(metadata: Optional[Dict]) -> Dict[str, Any]:
+    """Promote reserved metadata keys to flat node properties.
+
+    FalkorDB cannot parse JSON strings in Cypher, so reserved keys are
+    mirrored as native properties for indexable filtering. Invalid types
+    raise ValidationError (a ValueError) → memory_validation_error.
+    """
+    reserved = ReservedMetadata.model_validate(metadata or {})
+    return {
+        "project": reserved.project,
+        "created_by": reserved.created_by,
+        "tags": reserved.tags or None,
+        "meta_type": reserved.type,
+        "confidence": reserved.confidence,
+    }
 
 
 def _node_from_row(row: List[Any]) -> Dict[str, Any]:
@@ -197,7 +218,7 @@ def create_node(
     *,
     text: str,
     description: Optional[str] = None,
-    node_type: Literal["Fact", "Entity"] = "Fact",
+    node_type: Literal["Fact", "Entity", "Collection", "User", "Project"] = "Fact",
     owner_id: str = "default",
     shared_with_ids: Optional[List[str]] = None,
     collection_id: Optional[str] = None,
@@ -206,9 +227,10 @@ def create_node(
     status: Optional[Literal["active", "outdated", "archived"]] = None,
     ttl_days: Optional[float] = None,
     entity_type: Optional[str] = None,
-    auto_link: bool = True,
+    auto_link: bool = False,
     semantic_threshold: Optional[float] = None,
     links: Optional[List[Dict]] = None,
+    check_duplicates: bool = True,
 ) -> Dict:
     """Create a Fact or Entity node."""
     if error := validate_inputs(locals(), config):
@@ -216,6 +238,23 @@ def create_node(
 
     owner_id = normalize_owner_id(owner_id)
     embedding = db.get_embedding(text)
+
+    possible_duplicates = _find_possible_duplicates(
+        db, config, node_type=node_type, embedding=embedding, owner_id=owner_id
+    )
+    if check_duplicates and node_type == "Fact":
+        blocked = _blocking_duplicates(config, text, possible_duplicates)
+        if blocked:
+            return error_response(
+                "Near-duplicate already exists. "
+                "Update that node, mark_outdated it, or pass check_duplicates=false "
+                "if this fact is different.",
+                code="memory_duplicate",
+            ) | {
+                "possible_duplicates": blocked,
+            }
+
+    warnings = _long_text_warnings(config, text)
 
     # Calculate expires_at
     expires_at = None
@@ -226,36 +265,8 @@ def create_node(
     metadata_str = dump_json(metadata or {})  # Maps must be JSON strings in FalkorDB
     source_props = _source_properties(source)
 
-    # Add entity_type for Entity nodes
-    type_prop = ""
-    if node_type == "Entity" and entity_type:
-        type_prop = ", type: $entity_type"
-
-    query = f"""
-    CREATE (n:{node_type} {{
-        owner_id: $owner_id,
-        text: $text,
-        description: $description,
-        embedding: {format_vecf32(embedding)},
-        status: $status,
-        created_at: timestamp(),
-        updated_at: timestamp(),
-        metadata_str: $metadata_str,
-        shared_with_ids: $shared_with_ids,
-        ttl_days: $ttl_days,
-        expires_at: $expires_at,
-        last_dedup_at: NULL,
-        source_str: $source_str,
-        source_ref: $source_ref,
-        source_type: $source_type,
-        source_uri: $source_uri,
-        content_hash: $content_hash,
-        source_updated_at: $source_updated_at{type_prop}
-    }})
-    RETURN {_node_return_fields()}
-    """
-
     params = {
+        "uid": new_uid(),
         "owner_id": owner_id,
         "text": text,
         "description": description,
@@ -264,7 +275,10 @@ def create_node(
         "shared_with_ids": shared_with_ids or [],
         "ttl_days": ttl_days,
         "expires_at": expires_at,
+        **metadata_promoted_props(metadata),
     }
+    if embedding:
+        params["embedding"] = embedding
     params.update(
         {
             "source_str": source_props["source_str"],
@@ -276,14 +290,21 @@ def create_node(
         }
     )
 
-    if node_type == "Entity" and entity_type:
-        params["entity_type"] = entity_type
+    if node_type == "Entity":
+        params["name_norm"] = normalize_entity_name(text)
+        if entity_type:
+            params["entity_type"] = entity_type
 
-    result = execute_query(db, query, params)
-    if not result:
+    rows = db.create_node_row(
+        node_type=node_type,
+        params=params,
+        has_embedding=bool(embedding),
+        entity_type=entity_type,
+    )
+    if not rows:
         return error_response("Failed to create node", code="memory_service_error")
 
-    node = _node_from_row(result.result_set[0])
+    node = _node_from_row(rows[0])
     node_id = node["node_id"]
 
     # Add to collection if specified (extended)
@@ -328,9 +349,104 @@ def create_node(
 
     db.cache.invalidate_search()
 
-    return _response_with_link_fields(
-        success_response(node=node), link_errors, link_warnings
+    response = success_response(node=node)
+    if possible_duplicates:
+        response["possible_duplicates"] = possible_duplicates
+    if warnings:
+        response["warnings"] = warnings
+    return _response_with_link_fields(response, link_errors, link_warnings)
+
+
+_BULK_MAX_ITEMS = 200
+
+
+@mcp_handler
+def create_nodes(
+    db: FalkorDBClient,
+    config: Any,
+    *,
+    items: List[Dict],
+    node_type: Literal["Fact", "Entity"] = "Fact",
+    owner_id: str = "default",
+) -> Dict:
+    """Bulk create nodes in one query with batched embeddings.
+
+    Each item: {text, description?, metadata?, status?, ttl_days?}.
+    No auto_link / links / possible_duplicates — bulk ingest is explicit.
+    """
+    owner_id = normalize_owner_id(owner_id)
+    if not items:
+        return error_response("items is empty", code="memory_validation_error")
+    if len(items) > _BULK_MAX_ITEMS:
+        return error_response(
+            f"Too many items (max {_BULK_MAX_ITEMS})", code="memory_validation_error"
+        )
+    for i, item in enumerate(items):
+        if not isinstance(item, dict) or not ensure_text(item.get("text")):
+            return error_response(
+                f"items[{i}].text is required", code="memory_validation_error"
+            )
+        if error := validate_inputs(
+            {
+                "text": item.get("text"),
+                "metadata": item.get("metadata"),
+                "ttl_days": item.get("ttl_days"),
+                "status": item.get("status"),
+                "node_type": node_type,
+                "owner_id": owner_id,
+            },
+            config,
+        ):
+            return error_response(
+                f"items[{i}]: {error}", code="memory_validation_error"
+            )
+
+    texts = [str(item["text"]) for item in items]
+    embeddings = db.get_embeddings_batch(texts)
+    if len(embeddings) != len(items) or any(not e for e in embeddings):
+        return error_response(
+            "Failed to compute embeddings for batch", code="memory_service_error"
+        )
+
+    now_ms = int(time.time() * 1000)
+    rows = []
+    for item, text, embedding in zip(items, texts, embeddings):
+        ttl_days = item.get("ttl_days")
+        promoted = metadata_promoted_props(item.get("metadata"))
+        rows.append(
+            {
+                "uid": new_uid(),
+                "text": text,
+                "description": ensure_text(item.get("description")),
+                "status": item.get("status") or "active",
+                "metadata_str": dump_json(item.get("metadata") or {}),
+                "tags": promoted["tags"],
+                "meta_type": promoted["meta_type"],
+                "confidence": promoted["confidence"],
+                "project": promoted["project"],
+                "created_by": promoted["created_by"],
+                "ttl_days": ttl_days,
+                "expires_at": (
+                    now_ms + int(ttl_days * 24 * 3600 * 1000)
+                    if ttl_days is not None and ttl_days > 0
+                    else None
+                ),
+                "name_norm": (
+                    normalize_entity_name(text) if node_type == "Entity" else None
+                ),
+                "emb": [float(v) for v in embedding],
+            }
+        )
+
+    created_rows = db.create_nodes_bulk(
+        node_type=node_type, rows=rows, owner_id=owner_id
     )
+    if not created_rows:
+        return error_response("Failed to create nodes", code="memory_service_error")
+
+    db.cache.invalidate_search()
+    created = [{"node_id": row["uid"], "text": row["text"]} for row in rows]
+    return success_response(nodes=created, count=len(created))
 
 
 @mcp_handler
@@ -340,17 +456,19 @@ def upsert_node(
     *,
     text: str,
     description: Optional[str] = None,
-    node_type: Literal["Fact", "Entity"] = "Fact",
+    node_type: Literal["Fact", "Entity", "Collection", "User", "Project"] = "Fact",
     owner_id: str = "default",
     metadata: Optional[Dict] = None,
     source: Optional[Dict] = None,
     status: Optional[Literal["active", "outdated", "archived"]] = None,
     ttl_days: Optional[float] = None,
-    versioning: bool = False,
+    versioning: Optional[bool] = None,
     entity_type: Optional[str] = None,
-    auto_link: bool = True,
+    auto_link: bool = False,
     semantic_threshold: Optional[float] = None,
     links: Optional[List[Dict]] = None,
+    shared_with_ids: Optional[List[str]] = None,
+    collection_id: Optional[str] = None,
 ) -> Dict:
     """Create or update a node using source.ref as the stable sync key."""
     if source is None:
@@ -360,6 +478,8 @@ def upsert_node(
     if error := validate_inputs(locals(), config):
         return error_response(error, code="memory_validation_error")
 
+    if versioning is None:
+        versioning = bool(getattr(config, "versioning_default", False))
     owner_id = normalize_owner_id(owner_id)
     source_props = _source_properties(source)
     source_ref = ensure_text((source_props["source"] or {}).get("ref"))
@@ -370,6 +490,65 @@ def upsert_node(
         )
 
     upsert_source = dict(source_props["source"] or {})
+
+    def _do_upsert() -> Dict:
+        return _upsert_check_then_write(
+            db,
+            config,
+            text=text,
+            description=description,
+            node_type=node_type,
+            owner_id=owner_id,
+            metadata=metadata,
+            status=status,
+            ttl_days=ttl_days,
+            versioning=versioning,
+            entity_type=entity_type,
+            auto_link=auto_link,
+            semantic_threshold=semantic_threshold,
+            links=links,
+            shared_with_ids=shared_with_ids,
+            collection_id=collection_id,
+            upsert_source=upsert_source,
+            source_ref=source_ref,
+        )
+
+    # Serialize concurrent upserts of the same (owner_id, source_ref) via Redis
+    # lock to avoid check-then-create races producing duplicates.
+    redis_client = getattr(db, "redis_client", None)
+    if redis_client is None:
+        return _do_upsert()
+    lock_key = f"graph_memory_mcp:upsert:{owner_id}:{node_type}:{source_ref}"
+    with job_lock(redis_client, lock_key, ttl_seconds=30) as acquired:
+        if not acquired:
+            return error_response(
+                "Concurrent upsert for the same source.ref in progress; retry",
+                code="memory_conflict",
+            )
+        return _do_upsert()
+
+
+def _upsert_check_then_write(
+    db: FalkorDBClient,
+    config: Any,
+    *,
+    text: str,
+    description: Optional[str],
+    node_type: Literal["Fact", "Entity", "Collection", "User", "Project"],
+    owner_id: str,
+    metadata: Optional[Dict],
+    status: Optional[str],
+    ttl_days: Optional[float],
+    versioning: bool,
+    entity_type: Optional[str],
+    auto_link: bool,
+    semantic_threshold: Optional[float],
+    links: Optional[List[Dict]],
+    shared_with_ids: Optional[List[str]],
+    collection_id: Optional[str],
+    upsert_source: Dict[str, Any],
+    source_ref: str,
+) -> Dict:
     existing = _get_node_by_source_ref(
         db,
         owner_id=owner_id,
@@ -379,6 +558,7 @@ def upsert_node(
     if existing is None:
         if versioning and "version" not in upsert_source:
             upsert_source["version"] = 1
+        # Identity is source.ref. A new ref is stored even when the text is close.
         result = create_node(
             db,
             config,
@@ -394,10 +574,15 @@ def upsert_node(
             auto_link=auto_link,
             semantic_threshold=semantic_threshold,
             links=links,
+            shared_with_ids=shared_with_ids,
+            collection_id=collection_id,
+            check_duplicates=False,
         )
         if not result.get("success"):
             return result
         response = success_response(node=result["node"], operation="created")
+        if result.get("possible_duplicates"):
+            response["possible_duplicates"] = result["possible_duplicates"]
         return _response_with_link_fields(
             response,
             result.get("link_errors") or [],
@@ -410,6 +595,7 @@ def upsert_node(
         owner_id=owner_id,
         text=text,
         description=description,
+        shared_with_ids=shared_with_ids,
         metadata=metadata,
         source=upsert_source,
         status=status,
@@ -419,6 +605,16 @@ def upsert_node(
     )
     if not result.get("success"):
         return result
+    if collection_id:
+        try:
+            _add_to_collection(db, existing["node_id"], collection_id, owner_id)
+        except Exception as exc:
+            logger.warning(
+                "Failed to add node %s to collection %s: %s",
+                existing["node_id"],
+                collection_id,
+                exc,
+            )
 
     link_errors, link_warnings = _apply_inline_links(
         db,
@@ -432,22 +628,59 @@ def upsert_node(
 
 
 @mcp_handler
-def get_node(db: FalkorDBClient, *, node_id: str, owner_id: str = "default") -> Dict:
-    """Get a node by ID."""
+def get_node(
+    db: FalkorDBClient,
+    *,
+    node_id: str,
+    owner_id: str = "default",
+    as_of: Optional[int] = None,
+) -> Dict:
+    """Get a node by ID; `as_of` (unix ms) reads state at that time via FactVersion."""
     owner_id = normalize_owner_id(owner_id)
+    node_id = require_node_id(node_id)
 
-    query = """
-    MATCH (n)
-    WHERE id(n) = $node_id AND n.owner_id = $owner_id
-    RETURN
-    """
-    query += _node_return_fields()
-
-    result = execute_query(db, query, {"node_id": int(node_id), "owner_id": owner_id})
-    if not result:
+    rows = db.fetch_node_row(node_id, owner_id)
+    if not rows:
         return error_response(f"Node {node_id} not found", code="memory_not_found")
 
-    return success_response(node=_node_from_row(result.result_set[0]))
+    node = _node_from_row(rows[0])
+    if as_of is None:
+        return success_response(node=node)
+    return _node_as_of(db, node=node, owner_id=owner_id, as_of=int(as_of))
+
+
+def _node_as_of(
+    db: FalkorDBClient, *, node: Dict[str, Any], owner_id: str, as_of: int
+) -> Dict:
+    """Overlay the FactVersion snapshot that was current at `as_of`.
+
+    Snapshots are taken before each versioned update, so the state at time T is
+    the earliest snapshot taken after T; if none exists, the current node.
+    Requires updates with versioning=true to be reliable.
+    """
+    created_at = node.get("created_at")
+    if isinstance(created_at, (int, float)) and created_at > as_of:
+        return error_response(
+            f"Node {node['node_id']} did not exist at {as_of}",
+            code="memory_not_found",
+        )
+
+    rows = db.fetch_version_after(node["node_id"], owner_id, as_of)
+    if rows:
+        row = rows[0]
+        node.update(
+            {
+                "text": ensure_text(row[0]),
+                "description": ensure_text(row[1]) if row[1] else None,
+                "metadata": load_json(row[2], {}),
+                "source": load_json(row[3], None),
+                "status": ensure_text(row[4]),
+                "ttl_days": row[5],
+                "expires_at": row[6],
+                "snapshot_timestamp": row[7],
+            }
+        )
+    return success_response(node=node, as_of=as_of)
 
 
 @mcp_handler
@@ -464,13 +697,17 @@ def update_node(
     status: Optional[Literal["active", "outdated", "archived"]] = None,
     ttl_days: Optional[float] = None,
     entity_type: Optional[str] = None,
-    versioning: bool = False,
+    versioning: Optional[bool] = None,
 ) -> Dict:
     """Update a Fact or Entity node."""
     owner_id = normalize_owner_id(owner_id)
+    node_id = require_node_id(node_id)
 
-    if error := validate_inputs(locals(), db.config if hasattr(db, "config") else None):
+    cfg = db.config if hasattr(db, "config") else None
+    if error := validate_inputs(locals(), cfg):
         return error_response(error, code="memory_validation_error")
+    if versioning is None:
+        versioning = bool(getattr(cfg, "versioning_default", False))
 
     # Get existing node
     existing = get_node(db, node_id=node_id, owner_id=owner_id)
@@ -482,39 +719,21 @@ def update_node(
 
     # Create version snapshot if versioning enabled
     if versioning and node_type == "Fact":
-        version_query = """
-        MATCH (n:Fact)
-        WHERE id(n) = $node_id AND n.owner_id = $owner_id
-        CREATE (v:FactVersion {
-            fact_id: id(n),
-            owner_id: n.owner_id,
-            text: n.text,
-            description: n.description,
-            metadata_str: n.metadata_str,
-            source_str: n.source_str,
-            shared_with_ids: n.shared_with_ids,
-            status: n.status,
-            ttl_days: n.ttl_days,
-            expires_at: n.expires_at,
-            version_timestamp: timestamp(),
-            original_created_at: n.created_at
-        })
-        RETURN id(v) as version_id
-        """
-        db.graph.query(
-            version_query, params={"node_id": int(node_id), "owner_id": owner_id}
-        )
+        db.snapshot_fact(node_id=node_id, owner_id=owner_id, version_uid=new_uid())
 
     # Build SET clauses
-    set_clauses = ["n.updated_at = timestamp()"]
-    params = {"node_id": int(node_id), "owner_id": owner_id}
+    set_clauses = [db.updated_at_assignment()]
+    params = {"node_id": node_id, "owner_id": owner_id}
 
     if text is not None:
         set_clauses.append("n.text = $text")
         params["text"] = text
-        # Update embedding
         embedding = db.get_embedding(text)
-        set_clauses.append(f"n.embedding = {format_vecf32(embedding)}")
+        set_clauses.append(
+            f"n.embedding = {db.embedding_literal('embedding', bool(embedding))}"
+        )
+        if embedding:
+            params["embedding"] = embedding
 
     if description is not None:
         set_clauses.append("n.description = $description")
@@ -529,6 +748,16 @@ def update_node(
         merged_metadata = {**base_meta, **metadata}
         set_clauses.append("n.metadata_str = $metadata_str")
         params["metadata_str"] = dump_json(merged_metadata)
+        set_clauses.extend(
+            [
+                "n.tags = $tags",
+                "n.meta_type = $meta_type",
+                "n.confidence = $confidence",
+                "n.project = $project",
+                "n.created_by = $created_by",
+            ]
+        )
+        params.update(metadata_promoted_props(merged_metadata))
 
     next_source = None
     if source is not None:
@@ -590,41 +819,26 @@ def update_node(
     if len(set_clauses) == 1:  # Only updated_at
         return get_node(db, node_id=node_id, owner_id=owner_id)
 
-    query = f"""
-    MATCH (n)
-    WHERE id(n) = $node_id AND n.owner_id = $owner_id
-    SET {', '.join(set_clauses)}
-    RETURN {_node_return_fields()}
-    """
-
-    # Execute update
-    result = execute_query(db, query, params)
-    if not result:
+    rows = db.apply_node_update(set_clauses=set_clauses, params=params)
+    if not rows:
         return error_response("Failed to update node", code="memory_service_error")
 
-    # Invalidate search cache
     db.cache.invalidate_search()
 
-    return success_response(node=_node_from_row(result.result_set[0]))
+    return success_response(node=_node_from_row(rows[0]))
 
 
 @mcp_handler
 def delete_node(db: FalkorDBClient, *, node_id: str, owner_id: str = "default") -> Dict:
-    """Delete a node and all its relationships."""
+    """Delete a node, its relationships and its version snapshots."""
     owner_id = normalize_owner_id(owner_id)
-
-    query = """
-    MATCH (n)
-    WHERE id(n) = $node_id AND n.owner_id = $owner_id
-    DETACH DELETE n
-    RETURN count(n) as deleted
-    """
-
-    result = execute_query(db, query, {"node_id": int(node_id), "owner_id": owner_id})
-    if not result:
+    node_id = require_node_id(node_id)
+    db.delete_fact_versions(node_id, owner_id)
+    rows = db.delete_node_row(node_id, owner_id)
+    if not rows:
         return error_response("Failed to delete node", code="memory_service_error")
 
-    deleted = result.result_set[0][0]
+    deleted = rows[0][0]
     if deleted == 0:
         return error_response(f"Node {node_id} not found", code="memory_not_found")
 
@@ -657,42 +871,23 @@ def get_node_change_history(
 ) -> Dict:
     """Get change history for a node."""
     owner_id = normalize_owner_id(owner_id)
+    node_id = require_node_id(node_id)
 
     # Query for version history
-    query = """
-    MATCH (v:FactVersion)
-    WHERE v.fact_id = $node_id AND v.owner_id = $owner_id
-    RETURN
-        id(v) as version_id,
-        v.text as text,
-        v.metadata_str as metadata_str,
-        v.source_str as source_str,
-        v.status as status,
-        v.ttl_days as ttl_days,
-        v.version_timestamp as version_timestamp,
-        v.original_created_at as original_created_at
-    ORDER BY v.version_timestamp DESC
-    """
-
-    result = db.graph.query(
-        query, params={"node_id": int(node_id), "owner_id": owner_id}
-    )
-
     versions = []
-    if result and hasattr(result, "result_set"):
-        for row in result.result_set:
-            versions.append(
-                {
-                    "version_id": str(row[0]),
-                    "text": ensure_text(row[1]),
-                    "metadata": load_json(row[2], {}),
-                    "source": load_json(row[3], None),
-                    "status": ensure_text(row[4]),
-                    "ttl_days": row[5],
-                    "version_timestamp": row[6],
-                    "original_created_at": row[7],
-                }
-            )
+    for row in db.list_fact_versions(node_id, owner_id):
+        versions.append(
+            {
+                "version_id": str(row[0]),
+                "text": ensure_text(row[1]),
+                "metadata": load_json(row[2], {}),
+                "source": load_json(row[3], None),
+                "status": ensure_text(row[4]),
+                "ttl_days": row[5],
+                "version_timestamp": row[6],
+                "original_created_at": row[7],
+            }
+        )
 
     return success_response(versions=versions, count=len(versions))
 
@@ -706,25 +901,18 @@ def _get_node_by_source_ref(
     db: FalkorDBClient,
     *,
     owner_id: str,
-    node_type: Literal["Fact", "Entity"],
+    node_type: Literal["Fact", "Entity", "Collection", "User", "Project"],
     source_ref: str,
 ) -> Optional[Dict[str, Any]]:
     """Load a node by same-owner source.ref, used for idempotent upserts."""
-    query = f"""
-    MATCH (n:{node_type})
-    WHERE n.owner_id = $owner_id AND n.source_ref = $source_ref
-    RETURN {_node_return_fields()}
-    LIMIT 1
-    """
-
-    result = execute_query(
-        db,
-        query,
-        {"owner_id": normalize_owner_id(owner_id), "source_ref": source_ref},
+    rows = db.fetch_by_source_ref(
+        node_type=node_type,
+        owner_id=normalize_owner_id(owner_id),
+        source_ref=source_ref,
     )
-    if not result:
+    if not rows:
         return None
-    return _node_from_row(result.result_set[0])
+    return _node_from_row(rows[0])
 
 
 def _create_auto_links(
@@ -748,34 +936,88 @@ def _create_auto_links(
         logger.warning("Auto-link policy warning: %s", warning)
 
     try:
-        db.ensure_search_indexes_if_missing()
+        db.ensure_search_indexes_if_missing(owner_id=owner_id)
         if not embedding and fact_text is not None:
             embedding = db.get_embedding(fact_text)
         if not embedding:
             return
 
-        max_distance = 1.0 - threshold
-
-        query = f"""
-        MATCH (node:Entity)
-        WHERE node.owner_id = '{escape_value(owner_id)}'
-          AND node.embedding IS NOT NULL
-          AND (node.status IS NULL OR node.status = 'active')
-        WITH node, vec.cosineDistance(node.embedding, {format_vecf32(embedding)}) AS score
-        WHERE score <= {max_distance}
-        WITH node
-        ORDER BY score ASC
-        LIMIT 10
-        MATCH (f), (e)
-        WHERE id(f) = {int(node_id)} AND id(e) = id(node)
-        MERGE (f)-[r:{AUTO_LINK_RELATION}]->(e)
-        ON CREATE SET r.created_at = timestamp(), r.auto_linked = true
-        RETURN count(r) as links_created
-        """
-
-        db.graph.query(query)
+        db.auto_link_mentions(
+            relation=AUTO_LINK_RELATION,
+            owner_id=owner_id,
+            embedding=embedding,
+            max_distance=1.0 - threshold,
+            node_id=node_id,
+        )
     except Exception as e:
         logger.warning("Auto-link failed: %s", e)
+
+
+def _find_possible_duplicates(
+    db: FalkorDBClient,
+    config: Any,
+    *,
+    node_type: str,
+    embedding: Optional[List[float]],
+    owner_id: str,
+    limit: int = 3,
+) -> List[Dict[str, Any]]:
+    """Server-side backstop for 'search before create': top similar active nodes."""
+    if not embedding:
+        return []
+    try:
+        threshold = getattr(config, "duplicate_similarity_threshold", 0.85)
+        rows = db.similarity_rows(
+            node_type=node_type,
+            embedding=embedding,
+            owner_id=owner_id,
+            limit=limit,
+            max_distance=1.0 - threshold,
+            include_ttl=True,
+        )
+        return [
+            {
+                "node_id": str(row[0]),
+                "text": ensure_text(row[2]),
+                "similarity": round(1.0 - float(row[6]), 6),
+            }
+            for row in rows
+        ]
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("possible_duplicates check failed: %s", exc)
+        return []
+
+
+def _diff_hint(new_text: str, existing_text: str) -> str:
+    """Word-level contrast. No domain identifier list."""
+    new_words = set(re.findall(r"\w{4,}", new_text.lower()))
+    old_words = set(re.findall(r"\w{4,}", (existing_text or "").lower()))
+    only_new = sorted(new_words - old_words)[:8] or ["—"]
+    only_old = sorted(old_words - new_words)[:8] or ["—"]
+    return f"words only in new: {only_new}; words only in existing: {only_old}"
+
+
+def _blocking_duplicates(
+    config: Any, text: str, possible_duplicates: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """Hits at or above the duplicate threshold. Similarity only."""
+    threshold = float(getattr(config, "create_duplicate_block_threshold", 0.92))
+    blocked = []
+    for item in possible_duplicates:
+        if float(item.get("similarity") or 0) < threshold:
+            continue
+        blocked.append({**item, "diff_hint": _diff_hint(text, item.get("text") or "")})
+    return blocked
+
+
+def _long_text_warnings(config: Any, text: str) -> List[str]:
+    limit = int(getattr(config, "long_text_warn_chars", 600) or 0)
+    if limit > 0 and len(text) > limit:
+        return [
+            f"text is long ({len(text)} chars, warn after {limit}); "
+            "prefer one statement. Write was not blocked."
+        ]
+    return []
 
 
 def _add_to_collection(
@@ -785,21 +1027,6 @@ def _add_to_collection(
 
     Creates a CONTAINS relationship from Collection to Node.
     """
-    query = """
-    MATCH (c:Collection), (n)
-    WHERE id(c) = $collection_id AND id(n) = $node_id
-      AND c.owner_id = $owner_id AND n.owner_id = $owner_id
-    MERGE (c)-[r:CONTAINS]->(n)
-    ON CREATE SET r.created_at = timestamp()
-    RETURN count(r) as created
-    """
-
-    params = {
-        "collection_id": int(collection_id),
-        "node_id": int(node_id),
-        "owner_id": owner_id,
-    }
-
-    result = db.graph.query(query, params=params)
-    if not result or not result.result_set:
+    rows = db.add_to_collection(node_id, collection_id, owner_id)
+    if not rows:
         raise ValueError(f"Failed to add node {node_id} to collection {collection_id}")
