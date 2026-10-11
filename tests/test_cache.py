@@ -1,5 +1,7 @@
 """Tests for caching functionality."""
 
+import uuid
+
 import pytest
 
 from graph_memory_mcp.config import MCPServerConfig
@@ -157,20 +159,24 @@ async def test_cache_integration(anyio_backend):
     from graph_memory_mcp.server import GraphMemoryMCP
 
     cfg = load_mcp_server_config()
+    owner_id = f"pytest_cache_{uuid.uuid4().hex[:8]}"
     async with anyio.create_task_group() as _tg:
         server = GraphMemoryMCP(cfg)
 
-        # Create a node
-        # FastMCP.call_tool(name, arguments) -> list of Content objects
         create_response = await server.mcp.call_tool(
             "create_node",
-            arguments={"text": "cache test", "node_type": "Fact", "owner_id": "test"},
+            arguments={
+                "text": f"cache probe {owner_id}",
+                "node_type": "Fact",
+                "owner_id": owner_id,
+            },
         )
         assert create_response is not None
 
         # First search (cache miss)
         search1 = await server.mcp.call_tool(
-            "search", arguments={"query": "cache test", "owner_id": "test"}
+            "search",
+            arguments={"query": f"cache probe {owner_id}", "owner_id": owner_id},
         )
         assert search1 is not None
 
@@ -181,14 +187,20 @@ async def test_cache_integration(anyio_backend):
 
         # Second search (cache hit - should be faster)
         search2 = await server.mcp.call_tool(
-            "search", arguments={"query": "cache test", "owner_id": "test"}
+            "search",
+            arguments={"query": f"cache probe {owner_id}", "owner_id": owner_id},
         )
         assert search2 == search1
 
         # Create another node (should invalidate cache)
         await server.mcp.call_tool(
             "create_node",
-            arguments={"text": "another fact", "node_type": "Fact", "owner_id": "test"},
+            arguments={
+                "text": f"unrelated ledger entry {owner_id}",
+                "node_type": "Fact",
+                "owner_id": owner_id,
+                "check_duplicates": False,
+            },
         )
 
         # Check cache was invalidated

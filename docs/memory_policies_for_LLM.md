@@ -1,199 +1,64 @@
-# Agent Memory Directives
+# Agent Memory Policy
 
-**Role**: You are an autonomous agent or sub-agent with access to the **Graph Memory MCP server**.
-**Purpose**: This memory is a **long-term knowledge base**, not a chat log. It persists across sessions and may be shared with other agents through agreed `owner_id` scopes.
+You have access to **Graph Memory MCP** — a long-term knowledge base shared across sessions and agents. It is **not a chat log**.
 
-## Core Principles
+## Core rules
 
-1. **Store durable knowledge**: Save stable facts, decisions, constraints, and relationships that will matter later.
-2. **Keep signal high**: Do not write noise, scratchpad thoughts, raw conversation, or transient execution state.
-3. **Respect isolation**: Memory is logically partitioned by `owner_id`. Always write into the correct scope.
-4. **Prefer explicit facts**: Store clear declarative facts, not vague summaries when a precise fact can be stored.
+1. **Start with two reads.** `get_brief(owner_id)` is project state: `about` if present, recent facts without TTL, open `CONTRADICTS`. It is not the task. Then `search(query=<task>, compact=true)`. `suggested_next` lists possible next calls; you decide which, if any, to take. Before `create_node`, `search` first.
+2. **One durable declarative fact per node.** Good: "Production Redis is at redis.internal". Bad: "we discussed infrastructure". Do not put metric tables or dumps (including APE tables) in `text`. A number that is the fact itself stays in the sentence.
+3. **Never store**: chat logs, scratchpad reasoning, secrets/PII, transient execution state, low-confidence guesses (unless labeled in metadata).
+4. **Update protocol**: substantive change → `mark_outdated(fact_id, reason)` + `create_node(new text)`. Typos/metadata → `update_node`.
+5. **No third paraphrase.** `create_node` returns `memory_duplicate` before write when a near-copy already exists. Update that node or `mark_outdated` it. Pass `check_duplicates=false` only when the new fact is different. A `possible_duplicates` list on a successful write is the same stop: do not create another wording of it.
+6. **GROW after meaningful work** — before the final reply: Ground → Record → Orient (if recurring) → Write. Do not defer to “end of session”.
+7. **Temporary facts carry `ttl_days`.** The server never sets it and does not infer it from `metadata.type`. A decision or durable outcome has no TTL. A run, pod, launch, or debug note uses `ttl_days` (typically 14–30). Do not store a pod lifecycle; store the decision and the outcome. A wrong prior fact is `mark_outdated` + `create_node`.
 
-## 1. What to Store
+## After meaningful work (GROW)
 
-Store information with strategic value for future work or agent coordination.
+Before the final user reply — not at “end of session” — run this binary checklist:
 
-- **World State**: persistent environmental facts, system topology, service locations, repo conventions.
-- **User Alignment**: preferences, constraints, priorities, and standing decisions.
-- **Tool/Workflow Knowledge**: proven procedures that should be reused later.
-- **Entity Relations**: dependencies, ownership, compatibility, and other structural links.
-- **Summarized Outcomes**: validated conclusions from research or implementation work.
+1. **Ground** — name one durable change (decision, root cause, architecture). If none → stop; do not write.
+2. **Record** — `search` first → `create_node`, or `mark_outdated` + `create_node` if a prior fact is wrong.
+3. **Orient** — only if the work can recur: `tags=["pattern"]` and/or a relation; skip otherwise.
+4. **Write** — set `metadata.project` and `metadata.created_by` on writes.
 
-## 2. What Not to Store
+Do not invent noise to satisfy the checklist.
 
-- **Chat Logs**: never store raw dialogue such as "user asked..." or "I replied...".
-- **Ephemeral State**: never store temporary execution notes such as "currently debugging..." or "processing file X".
-- **Secrets or PII**: never store passwords, API keys, tokens, secrets, or personal data.
-- **Intermediate Reasoning**: do not store chain-of-thought, scratchpad notes, or speculative reasoning.
-- **Low-Confidence Guesses**: do not store uncertain claims as facts unless explicitly labeled in metadata.
+## Scoping (operator sets these constants in your rules — apply, never invent)
 
-## 3. Operational Rules for This Server
+| Constant | Meaning | Usage |
+|----------|---------|-------|
+| `<OWNER_ID>` (required) | Hard isolation boundary — a company, team, or person; everyone inside sees everything | Pass `owner_id` explicitly on **every** call. Format: alphanumeric + `-` `_` `@`. On a trusted server this value selects the graph. When `OWNER_SCOPE=header`, the server uses the `X-Owner-Id` HTTP header instead; still pass the argument for compatibility. |
+| `<PROJECT>` (optional) | Soft partition inside the owner | Writes: `metadata={"project": "<PROJECT>"}`. Reads: `metadata_filter={"project": "<PROJECT>"}`; omit the filter for cross-project recall |
+| `<AGENT_ID>` (optional) | Attribution | Writes: `metadata={"created_by": "<AGENT_ID>"}` (e.g. `"agent:codegen"`, `"user:ivan"`) |
 
-### Always Set `owner_id`
+**Reserved metadata keys** (typed, filterable, indexed): `project`, `created_by`, `tags` (list of strings), `type`, `confidence` (float). Wrong types are rejected. All other metadata keys are free-form and always allowed. Put the searchable substance in `text`, not in metadata.
 
-Always pass `owner_id` explicitly on reads and writes.
+## Recall: situation → tool
 
-- Do not rely on the server default.
-- If you omit `owner_id`, writes go to `default`, which may put data into the wrong memory scope.
-- When updating or replacing a fact, use the same `owner_id` as the original node.
-
-### Valid `owner_id` Format
-
-This server accepts only alphanumeric characters plus `_`, `-`, and `@`.
-
-Recommended conventions:
-
-- **Private agent memory**: `agent_<agent_id>`
-- **Shared team memory**: `team_<team_id>`
-- **User-specific memory**: `user_<user_id>`
-
-Examples of valid values:
-
-- `agent_worker_7`
-- `team_platform`
-- `user_42`
-- `team-alpha`
-- `agent@planner`
-
-Avoid values with `:` or spaces, such as `agent:123` or `team:core`.
-
-### How to use `search`
-
-Semantic search finds Facts and Entities **similar in meaning** to your query text, scoped by **`owner_id`**.
-
-**Always pass:**
-
-| Parameter | Rule |
+| Situation | Call |
 |-----------|------|
-| `query` | Natural-language question or keywords (e.g. `"Redis hosting"`, `"user prefers dark mode"`) |
-| `owner_id` | Same scope you use for `create_node` / `get_node` (required — see above) |
+| Session start | `get_brief(owner_id)` (state, not the task) → `search(query=<task>, compact=true)`. `suggested_next` hints at a possible next call; you decide. Keep `about` via `upsert_node(..., source.ref="about")`. |
+| "What do we know about X?" | `search(query="X", compact=true)`. `suggested_next` is a hint; choose the next call yourself. |
+| Relation between two known IDs | `get_trace(from_id, to_id)` — directed; retry `directed=false` if empty |
+| Quick one-call recall | `recall_context(query, depth=1, compact=true)` — search + expansion; shortcut, not the primary API |
 
-**Optional — `search_type` (you can omit it):**
+`search` / `get_context` / `recall_context`: active durable facts by default. A fact with `ttl_days` is omitted until `include_ttl=true` (still living) or `include_outdated=true` (also outdated, archived, expired). `get_brief` never returns TTL facts. `similarity_threshold` and `limit` tune noise; omit `search_type` (server default). Prefer `compact=true` on `search` / `recall_context` when exploring — responses include `snippet`s under a token budget plus `suggested_next` / `do_not`. `suggested_next` is a hint. If `budget.truncated`, the full text is a `get_node` away. Returned text/snippets count as already read.
 
-The server has a default (`SEARCH_TYPE` in config, typically `pre_filter`). **Do not pass `search_type` unless your operator tells you to override the default** or you need a one-off different mode. When omitted, the server default applies automatically.
+## Write: situation → tool
 
-| Value | How it works | When to override |
-|-------|----------------|------------------|
-| **`pre_filter`** | Filter by `owner_id` (and status/TTL) **first**, then rank by vector similarity inside that set. | Large graph or many `owner_id`s — complete tenant results (default on most deployments). |
-| **`post_filter`** | **Global** ANN over the whole graph, then keep rows matching `owner_id` / status. | Small graph, few tenants — faster ANN; may miss hits as the graph grows. |
-
-**Example (usual — only required params; `search_type` omitted):**
-
-```json
-{
-  "query": "where is production Redis hosted",
-  "owner_id": "team_platform"
-}
-```
-
-**Example (only if you must override the server default):**
-
-```json
-{
-  "query": "where is production Redis hosted",
-  "owner_id": "team_platform",
-  "search_type": "post_filter"
-}
-```
-
-**Other optional parameters:**
-
-| Parameter | When |
+| Situation | Call |
 |-----------|------|
-| `search_type` | Override server default (`pre_filter` \| `post_filter`); **optional** — omit unless instructed |
-| `include_outdated: true` | Look for facts marked obsolete (e.g. after `mark_outdated`) |
-| `node_types: ["Fact"]` or `["Entity"]` | Only one kind of node |
-| `limit` | More or fewer hits than default |
-| `similarity_threshold` | Results too noisy or too sparse |
-| `status: "outdated"` | Outdated nodes only |
+| Store one fact | `search` first → `create_node`. On `memory_duplicate`, do not paraphrase again. |
+| Sync from an external system | `upsert_node(text, source={"ref": <stable key>})` — idempotent |
+| Many facts at once | `create_nodes(items=[...])` (bulk, no auto_link) |
+| Read a document/conversation | extract → **one** `ingest_knowledge(document={"ref": ...}, facts=[{text, ref?, metadata?}, …], triplets=[…])`; prefer `facts[].ref` (else key=`hash(text)`); same ref updates in place |
+| Link two nodes | `create_relation(from_id, to_id, relation_type)` |
+| Subject–predicate–object | `create_triplet(..., metadata={project, created_by, …})` — entities dedupe by normalized name; metadata on both entities |
 
-### Search Before Create
+## Relations
 
-Before writing a new fact:
+Allowed types (default): `RELATED_TO` (generic), `MENTIONS`, `SUMMARIZES`, `FOLLOWS_FROM`, `CONTRADICTS`, plus team allowlist (`RUNS_ON`, `USES`, …). Do not invent types — the server may warn or reject. `create_relation` is idempotent per type. `auto_link` defaults to false. Pass `auto_link=true` only when a Fact should gain `MENTIONS` to similar Entities. Prefer `create_relation` or `links` for an edge you mean. `get_context` fills its node budget with `CONTRADICTS` and `FOLLOWS_FROM` before `MENTIONS`.
 
-1. Call `search` with your `query` and the same `owner_id` you will write to (`search_type` optional — server default applies).
-2. If needed, call `get_context(...)` on promising `node_id` values from the results.
-3. Only call `create_node` if nothing already covers the fact or your new wording is materially different.
+## Versioning & time
 
-Do not rely only on background deduplication. Agents should actively avoid writing duplicates.
-
-### One Fact Per Node
-
-Prefer one durable declarative fact per node.
-
-Good:
-
-- "Production Redis is hosted at redis.internal."
-- "User prefers speed over cost."
-- "Service A depends on Service B."
-
-Bad:
-
-- "We discussed infrastructure and maybe Redis is important."
-- "Today we talked about several deployment ideas."
-
-### Update Protocol
-
-For substantive changes, preserve history instead of overwriting the old fact.
-
-1. Call `mark_outdated(fact_id=..., owner_id=..., reason="...")`
-2. Call `create_node(text="New fact...", owner_id=..., metadata=...)`
-
-Use `update_node(...)` only for small corrections or metadata adjustments, such as:
-
-- fixing a typo
-- improving metadata
-- updating TTL
-
-### Metadata
-
-Use `metadata` for structured context such as source, confidence, tags, or timestamps.
-
-Example:
-
-```json
-{
-  "type": "regulation",
-  "confidence": 0.95,
-  "source": "https://api.docs.example",
-  "tags": ["critical"]
-}
-```
-
-Note:
-
-- Metadata is returned with the node.
-- Metadata is not the main searchable/filterable surface today.
-- Put the primary fact in `text`, not only in metadata.
-
-## 4. Relations (Graph Links)
-
-`Fact` and `Entity` are **practical labels**, not a strict ontology (Explorer uses different shapes for humans only). Entity ≈ named concept; Fact ≈ declarative statement. Prefer consistent relations over debating which label to use.
-
-### Default types
-
-| Type | When to use |
-|------|-------------|
-| `RELATED_TO` | Default association when no finer type is needed |
-| `MENTIONS` | Source node refers to, depends on, or is about the target (any node pair) |
-| `SUMMARIZES` | Summary fact → source facts |
-| `FOLLOWS_FROM` | Temporal or logical precedence |
-| `CONTRADICTS` | Explicit conflict between facts |
-
-Use other types (`RUNS_ON`, `USES`, …) only via `create_triplet` or when your team's allowlist includes them.
-
-### Rules
-
-1. **Search before linking** — call `search` / `get_context` to avoid redundant edges.
-2. **Do not invent relation types** — the server may reject types outside `RELATION_ALLOWED_TYPES` (default mode: `warn`; production may use `enforce`).
-3. **`create_relation` is idempotent per type** — repeating the same `(from_id, relation_type, to_id)` does not duplicate that edge; different types between the same pair are still allowed.
-4. **Prefer `links` on `create_node`** when you already know structure at insert time.
-5. **Bulk ingest** — set `auto_link=false` to skip automatic `MENTIONS` edges, then link explicitly.
-6. **Fix mistakes** — `delete_relation`, `mark_outdated`, or `delete_node`.
-
-### Auto-link
-
-`create_node(..., auto_link=true)` on **Facts** adds `MENTIONS` to semantically similar **Entity** nodes (Entity vector index). It does **not** link Fact→Fact. Disable when bulk-importing (`auto_link=false`) and add `links` / `create_relation` explicitly.
-
-The server enforces allowed relation types from config; you do not need to read that config — follow this document and handle `warning` / errors in tool responses.
+Updates with `versioning=true` (or server default `VERSIONING_DEFAULT`) snapshot the previous state: `get_node_change_history(node_id)` lists versions, `get_node(node_id, as_of=<unix ms>)` reads the state at a point in time.

@@ -1,41 +1,19 @@
-# MCP Graph Memory — Background Jobs (non-normative)
+# Background jobs
 
-This document describes **optional background jobs** and their runtime behavior.
-The normative API contract lives in `docs/features.md`.
+Off until `JOBS_ENABLED=true`. Archive and dedup both run. `JOB_ARCHIVE_ENABLED=false` or `JOB_DEDUPLICATE_ENABLED=false` turns one off.
 
-All jobs are configurable via `config.py` and run via APScheduler with retry logic and owner isolation.
+`JOBS_OWNER_IDS` limits both jobs to those owners (`team_a` or `team_a,team_b`). Empty means every owner. `JOBS_PROCESS_ALL_OWNERS=true` runs for every owner even when the list is set.
 
-## deduplication job
+Falkor takes a Redis lock per job and owner. Arcade does not. If the graph backend is down at process start, the scheduler retries every 30s.
 
-**What:** Merges semantically similar facts (creates merged fact, deletes originals, redirects relationships).
+## Dedup
 
-**Config keys:**
-- `job_deduplicate_enabled` (bool, default: false)
-- `job_deduplicate_cron` (string, default: "0 * * * *")
-- `job_deduplicate_hours_threshold` (int, default: 24)
-- `job_deduplicate_similarity_threshold` (float, default: 0.95)
+Merges near-duplicate Facts and Entities (cosine ≥ `JOB_DEDUPLICATE_SIMILARITY_THRESHOLD`, default 0.95). Cron: `JOB_DEDUPLICATE_CRON` (hourly).
 
-**Guarantees:**
-- Lock-based execution (prevents concurrent runs)
-- Owner isolation (processes per `owner_id`)
-- Incremental (processes only facts not checked recently)
+## Archive
 
-## archival job
+Sets `status=archived` on Facts whose `expires_at` has passed, including Facts that still have relations. Cron: `JOB_ARCHIVE_CRON` (weekly).
 
-**What:** Archives facts with expired TTL (sets `status="archived"`).
+`JOB_ARCHIVE_STALE_ENABLED=true` also archives active Facts not recalled for `STALE_FACTS_DAYS`. That path skips a Fact that still has an active neighbor.
 
-**Config keys:**
-- `job_archive_enabled` (bool, default: false)
-- `job_archive_cron` (string, default: "0 3 * * 0")
-
-**Guarantees:**
-- Lock-based execution
-- Owner isolation
-- Preserves facts with active relationships
-
-## Job Execution
-
-- Scheduled via **APScheduler** (cron expressions)
-- Retry logic with exponential backoff (`job_retry_max_attempts`, `job_retry_backoff_base`, `job_retry_backoff_max`)
-- Idempotent and safe to run concurrently (with locking)
-- Lock TTL: `jobs_lock_ttl_seconds` (default: 600)
+Lock TTL: `JOBS_LOCK_TTL_SECONDS`. Metrics: `graph_memory_job_*` on `/metrics`.

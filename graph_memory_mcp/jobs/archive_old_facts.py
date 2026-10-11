@@ -1,75 +1,21 @@
 import logging
 import time
-from typing import Any, Dict, List
+from typing import Dict, List
 
 from graph_memory_mcp.config import MCPServerConfig
 from graph_memory_mcp.graph_memory import mcp_handlers_nodes
 from graph_memory_mcp.graph_memory.database import FalkorDBClient
 from graph_memory_mcp.graph_memory.utils import normalize_owner_id
-from graph_memory_mcp.jobs.lock import job_lock
+from graph_memory_mcp.jobs.lock import owner_job_lock
+from graph_memory_mcp.jobs.owners import resolve_owner_ids
 from graph_memory_mcp.jobs.retry import retry_async
 
 logger = logging.getLogger(__name__)
 
 
-def _parse_owner_ids(config: MCPServerConfig) -> List[str]:
-    """Parse owner IDs from config."""
-    raw = config.jobs_owner_ids or "default"
-    owners = [o.strip() for o in raw.split(",") if o.strip()]
-    return owners or ["default"]
-
-
-def _resolve_owner_ids(db: FalkorDBClient, config: MCPServerConfig) -> List[str]:
-    """Resolve owner IDs either from config or by discovering them from the graph."""
-    if not config.jobs_process_all_owners:
-        return _parse_owner_ids(config)
-
-    query = """
-    MATCH (n)
-    WHERE n.owner_id IS NOT NULL AND n.owner_id <> ''
-    RETURN DISTINCT n.owner_id as owner_id
-    ORDER BY owner_id
-    """
-
-    try:
-        result = db.graph.query(query)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "Archive job: failed to discover owners, falling back to jobs_owner_ids: %s",
-            exc,
-        )
-        return _parse_owner_ids(config)
-
-    if not result or not hasattr(result, "result_set") or not result.result_set:
-        return _parse_owner_ids(config)
-
-    owners = []
-    for row in result.result_set:
-        if not row or row[0] is None:
-            continue
-        raw_owner = row[0]
-        if isinstance(raw_owner, bytes):
-            raw_owner = raw_owner.decode("utf-8", errors="replace")
-        owner_text = str(raw_owner).strip()
-        if not owner_text:
-            continue
-        owners.append(normalize_owner_id(owner_text))
-
-    resolved_owners = sorted(set(owners))
-    return resolved_owners or _parse_owner_ids(config)
-
-
-async def _execute_query(
-    db: FalkorDBClient,
-    query: str,
-    params: Dict[str, Any] | None = None,
-) -> Any:
-    """Execute graph query with retry logic."""
-    result = db.graph.query(query, params=params)
-    if not result or not hasattr(result, "result_set"):
-        return None
-    # Return in old format for compatibility: [header, rows]
-    return [result.header if hasattr(result, "header") else [], result.result_set]
+async def _invoke(fn):
+    """Run a sync store call so retry_async can wrap it."""
+    return fn()
 
 
 async def archive_old_facts(db: FalkorDBClient, config: MCPServerConfig) -> None:
@@ -88,13 +34,13 @@ async def archive_old_facts(db: FalkorDBClient, config: MCPServerConfig) -> None
     retry_backoff_base = config.job_retry_backoff_base
     retry_backoff_max = config.job_retry_backoff_max
 
-    execute_query_with_retry = retry_async(
+    invoke_with_retry = retry_async(
         max_attempts=retry_max_attempts,
         backoff_base=retry_backoff_base,
         backoff_max=retry_backoff_max,
-    )(_execute_query)
+    )(_invoke)
 
-    owners = _resolve_owner_ids(db, config)
+    owners = resolve_owner_ids(db, config)
     lock_ttl = config.jobs_lock_ttl_seconds
 
     # Fact.created_at / expires_at are stored in milliseconds (timestamp())
@@ -104,15 +50,9 @@ async def archive_old_facts(db: FalkorDBClient, config: MCPServerConfig) -> None
     for owner_id in owners:
         lock_key = f"graph_memory_mcp:job:archive_old_facts:{owner_id}"
 
-        if db.redis_client is None:
-            logger.warning("Archive job: Redis not available, running without lock")
-            acquired = True
-            lock_context = None
-        else:
-            lock_context = job_lock(db.redis_client, lock_key, ttl_seconds=lock_ttl)
-            acquired = lock_context.__enter__()
-
-        try:
+        with owner_job_lock(
+            db, lock_key, ttl_seconds=lock_ttl, job="Archive job"
+        ) as acquired:
             if not acquired:
                 logger.info(
                     "Archive job: lock busy for owner_id=%s, skipping", owner_id
@@ -121,18 +61,11 @@ async def archive_old_facts(db: FalkorDBClient, config: MCPServerConfig) -> None
 
             owner_id_normalized = normalize_owner_id(owner_id)
 
-            # 1) Find candidates: expired TTL only, status active only
-            params = {"owner_id": owner_id_normalized, "now_ms": now_ms}
-            query = """
-            MATCH (f:Fact)
-            WHERE f.owner_id = $owner_id
-              AND (f.status IS NULL OR f.status = 'active')
-              AND (f.expires_at IS NOT NULL AND f.expires_at <= $now_ms)
-            RETURN id(f) as fact_id
-            """
-
+            # 1) Candidates: expired TTL (always) + stale by usage (opt-in)
             try:
-                result = await execute_query_with_retry(db, query, params)
+                rows = await invoke_with_retry(
+                    lambda: db.expired_fact_ids(owner_id_normalized, now_ms)
+                )
             except Exception as exc:  # noqa: BLE001
                 logger.error(
                     "Archive job: failed to query candidates (owner_id=%s): %s",
@@ -141,11 +74,38 @@ async def archive_old_facts(db: FalkorDBClient, config: MCPServerConfig) -> None
                 )
                 continue
 
-            if not result or len(result) <= 1 or not result[1]:
+            rows = rows or []
+            reason_by_id: Dict[str, str] = {
+                str(row[0]): "archived_by_cleanup_job" for row in rows if row
+            }
+
+            if config.job_archive_stale_enabled:
+                stale_cutoff_ms = (
+                    now_ms - int(config.stale_facts_days) * 24 * 3600 * 1000
+                )
+                try:
+                    stale_rows = await invoke_with_retry(
+                        lambda: db.stale_fact_ids(owner_id_normalized, stale_cutoff_ms)
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.error(
+                        "Archive job: failed to query stale candidates (owner_id=%s): %s",
+                        owner_id,
+                        exc,
+                    )
+                    stale_rows = []
+                stale_rows = stale_rows or []
+                for row in stale_rows:
+                    if row:
+                        reason_by_id.setdefault(
+                            str(row[0]), "archived_stale_by_cleanup_job"
+                        )
+
+            if not reason_by_id:
                 logger.info("Archive job: no candidates found (owner_id=%s)", owner_id)
                 continue
 
-            candidate_ids: List[int] = [row[0] for row in result[1] if row]
+            candidate_ids: List[str] = list(reason_by_id)
 
             archived_count = 0
             skipped_active_relations = 0
@@ -184,16 +144,11 @@ async def archive_old_facts(db: FalkorDBClient, config: MCPServerConfig) -> None
                 if not isinstance(metadata, dict):
                     metadata = {}
 
-                # 3) Ensure there are no "active relationships"
-                rel_query = """
-                MATCH (f:Fact)-[r]-(n)
-                WHERE id(f) = $raw_id
-                RETURN labels(n) as n_labels, n.status as n_status
-                """
-
                 try:
-                    rel_result = await execute_query_with_retry(
-                        db, rel_query, {"raw_id": raw_id}
+                    rel_rows = await invoke_with_retry(
+                        lambda fid=fact_id, oid=owner_id_normalized: (
+                            db.fact_neighbor_rows(fid, oid)
+                        )
                     )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(
@@ -204,48 +159,50 @@ async def archive_old_facts(db: FalkorDBClient, config: MCPServerConfig) -> None
                     continue
 
                 has_active_neighbour = False
-                if rel_result and len(rel_result) > 1 and rel_result[1]:
-                    for row in rel_result[1]:
-                        if not row:
-                            continue
-                        n_labels = row[0]
-                        n_status = row[1] if len(row) > 1 else None
+                for row in rel_rows or []:
+                    if not row:
+                        continue
+                    n_labels = row[0]
+                    n_status = row[1] if len(row) > 1 else None
 
-                        # normalize bytes
-                        if isinstance(n_status, bytes):
-                            n_status = n_status.decode("utf-8", errors="replace")
+                    if isinstance(n_status, bytes):
+                        n_status = n_status.decode("utf-8", errors="replace")
 
-                        # FalkorDB may return labels as list/array
-                        labels_list = []
-                        if isinstance(n_labels, list):
-                            for lbl in n_labels:
-                                if isinstance(lbl, bytes):
-                                    labels_list.append(
-                                        lbl.decode("utf-8", errors="replace")
-                                    )
-                                else:
-                                    labels_list.append(str(lbl))
-                        elif isinstance(n_labels, bytes):
-                            labels_list = [n_labels.decode("utf-8", errors="replace")]
-                        elif isinstance(n_labels, str):
-                            labels_list = [n_labels]
+                    labels_list = []
+                    if isinstance(n_labels, list):
+                        for lbl in n_labels:
+                            if isinstance(lbl, bytes):
+                                labels_list.append(
+                                    lbl.decode("utf-8", errors="replace")
+                                )
+                            else:
+                                labels_list.append(str(lbl))
+                    elif isinstance(n_labels, bytes):
+                        labels_list = [n_labels.decode("utf-8", errors="replace")]
+                    elif isinstance(n_labels, str):
+                        labels_list = [n_labels]
 
-                        if labels_list and "Entity" in labels_list:
+                    if labels_list and "Entity" in labels_list:
+                        has_active_neighbour = True
+                        break
+                    if labels_list and "Fact" in labels_list:
+                        if n_status is None or n_status == "active":
                             has_active_neighbour = True
                             break
-                        if labels_list and "Fact" in labels_list:
-                            if n_status is None or n_status == "active":
-                                has_active_neighbour = True
-                                break
 
-                if has_active_neighbour:
+                if (
+                    has_active_neighbour
+                    and reason_by_id.get(fact_id) != "archived_by_cleanup_job"
+                ):
                     skipped_active_relations += 1
                     continue
 
                 # 4) Archive: set n.status = "archived"
                 reason = metadata.get("status_reason")
                 if not reason:
-                    metadata["status_reason"] = "archived_by_cleanup_job"
+                    metadata["status_reason"] = reason_by_id.get(
+                        fact_id, "archived_by_cleanup_job"
+                    )
 
                 try:
                     updated_result = mcp_handlers_nodes.update_node(
@@ -272,7 +229,3 @@ async def archive_old_facts(db: FalkorDBClient, config: MCPServerConfig) -> None
                 skipped_status,
                 skipped_active_relations,
             )
-
-        finally:
-            if lock_context is not None:
-                lock_context.__exit__(None, None, None)

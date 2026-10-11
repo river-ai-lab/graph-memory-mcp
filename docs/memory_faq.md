@@ -1,73 +1,60 @@
-# Long-term Memory FAQ
+# Memory FAQ
 
-## Search vs. Summary?
+## Recall
 
-- **“What do we know about Y?”**: Use `search(query="Y")` followed by `create_summary_fact` if you assume synthesis.
-- **“Find all about Z”**: Use `search(query="Z", limit=50)` + `get_context` for raw retrieval.
+A task starts with two reads. You decide what to call after that:
 
-## Deleting Knowledge ("Forget")
+1. `get_brief(owner_id)` — project state: `about` if an agent stored `source.ref=about`, recent facts **without** TTL, open `CONTRADICTS`. Not the task, and not a ranking by how many edges a node has.
+2. `search(query=<task>, compact=true)` — the task. `suggested_next` hints at a possible next call; you decide what to do.
 
-There is no single `forget_topic(X)` tool. Use a deliberate workflow:
+`search` / `get_context` / `recall_context` hide facts that have `ttl_days` until `include_ttl=true` (still living) or `include_outdated=true` (also outdated, archived, expired). If two hits already have a `CONTRADICTS` edge, they come back in `contradiction_pairs` and `suggested_next` leads with `get_trace` / `mark_outdated`.
 
-1. **`search(query="X", owner_id=...)`** — semantic recall (Facts and Entities).
-2. **`get_context(node_id=..., depth=2)`** on promising hits — expand the subgraph.
-3. **Filter** by `metadata.tags`, `metadata.entities`, or your own naming conventions (metadata is not a separate search API today).
-4. **`mark_outdated(fact_id=..., owner_id=..., reason="...")`** — soft-delete for **Facts** only (hidden from default search).
-5. **`delete_node`** — hard removal (Facts or Entities; compliance, mistakes, test data). Entities have no soft-delete.
-6. **`delete_relation`** — remove specific edges between nodes (optional `relation_type`).
+`get_context` fills its node budget (default 20, hard cap 50) with `CONTRADICTS`, then `FOLLOWS_FROM`, then other allowlist edges; `MENTIONS` last. `relation_priority` overrides that order. `exclude_relation_types` drops those edges.
 
-**Why “only X” is hard:** embeddings overlap (e.g. “Redis” vs “cache layer”), and graphs share nodes. Tag facts at write time (`metadata.tags`, `metadata.entities`) if you expect bulk forget later. Shared team facts should stay immutable unless correcting an error.
+`recall_context` is a shortcut on small graphs, not the default path.
 
-## Fact vs. Entity
+- **X ↔ Y?** → `get_trace(from_id, to_id)` (`directed=false` if empty).
 
-- **Fact**: declarative statement (`text`).
-- **Entity**: named concept (person, service, technology).
+## Write
 
-This is a **practical UI distinction**, not a strict ontology. Agents may store the same idea as either label; use consistent `owner_id` and relations (`MENTIONS`, `RELATED_TO`) rather than debating labels.
+One durable sentence per Fact. Do not put metric tables or dumps in `text`. A number that is the fact itself stays in the sentence.
 
-## Metadata — why not “searchable metadata”?
+`create_node(check_duplicates=true)` refuses a near-paraphrase before write (`memory_duplicate`, similarity ≥ `CREATE_DUPLICATE_BLOCK_THRESHOLD`, default 0.92) and returns `diff_hint`. Do not write a third wording. Update the existing node, or `mark_outdated` + `create_node`. Pass `check_duplicates=false` only when the fact is similar by distance but different. Text longer than `LONG_TEXT_WARN_CHARS` (600) is warned in `warnings` and still stored.
 
-Primary recall is **`text` embeddings** plus **graph traversal**. `metadata` holds tags, provenance, confidence — returned with nodes, useful for filtering in agent logic, but there is no dedicated metadata-query tool in v1. Put the searchable substance in `text`.
+The server never sets `ttl_days` and does not infer it from `metadata.type`. A decision or durable outcome has no TTL. A run, pod, launch, or debug note passes `ttl_days` (typically 14–30). After `expires_at`, default search hides the fact. With `JOBS_ENABLED=true`, the archive job sets `status=archived` even if the fact has relations.
 
-## Vector indexes (FalkorDB)
+`auto_link` defaults to false. Pass `auto_link=true` on a Fact to add `MENTIONS` to similar Entities. An edge you mean is `create_relation` or `links`.
 
-- Two indexes: **Fact** (`search`, `find_similar`) and **Entity** (Fact **auto_link**).
-- **Automatic:** missing indexes are created on first `search`, `find_similar`, or Fact `auto_link` (idempotent).
-- **Startup:** set `AUTO_CREATE_INDEXES=true` to create them when the MCP server starts.
-- **Manual:** MCP tool `ensure_vector_indexes` (same logic).
-- FalkorDB **maintains** index contents when nodes change; you only redefine indexes when the embedding **model dimension** changes.
+There is no `supersede_node`. A changed opinion is `mark_outdated` + `create_node`.
 
-## Explorer vs. MCP
+## Forget
 
-- **Agents** use MCP tools (`stdio` or HTTP) — this is the production interface.
-- **Explorer** (`graph-memory-explorer`) is a **human debugging GUI** over read-only MCP calls; agents do not need it.
+No `forget_topic`. `search` → filter → `mark_outdated` (Facts) or `delete_node` / `delete_relation`. Tag at write time if you expect bulk cleanup.
 
-## Fact Lifecycle & Status
+## Fact vs Entity
 
-- **`active`**: Default. Visible in default search.
-- **`outdated`**: Soft-deleted (Facts). Hidden from default search; use `search(..., include_outdated=True)` or `status="outdated"` to include.
-- **`archived`**: Set by optional background job when TTL expires (same graph, not separate storage). Hidden from default search like `outdated`.
+- **Fact** — declarative `text`. **Entity** — named thing. Practical labels, not ontology. Link with `MENTIONS` / `RELATED_TO`.
 
-Agent write/update rules: [memory_policies_for_LLM.md](./memory_policies_for_LLM.md).
+## Metadata
 
-## Metadata Schema
+Searchable substance lives in `text`. Reserved keys (typed, filterable via `metadata_filter`): `project`, `created_by`, `tags`, `type`, `confidence`. Other keys are free-form.
 
-Recommended optional fields in `metadata` (not validated by the server):
+## Indexes
 
-- `type`: Category (e.g., "incident", "terminology").
-- `entities`: List of key names (["Redis", "Auth"]).
-- `tags`: Filters (["infra", "prod"]).
-- `valid_until`: "YYYY-MM-DD" for expiry.
+Fact + Entity vector indexes: auto on first `search` / `find_similar` / Fact `auto_link`, or `AUTO_CREATE_INDEXES=true`, or `POST /admin/ensure-indexes`. Recreate definitions only if embedding **dimension** changes; model/prefix change → re-embed corpus.
 
-## Do we save everything?
+## Isolation
 
-**No.** Only explicit savings or final decisions.
+Each `owner_id` is its own FalkorDB graph, or its own ArcadeDB database when `GRAPH_BACKEND=arcadedb`. Same `owner_id` is shared memory. Soft split inside owner: `metadata.project`. Always pass `owner_id` explicitly (server default: `DEFAULT_OWNER_ID`, usually `"default"`).
 
-- **Save**: "The server IP is 10.0.0.1", "User prefers concise answers".
-- **Ignore**: "Hello", "Let me think", "Did that work?".
+`OWNER_SCOPE=client` (default, trusted network) uses that argument. `OWNER_SCOPE=header` (when a reverse proxy or middleware controls ownership) ignores it and uses `X-Owner-Id`. Passing the argument is still correct: the tool schema is the same, and `client` mode needs the value.
 
-## Is memory shared?
+## Lifecycle
 
-- **Physically**: One database.
-- **Logically**: Partitioned by `owner_id`.
-- **Rule**: Always set `owner_id` to respect boundaries (private vs team).
+`active` (default search, and only facts with no TTL) · `outdated` (soft-delete Fact) · `archived` (TTL expiry or stale job). `include_ttl=true` adds still-living temporary facts. `include_outdated` / `status` show non-active.
+
+## Agent vs Explorer
+
+Agents → MCP tools. Explorer → human read-only GUI over MCP.
+
+Policy: [memory_policies_for_LLM.md](./memory_policies_for_LLM.md).

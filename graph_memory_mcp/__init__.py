@@ -1,3 +1,8 @@
 """Graph Memory MCP package."""
 
-__version__ = "0.1.1"
+from importlib.metadata import PackageNotFoundError, version
+
+try:
+    __version__ = version("graph-memory-mcp")
+except PackageNotFoundError:  # running from a plain checkout without install
+    __version__ = "0.0.0"

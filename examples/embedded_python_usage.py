@@ -1,51 +1,24 @@
-"""
-Direct Python Integration (No HTTP)
-===================================
-
-This example demonstrates how to integrate `GraphMemoryMCP` directly into your
-Python application (e.g., LangChain, LangGraph, RAG pipeline) without running
-a separate HTTP server.
-
-You can import the server class and call the exposed tool methods directly as Python functions.
-
-Prerequisites:
-- `graph-memory-mcp` installed
-- FalkorDB running
-"""
+"""Call GraphMemoryMCP in-process. No HTTP server."""
 
 import logging
 import uuid
 
 from graph_memory_mcp.config import load_mcp_server_config
-
-# 1. Import the renamed server class
 from graph_memory_mcp.server import GraphMemoryMCP
 
-# Configure logging to see what's happening
 logging.basicConfig(level=logging.INFO)
 
 
 def main():
-    print("🚀 Starting Direct Integration Example\n")
+    print("Starting direct integration example\n")
 
-    # 2. Load configuration
-    # Loads from env vars (FALKORDB_HOST, etc.) or .env file
     config = load_mcp_server_config()
-
-    # 3. Initialize the server directly
-    # This establishes DB connection and loads embedding models
     server = GraphMemoryMCP(config)
 
     # Check if DB is connected
     if not server._db_connected:
-        print("❌ Could not connect to FalkorDB. Make sure it's running.")
+        print("Could not connect to the graph backend. Make sure it is running.")
         return
-
-    # 4. Use tools as Python methods.
-    # The server class exposes registered tools directly:
-    # server.create_node(...)
-    # server.search(...)
-    # server.create_relation(...)
 
     owner_id = f"demo_user_{uuid.uuid4().hex[:6]}"
     print(f"Using owner_id: {owner_id}\n")
@@ -54,7 +27,7 @@ def main():
     server.ensure_vector_indexes()
 
     # --- Create a Fact ---
-    print("1️⃣  Creating a fact...")
+    print("1. Creating a fact...")
     result = server.create_node(
         text="FastMCP allows running MCP servers directly in Python.",
         node_type="Fact",
@@ -66,7 +39,7 @@ def main():
     print(f"   Text: {fact['text']}\n")
 
     # --- Create an Entity ---
-    print("2️⃣  Creating an entity...")
+    print("2. Creating an entity...")
     result = server.create_node(
         text="Python", node_type="Entity", entity_type="Language", owner_id=owner_id
     )
@@ -75,7 +48,7 @@ def main():
     print(f"   Text: {entity['text']}\n")
 
     # --- Create a Relation ---
-    print("3️⃣  Linking Fact to Entity...")
+    print("3. Linking Fact to Entity...")
     rel = server.create_relation(
         from_id=fact["node_id"],
         to_id=entity["node_id"],
@@ -85,7 +58,7 @@ def main():
     print(f"   Created relation: {rel['relation_type']}\n")
 
     # --- Semantic Search ---
-    print("4️⃣  Searching...")
+    print("4. Searching...")
     # This uses the embedding model loaded in memory
     search_res = server.search(
         query="running MCP servers in Python", owner_id=owner_id, limit=2
@@ -96,12 +69,12 @@ def main():
         print(f"   - [{item['similarity']:.4f}] {item['text']}")
 
     # --- Network Graph (Context) ---
-    print("\n5️⃣  Getting Context (Subgraph)...")
+    print("\n5. Getting context...")
     context = server.get_context(node_id=fact["node_id"], owner_id=owner_id, depth=1)
     print(f"   Nodes: {len(context['nodes'])}")
     print(f"   Edges: {len(context['edges'])}")
 
-    print("\n✅ Integration successful!")
+    print("\nDone.")
     print("You can now pass these functions to LangChain 'StructuredTool' or similar.")
 
 

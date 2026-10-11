@@ -1,7 +1,7 @@
 """
 Comprehensive integration test for all MCP Graph Memory server tools.
 
-This test covers ALL 18 MCP tools from server.py:
+This test covers ALL 19 MCP tools from server.py:
 
 **Information Tools (3):**
 1. test_connection
@@ -21,13 +21,14 @@ This test covers ALL 18 MCP tools from server.py:
 11. create_triplet
 12. search_triplets
 
-**Graph Tools (6):**
+**Graph Tools (7):**
 13. create_relation
 14. get_trace
 15. delete_relation
 16. get_context
-17. find_similar
-18. create_summary_fact
+17. recall_context
+18. find_similar
+19. create_summary_fact
 
 The test creates a realistic knowledge graph and exercises all tools.
 """
@@ -46,7 +47,11 @@ from mcp.client.streamable_http import streamable_http_client
 from graph_memory_mcp.config import MCPServerConfig, load_mcp_server_config
 from graph_memory_mcp.graph_memory.database import FalkorDBClient
 from graph_memory_mcp.graph_memory.embedding_service import EmbeddingService
-from graph_memory_mcp.graph_memory.mcp_handlers_graph import get_context, get_trace
+from graph_memory_mcp.graph_memory.mcp_handlers_graph import (
+    get_context,
+    get_trace,
+    recall_context,
+)
 from graph_memory_mcp.graph_memory.mcp_handlers_nodes import (
     create_node,
     update_node,
@@ -77,12 +82,15 @@ def _extract_tool_json(result) -> dict:
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_all_mcp_tools_comprehensive():
+async def test_all_mcp_tools_comprehensive(monkeypatch):
     """
-    Comprehensive test covering all 18 MCP tools from server.py.
+    Comprehensive test covering all MCP tools from server.py.
 
     Creates a realistic knowledge graph and exercises every tool.
+    Admin tools are exposed via MCP_EXPOSE_ADMIN_TOOLS for this test;
+    by default they live on /admin/* HTTP routes only.
     """
+    monkeypatch.setenv("MCP_EXPOSE_ADMIN_TOOLS", "true")
     cfg = load_mcp_server_config()
 
     # Use unique owner_id for isolation
@@ -156,6 +164,7 @@ async def test_all_mcp_tools_comprehensive():
                         "node_type": "Fact",
                         "owner_id": owner_id,
                         "auto_link": False,
+                        "check_duplicates": False,
                     },
                 )
                 data = _extract_tool_json(result)
@@ -406,6 +415,22 @@ async def test_all_mcp_tools_comprehensive():
                 assert len(data.get("nodes", [])) > 0
                 assert len(data.get("edges", [])) > 0
 
+                # 17. recall_context - hybrid search + graph expansion
+                result = await session.call_tool(
+                    "recall_context",
+                    {
+                        "query": "Python programming language",
+                        "owner_id": owner_id,
+                        "depth": 2,
+                        "max_nodes": 20,
+                    },
+                )
+                data = _extract_tool_json(result)
+                assert data.get("success") is True
+                assert isinstance(data.get("seeds"), list)
+                assert len(data.get("seeds", [])) > 0
+                assert len(data.get("nodes", [])) > 0
+
                 # 14. get_trace - shortest path
                 result = await session.call_tool(
                     "get_trace",
@@ -422,7 +447,7 @@ async def test_all_mcp_tools_comprehensive():
                 assert len(data.get("nodes", [])) > 0
                 assert len(data.get("relations", [])) > 0
 
-                # 17. find_similar - find facts similar to fact1
+                # 18. find_similar - find facts similar to fact1
                 result = await session.call_tool(
                     "find_similar",
                     {
@@ -719,6 +744,7 @@ def test_get_context_default_and_pagination_integration():
             node_type="Fact",
             owner_id=owner_id,
             auto_link=False,
+            check_duplicates=False,
         )
         create_relation(
             db,
@@ -810,14 +836,55 @@ class _FakeCache:
         self.search_cache[key] = value
 
 
-class _FakeNodeDB:
+class _FakeStoreQueries:
+    """Delegate adapter methods onto the scripted ``query`` log."""
+
+    def __getattr__(self, name):
+        from graph_memory_mcp.graph_memory.backends.falkor_ops import FalkorOps
+
+        attr = getattr(FalkorOps, name, None)
+        if attr is None:
+            raise AttributeError(name)
+        return attr.__get__(self, type(self))
+
+    def rows(self, query, params=None, owner_id=None):
+        result = self.query(query, params=params, owner_id=owner_id)
+        if not result or not getattr(result, "result_set", None):
+            return []
+        return list(result.result_set)
+
+    def count_labeled(self, node_type, owner_id):
+        from graph_memory_mcp.graph_memory.backends.falkor_search import count_labeled
+
+        return count_labeled(self, node_type, owner_id)
+
+    def similarity_rows(self, **kwargs):
+        from graph_memory_mcp.graph_memory.backends.falkor_search import similarity_rows
+
+        return similarity_rows(self, **kwargs)
+
+    def ann_rows(self, **kwargs):
+        from graph_memory_mcp.graph_memory.backends.falkor_search import ann_rows
+
+        return ann_rows(self, **kwargs)
+
+    def fact_embedding(self, fact_id, owner_id):
+        from graph_memory_mcp.graph_memory.backends.falkor_search import fact_embedding
+
+        return fact_embedding(self, fact_id, owner_id)
+
+
+class _FakeNodeDB(_FakeStoreQueries):
     def __init__(self, responses):
         self.graph = _FakeGraph(responses)
         self.cache = _FakeCache()
         self.embedding_calls: list[str] = []
         self.config = MCPServerConfig()
 
-    def get_embedding(self, text: str):
+    def query(self, query, params=None, owner_id=None):
+        return self.graph.query(query, params=params)
+
+    def get_embedding(self, text: str, kind: str = "passage"):
         self.embedding_calls.append(text)
         return [0.1, 0.2, 0.3]
 
@@ -828,18 +895,24 @@ class _FakeNodeDB:
         return {"vector": {"Fact": True, "Entity": True}, "owner_id_range": {}}
 
 
-class _FakeGraphDB:
+class _FakeGraphDB(_FakeStoreQueries):
     def __init__(self, responses=None):
         self.graph = _FakeGraph(responses)
 
+    def query(self, query, params=None, owner_id=None):
+        return self.graph.query(query, params=params)
 
-class _FakeSearchDB:
+
+class _FakeSearchDB(_FakeStoreQueries):
     def __init__(self, responses):
         self.graph = _FakeGraph(responses)
         self.cache = _FakeCache()
         self.config = MCPServerConfig()
 
-    def get_embedding(self, text: str):
+    def query(self, query, params=None, owner_id=None):
+        return self.graph.query(query, params=params)
+
+    def get_embedding(self, text: str, kind: str = "passage"):
         return [0.1, 0.2, 0.3]
 
     def ensure_search_indexes_if_missing(self, **_kwargs):
@@ -873,11 +946,15 @@ def _fact_row(
     ]
 
 
-def test_get_context_limits_nodes_before_collect():
-    """get_context should keep isolated nodes and limit nodes before loading edges."""
+def test_get_context_iterative_bfs_flow():
+    """Default get_context uses iterative BFS: init, per-hop steps, then edges."""
     db = _FakeGraphDB(
         [
-            _FakeResult([[123, "Fact", "isolated fact"]]),
+            # BFS init: uid, label, text, touched_at, access_count
+            _FakeResult([["123", "Fact", "isolated fact", 1, 0]]),
+            # hop 1: no neighbors -> frontier empties, BFS stops early
+            _FakeResult([]),
+            # edges between collected nodes
             _FakeResult([]),
         ]
     )
@@ -900,16 +977,51 @@ def test_get_context_limits_nodes_before_collect():
     assert "offset" not in result
     assert "has_more" not in result
 
-    nodes_query, nodes_params = db.graph.calls[0]
-    assert nodes_params == {"node_id": 123, "owner_id": "default"}
-    assert "WITH DISTINCT connected" in nodes_query
-    assert "LIMIT 5" in nodes_query
-    assert "ORDER BY id(connected)" not in nodes_query
-    assert "SKIP" not in nodes_query
+    init_query, init_params = db.graph.calls[0]
+    assert "n.uid IN $ids" in init_query
+    assert init_params == {"ids": ["123"], "owner_id": "default"}
 
-    edges_query, edges_params = db.graph.calls[1]
-    assert "WHERE id(n) IN $node_ids AND id(m) IN $node_ids" in edges_query
-    assert edges_params == {"node_ids": [123]}
+    step_query, step_params = db.graph.calls[1]
+    assert "n.uid IN $frontier" in step_query
+    assert "NOT m.uid IN $seen" in step_query
+    assert "LIMIT 4" in step_query  # budget 5 minus 1 collected node
+    assert "[*" not in step_query  # no variable-length expansion
+    assert step_params["frontier"] == ["123"]
+
+    # hop 2 must NOT run: frontier is empty after an empty hop 1.
+    edges_query, edges_params = db.graph.calls[2]
+    assert "WHERE n.uid IN $node_ids AND m.uid IN $node_ids" in edges_query
+    assert edges_params == {"node_ids": ["123"], "owner_id": "default"}
+    assert len(db.graph.calls) == 3
+
+
+def test_get_context_bfs_respects_budget_on_hub_nodes():
+    """A hub with many neighbors is capped by the node budget per hop."""
+    db = _FakeGraphDB(
+        [
+            _FakeResult([["hub", "Fact", "hub node", 1, 0]]),
+            # hop 1 returns exactly the remaining budget (2): uid,label,text,t,a,parents
+            _FakeResult(
+                [
+                    ["n1", "Fact", "neighbor 1", 1, 0, ["hub"]],
+                    ["n2", "Fact", "neighbor 2", 1, 0, ["hub"]],
+                ]
+            ),
+            _FakeResult([]),  # edges
+        ]
+    )
+    cfg = MCPServerConfig()
+
+    result = get_context(
+        cast(Any, db), cfg, node_id="hub", owner_id="default", depth=3, max_nodes=3
+    )
+
+    assert result["success"] is True
+    assert len(result["nodes"]) == 3
+    step_query, _ = db.graph.calls[1]
+    assert "LIMIT 2" in step_query
+    # Budget exhausted after hop 1 -> no hop 2 query; next call is edges.
+    assert len(db.graph.calls) == 3
 
 
 def test_get_context_pagination_uses_offset_and_max_nodes():
@@ -1015,7 +1127,7 @@ def test_get_trace_returns_nodes_and_relations():
 
     trace_query, trace_params = db.graph.calls[0]
     assert "shortestPath" in trace_query
-    assert trace_params == {"from_id": 123, "to_id": 456, "owner_id": "default"}
+    assert trace_params == {"from_id": "123", "to_id": "456", "owner_id": "default"}
 
 
 def test_get_trace_returns_empty_lists_when_path_is_missing():
@@ -1042,6 +1154,7 @@ def test_create_node_reuses_embedding_for_auto_link():
     """create_node should not re-embed fact text before auto-linking."""
     db = _FakeNodeDB(
         [
+            _FakeResult([]),  # possible_duplicates check
             _FakeResult([_fact_row(123, text="created fact")]),
             _FakeResult([[1]]),
         ]
@@ -1060,7 +1173,7 @@ def test_create_node_reuses_embedding_for_auto_link():
     assert result["success"] is True
     assert result["node"]["node_id"] == "123"
     assert db.embedding_calls == ["created fact"]
-    assert len(db.graph.calls) == 2
+    assert len(db.graph.calls) == 3
     assert db.cache.invalidations == 1
 
 
@@ -1087,8 +1200,8 @@ def test_update_node_returns_updated_node_without_follow_up_fetch():
     assert db.cache.invalidations == 1
 
 
-def test_find_similar_uses_shared_escape_helper():
-    """find_similar should not depend on a db.escape_value method."""
+def test_find_similar_parametrizes_owner_id():
+    """find_similar should pass owner_id via query params, not interpolation."""
     db = _FakeSearchDB(
         [
             _FakeResult([[[0.1, 0.2, 0.3]]]),
@@ -1096,6 +1209,7 @@ def test_find_similar_uses_shared_escape_helper():
                 [
                     [
                         456,
+                        "Fact",
                         "Similar fact",
                         "active",
                         1_700_000_000_000,
@@ -1112,7 +1226,7 @@ def test_find_similar_uses_shared_escape_helper():
         cast(FalkorDBClient, db),
         cfg,
         fact_id="123",
-        owner_id="team'o",
+        owner_id="team_o",
         limit=5,
     )
 
@@ -1120,8 +1234,26 @@ def test_find_similar_uses_shared_escape_helper():
     assert result["similar_facts"][0]["node_id"] == "456"
     assert len(db.graph.calls) == 3
 
-    similar_query, _ = db.graph.calls[2]
-    assert "node.owner_id = 'team\\'o'" in similar_query
+    similar_query, similar_params = db.graph.calls[2]
+    assert "node.owner_id = $owner_id" in similar_query
+    assert similar_params["owner_id"] == "team_o"
+
+
+def test_find_similar_rejects_invalid_owner_id():
+    """Injection-shaped owner_id must be rejected before hitting the DB."""
+    db = _FakeSearchDB([])
+    cfg = MCPServerConfig()
+
+    result = find_similar(
+        cast(FalkorDBClient, db),
+        cfg,
+        fact_id="123",
+        owner_id="team'o",
+        limit=5,
+    )
+
+    assert result["success"] is False
+    assert result["code"] == "memory_validation_error"
 
 
 def test_search_pre_filter_by_default():
@@ -1138,16 +1270,35 @@ def test_search_pre_filter_by_default():
 
     assert result["success"] is True
 
-    fact_query, _ = db.graph.calls[0]
+    fact_query, fact_params = db.graph.calls[0]
     entity_query, _ = db.graph.calls[1]
     active_clause = "(node.status IS NULL OR node.status = 'active')"
     assert "MATCH (node:Fact)" in fact_query
     assert "vec.cosineDistance" in fact_query
-    assert "node.owner_id = 'default'" in fact_query
+    assert "node.owner_id = $owner_id" in fact_query
+    assert fact_params["owner_id"] == "default"
     assert active_clause in fact_query
+    assert "node.expires_at IS NULL" in fact_query
+    assert (
+        "(node.expires_at IS NULL OR node.expires_at > timestamp())" not in fact_query
+    )
+
+
+def test_search_include_ttl_keeps_living_temporary_facts():
+    db = _FakeSearchDB([_FakeResult([]), _FakeResult([])])
+    cfg = MCPServerConfig()
+
+    result = search(
+        cast(Any, db),
+        cfg,
+        query="temporary launch",
+        owner_id="default",
+        include_ttl=True,
+    )
+
+    assert result["success"] is True
+    fact_query, _ = db.graph.calls[0]
     assert "(node.expires_at IS NULL OR node.expires_at > timestamp())" in fact_query
-    assert "MATCH (node:Entity)" in entity_query
-    assert "vec.cosineDistance" in entity_query
 
 
 def test_search_post_filter_uses_global_ann():
@@ -1248,8 +1399,9 @@ def test_search_status_override_applies_to_entities():
     )
 
     assert result["success"] is True
-    entity_query, _ = db.graph.calls[0]
-    assert "node.status = 'archived'" in entity_query
+    entity_query, entity_params = db.graph.calls[0]
+    assert "node.status = $status" in entity_query
+    assert entity_params["status"] == "archived"
     assert "(node.status IS NULL OR node.status = 'active')" not in entity_query
 
 
@@ -1280,6 +1432,7 @@ def test_create_node_returns_source_payload():
     """create_node should expose source as a single MCP-facing dict."""
     db = _FakeNodeDB(
         [
+            _FakeResult([]),  # possible_duplicates check
             _FakeResult(
                 [
                     _fact_row(
@@ -1293,7 +1446,7 @@ def test_create_node_returns_source_payload():
                         },
                     )
                 ]
-            )
+            ),
         ]
     )
     cfg = MCPServerConfig()
@@ -1317,8 +1470,9 @@ def test_create_node_returns_source_payload():
     assert result["node"]["source"]["ref"] == "PROJ-123"
     assert result["node"]["source"]["version"] == 1
 
-    create_query, create_params = db.graph.calls[0]
+    create_query, create_params = db.graph.calls[1]
     assert "source_ref: $source_ref" in create_query
+    assert "uid: $uid" in create_query
     assert create_params["source_ref"] == "PROJ-123"
     assert create_params["content_hash"] == "sha256:abc"
 
@@ -1370,7 +1524,8 @@ def test_upsert_node_creates_with_initial_source_version():
     """upsert_node should seed source.version=1 on first create when versioning is enabled."""
     db = _FakeNodeDB(
         [
-            _FakeResult([]),
+            _FakeResult([]),  # _get_node_by_source_ref
+            _FakeResult([]),  # possible_duplicates check
             _FakeResult(
                 [
                     _fact_row(
@@ -1479,3 +1634,85 @@ def test_upsert_node_update_applies_inline_links():
         and edge["relation_type"] == "MENTIONS"
         for edge in context["edges"]
     )
+
+
+@pytest.mark.integration
+def test_recall_context_expands_from_semantic_seeds():
+    """recall_context should return seeds, ranked nodes, and edges in one call."""
+    cfg = load_mcp_server_config()
+    owner_id = f"pytest_recall_{uuid.uuid4().hex[:8]}"
+    db = FalkorDBClient(cfg)
+    if not db.connect():
+        pytest.fail("FalkorDB connection failed")
+    db.set_embedding_service(EmbeddingService(model_name=cfg.embedding_model))
+
+    center = create_node(
+        db,
+        cfg,
+        text="JWT authentication service validates bearer tokens",
+        node_type="Fact",
+        owner_id=owner_id,
+        auto_link=False,
+    )
+    center_id = center["node"]["node_id"]
+
+    neighbor = create_node(
+        db,
+        cfg,
+        text="Rate limiter protects authentication endpoints",
+        node_type="Fact",
+        owner_id=owner_id,
+        auto_link=False,
+    )
+    neighbor_id = neighbor["node"]["node_id"]
+
+    create_relation(
+        db,
+        from_id=center_id,
+        to_id=neighbor_id,
+        relation_type="RELATED_TO",
+        owner_id=owner_id,
+        config=cfg,
+    )
+
+    result = recall_context(
+        db,
+        cfg,
+        query="authentication JWT tokens",
+        owner_id=owner_id,
+        depth=1,
+        limit=3,
+        max_nodes=10,
+    )
+
+    assert result["success"] is True
+    assert result["query"] == "authentication JWT tokens"
+    assert len(result["seeds"]) >= 1
+    returned_ids = {node["node_id"] for node in result["nodes"]}
+    assert center_id in returned_ids
+    assert neighbor_id in returned_ids
+    assert all("score" in node and "min_hop" in node for node in result["nodes"])
+    assert any(
+        edge["from_id"] == center_id and edge["to_id"] == neighbor_id
+        for edge in result["edges"]
+    )
+
+
+def test_recall_context_ranking_prefers_direct_seed_match():
+    from graph_memory_mcp.graph_memory.mcp_handlers_graph import _rank_recall_score
+
+    similarity = {"1": 0.9, "2": 0.5}
+    score_direct, hop_direct = _rank_recall_score(
+        [{"seed_id": 1, "hop": 0}],
+        similarity,
+        hop_decay=0.7,
+    )
+    score_two_hops, hop_two = _rank_recall_score(
+        [{"seed_id": 2, "hop": 2}],
+        similarity,
+        hop_decay=0.7,
+    )
+    assert score_direct == pytest.approx(0.9)
+    assert hop_direct == 0
+    assert score_direct > score_two_hops
+    assert hop_two == 2
