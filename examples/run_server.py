@@ -25,6 +25,6 @@ def create_app():
 
 
 if __name__ == "__main__":
-    print("Starting Embedded MCP Server...")
+    print("Starting MCP server...")
     print("MCP Endpoint: http://127.0.0.1:8000/mcp")
     uvicorn.run(create_app(), host="127.0.0.1", port=8000)

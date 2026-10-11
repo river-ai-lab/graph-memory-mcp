@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "graph-memory-mcp"
 version = "0.2.0"
-description = "Standalone MCP server for graph-based long-term memory (FalkorDB)"
+description = "MCP server for graph-based long-term memory (FalkorDB or ArcadeDB)"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }

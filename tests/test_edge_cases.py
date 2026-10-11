@@ -442,10 +442,11 @@ async def test_boundary_conditions(server_instance):
         result = await server.mcp.call_tool(
             "create_node",
             {
-                "text": f"Chain fact {i}",
+                "text": f"Chain fact {i} {owner_id}",
                 "node_type": "Fact",
                 "owner_id": owner_id,
                 "auto_link": False,
+                "check_duplicates": False,
             },
         )
         curr_id = _extract_tool_json(result)["node"]["node_id"]
@@ -664,6 +665,7 @@ async def test_input_validation(server_instance):
             "node_type": "Fact",
             "owner_id": owner_id,
             "auto_link": False,
+            "check_duplicates": False,
         },
     )
     node2_id = _extract_tool_json(result)["node"]["node_id"]

@@ -58,8 +58,14 @@ def _attribute_where(
     metadata_filter: Optional[Dict[str, Any]],
     exclude_node_id: Optional[str],
     now_ms: int,
+    include_ttl: bool = False,
 ) -> tuple[str, Dict[str, Any]]:
-    """SQL predicates for status, expiry, metadata, and an excluded uid."""
+    """SQL predicates for status, expiry, metadata, and an excluded uid.
+
+    Default Fact search hides every node that has ``expires_at``.
+    ``include_ttl`` also keeps facts that have not expired yet.
+    ``include_outdated`` drops the expiry predicate.
+    """
     _validate_metadata(metadata_filter)
     parts: list[str] = ["embedding IS NOT NULL"]
     params: Dict[str, Any] = {}
@@ -68,10 +74,15 @@ def _attribute_where(
         params["status"] = status
     elif not include_outdated:
         parts.append("(status IS NULL OR status = 'active')")
-    if node_type == "Fact" and (
-        status == "active" or (status is None and not include_outdated)
+    if (
+        node_type == "Fact"
+        and not include_outdated
+        and (status is None or status == "active")
     ):
-        parts.append(f"(expires_at IS NULL OR expires_at > {int(now_ms)})")
+        if include_ttl:
+            parts.append(f"(expires_at IS NULL OR expires_at > {int(now_ms)})")
+        else:
+            parts.append("expires_at IS NULL")
     if metadata_filter:
         for key, prop in (
             ("project", "project"),
@@ -139,6 +150,7 @@ def neighbor_rows(
     metadata_filter: Optional[Dict[str, Any]] = None,
     exclude_node_id: Optional[str] = None,
     ann_k: int | None = None,
+    include_ttl: bool = False,
 ) -> List[List[Any]]:
     """Top-k cosine neighbors from this owner's own HNSW index."""
     if node_type not in ("Fact", "Entity"):
@@ -156,6 +168,7 @@ def neighbor_rows(
             metadata_filter=metadata_filter,
             exclude_node_id=exclude_node_id,
             ann_k=ann_k,
+            include_ttl=include_ttl,
         )
 
 
@@ -172,6 +185,7 @@ def _neighbor_rows(
     metadata_filter: Optional[Dict[str, Any]],
     exclude_node_id: Optional[str],
     ann_k: int | None,
+    include_ttl: bool = False,
 ) -> List[List[Any]]:
     owner = store.owner_literal(owner_id)
     k = max(int(limit), 1)
@@ -202,6 +216,7 @@ def _neighbor_rows(
             metadata_filter=metadata_filter,
             exclude_node_id=exclude_node_id,
             now_ms=now_ms,
+            include_ttl=include_ttl,
         )
         rid_rows = store.query(
             f"SELECT @rid AS rid FROM {node_type} "

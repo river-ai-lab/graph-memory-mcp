@@ -21,7 +21,7 @@ One durable sentence per Fact. Do not put metric tables or dumps in `text`. A nu
 
 `create_node(check_duplicates=true)` refuses a near-paraphrase before write (`memory_duplicate`, similarity ≥ `CREATE_DUPLICATE_BLOCK_THRESHOLD`, default 0.92) and returns `diff_hint`. Do not write a third wording. Update the existing node, or `mark_outdated` + `create_node`. Pass `check_duplicates=false` only when the fact is similar by distance but different. Text longer than `LONG_TEXT_WARN_CHARS` (600) is warned in `warnings` and still stored.
 
-The server never sets `ttl_days` and does not infer it from `metadata.type`. A decision or durable outcome has no TTL. A run, pod, launch, or debug note passes `ttl_days` (typically 14–30). After `expires_at`, the archive job sets `status=archived` even if the fact has relations.
+The server never sets `ttl_days` and does not infer it from `metadata.type`. A decision or durable outcome has no TTL. A run, pod, launch, or debug note passes `ttl_days` (typically 14–30). After `expires_at`, default search hides the fact. With `JOBS_ENABLED=true`, the archive job sets `status=archived` even if the fact has relations.
 
 `auto_link` defaults to false. Pass `auto_link=true` on a Fact to add `MENTIONS` to similar Entities. An edge you mean is `create_relation` or `links`.
 

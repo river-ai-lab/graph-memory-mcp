@@ -25,14 +25,13 @@ from contextvars import ContextVar
 from typing import Any, Dict, Iterator, List, Optional
 
 from graph_memory_mcp import __version__
-from graph_memory_mcp.graph_memory.backends.arcade_ops import ArcadeOps
+from graph_memory_mcp.graph_memory.backends.arcade_ops import VERTEX_TYPES, ArcadeOps
 from graph_memory_mcp.graph_memory.cache import CacheManager
 
 logger = logging.getLogger(__name__)
 
 _DB_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 _OWNER = re.compile(r"^[a-zA-Z0-9_@-]+$")
-VERTEX_TYPES = ("Fact", "Entity", "Collection", "FactVersion")
 VECTOR_TYPES = ("Fact", "Entity")
 _ACTIVE_DB: ContextVar[str | None] = ContextVar("arcade_owner_db", default=None)
 

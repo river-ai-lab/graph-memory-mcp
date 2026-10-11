@@ -2,7 +2,7 @@
 Base MCP Graph Memory server - shared functionality.
 
 This module contains the base class with common functionality
-shared between server.py and server_extended.py.
+shared by the default, simple, and extended MCP profiles.
 """
 
 from __future__ import annotations

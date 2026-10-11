@@ -211,7 +211,9 @@ VALIDATORS = {
     "owner_id": lambda v, cfg: _validate_owner_id_format(v),
     "relation_type": lambda v, cfg: _validate_relation_type_format(v),
     "node_type": lambda v, cfg: (
-        None if v in {"Fact", "Entity"} else "node_type must be 'Fact' or 'Entity'"
+        None
+        if v in {"Fact", "Entity", "Collection", "User", "Project"}
+        else "node_type must be Fact, Entity, Collection, User, or Project"
     ),
     "status": lambda v, cfg: (
         None

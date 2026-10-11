@@ -29,10 +29,11 @@ data/
 audit.md
 todo.md
 done.md
-features_current_plan.md
-limitations.md
 
-feedback/
-iterations/
-questions.md
 reports/
+misc/
+deploy/
+
+atlas
+docs/atlas/
+stash/

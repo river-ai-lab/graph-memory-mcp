@@ -40,7 +40,7 @@ class _Vectors:
         self._table = {
             "near": [1.0, 0.0, 0.0, 0.0],
             "mid": [0.8, 0.6, 0.0, 0.0],
-            "side": [0.6, 0.8, 0.0, 0.0],
+            "side": [0.6, 0.0, 0.8, 0.0],
             "far": [0.0, 1.0, 0.0, 0.0],
         }
 
@@ -196,7 +196,7 @@ def test_metadata_filter_and_outdated(store):
     config = _config()
     owner_id = _owner()
     kept = _create(store, config, owner_id, "near", metadata={"project": "alpha"})
-    _create(store, config, owner_id, "near", metadata={"project": "beta"})
+    _create(store, config, owner_id, "mid", metadata={"project": "beta"})
     found = search(
         store,
         config,

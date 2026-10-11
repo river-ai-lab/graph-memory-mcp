@@ -897,12 +897,12 @@ class FalkorOps:
             {"owner_id": owner_id, "cutoff_ms": cutoff_ms},
         )
 
-    def fact_neighbor_rows(self, fact_id: str) -> list:
+    def fact_neighbor_rows(self, fact_id: str, owner_id: str) -> list:
         return self.rows(
             """
                 MATCH (f:Fact)-[r]-(n)
-                WHERE f.uid = $raw_id
+                WHERE f.uid = $raw_id AND f.owner_id = $owner_id
                 RETURN labels(n) as n_labels, n.status as n_status
                 """,
-            {"raw_id": fact_id},
+            {"raw_id": fact_id, "owner_id": owner_id},
         )

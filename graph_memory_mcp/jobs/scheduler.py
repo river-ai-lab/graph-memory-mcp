@@ -21,6 +21,8 @@ _scheduler: Optional[AsyncIOScheduler] = None
 _last_run: Dict[str, datetime] = {}
 _last_error: Optional[str] = None
 _scheduler_lock = RLock()
+_BACKEND_RETRY_SECONDS = 30
+_BACKEND_RETRY_JOB_ID = "jobs_backend_retry"
 
 
 async def _run_instrumented(job_name: str, job_func: JobFunc) -> None:
@@ -58,38 +60,9 @@ def _ensure_scheduler() -> AsyncIOScheduler:
         return _scheduler
 
 
-def start_scheduler() -> AsyncIOScheduler:
-    """Create scheduler instance, register jobs and start it.
+def _register_jobs(scheduler: AsyncIOScheduler, db, config) -> None:
+    """Attach the jobs that this config turns on. JOBS_ENABLED is the master switch."""
 
-    Idempotent: safe to call multiple times.
-    """
-    scheduler = _ensure_scheduler()
-
-    if scheduler.running:
-        return scheduler
-
-    config = load_mcp_server_config()
-
-    if not config.enabled:
-        logger.info("Background scheduler: memory server disabled, not starting")
-        return scheduler
-
-    if not config.jobs_enabled:
-        logger.info("Background scheduler: jobs are disabled in config, not starting")
-        return scheduler
-
-    # Initialize FalkorDB client
-    db = open_store(config)
-
-    # Test connection
-    health = db.health_check()
-    if health.get("status") != "healthy":
-        logger.warning(
-            "Background scheduler: failed to connect to FalkorDB, not starting"
-        )
-        return scheduler
-
-    # Wrapper functions for AsyncIOScheduler
     async def run_deduplicate_facts():
         await _run_instrumented(
             "deduplicate_facts", lambda: deduplicate_facts(db=db, config=config)
@@ -116,6 +89,86 @@ def start_scheduler() -> AsyncIOScheduler:
             replace_existing=True,
         )
 
+
+def _arm_backend_retry(scheduler: AsyncIOScheduler, config) -> None:
+    """Keep trying until the graph backend accepts a connection, then register jobs."""
+
+    async def _retry_backend() -> None:
+        try:
+            store = open_store(config)
+            health = store.health_check()
+        except Exception as exc:  # noqa: BLE001
+            logger.info("Background scheduler: graph backend still down: %s", exc)
+            return
+        if health.get("status") != "healthy":
+            logger.info("Background scheduler: graph backend still down, retrying")
+            return
+        _register_jobs(scheduler, store, config)
+        retry = scheduler.get_job(_BACKEND_RETRY_JOB_ID)
+        if retry is not None:
+            scheduler.remove_job(_BACKEND_RETRY_JOB_ID)
+        logger.info(
+            "Background scheduler connected",
+            extra={"jobs": [job.id for job in scheduler.get_jobs()]},
+        )
+
+    scheduler.add_job(
+        _retry_backend,
+        "interval",
+        seconds=_BACKEND_RETRY_SECONDS,
+        id=_BACKEND_RETRY_JOB_ID,
+        replace_existing=True,
+    )
+
+
+def start_scheduler() -> AsyncIOScheduler:
+    """Create scheduler instance, register jobs and start it.
+
+    Idempotent: safe to call multiple times.
+    """
+    scheduler = _ensure_scheduler()
+
+    if scheduler.running:
+        return scheduler
+
+    config = load_mcp_server_config()
+
+    if not config.enabled:
+        logger.info("Background scheduler: memory server disabled, not starting")
+        return scheduler
+
+    if not config.jobs_enabled:
+        logger.info("Background scheduler: jobs are disabled in config, not starting")
+        return scheduler
+
+    if not config.job_deduplicate_enabled and not config.job_archive_enabled:
+        logger.info(
+            "Background scheduler: jobs_enabled=true, but no jobs enabled; not starting"
+        )
+        return scheduler
+
+    try:
+        db = open_store(config)
+        health = db.health_check()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Background scheduler: failed to connect to the graph backend (%s); will retry",
+            exc,
+        )
+        db = None
+        health = {"status": "unhealthy"}
+
+    if health.get("status") != "healthy" or db is None:
+        logger.warning(
+            "Background scheduler: graph backend is down; retrying every %ss",
+            _BACKEND_RETRY_SECONDS,
+        )
+        _arm_backend_retry(scheduler, config)
+        scheduler.start()
+        return scheduler
+
+    _register_jobs(scheduler, db, config)
+
     if not scheduler.get_jobs():
         logger.info(
             "Background scheduler: jobs_enabled=true, but no jobs enabled; not starting"
@@ -139,43 +192,6 @@ def shutdown_scheduler() -> None:
         logger.info("Background scheduler stopped")
     elif _scheduler:
         _scheduler = None
-
-
-async def run_job_now(job_name: str) -> Dict[str, Any]:
-    """Run a known job immediately via API."""
-    config = load_mcp_server_config()
-
-    db = open_store(config)
-
-    # Test connection
-    health = db.health_check()
-    if health.get("status") != "healthy":
-        return {
-            "success": False,
-            "error": "Failed to connect to FalkorDB",
-        }
-
-    if job_name == "deduplicate_facts":
-        await _run_instrumented(
-            job_name, lambda: deduplicate_facts(db=db, config=config)
-        )
-    elif job_name == "archive_old_facts":
-        await _run_instrumented(
-            job_name, lambda: archive_old_facts(db=db, config=config)
-        )
-    else:
-        return {
-            "success": False,
-            "error": f"Unknown job '{job_name}'",
-        }
-
-    return {
-        "success": True,
-        "job_name": job_name,
-        "last_run": (
-            _last_run.get(job_name).isoformat() if job_name in _last_run else None
-        ),
-    }
 
 
 def get_scheduler_health() -> Dict[str, Any]:

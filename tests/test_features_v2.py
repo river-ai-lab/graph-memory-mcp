@@ -117,7 +117,12 @@ def test_search_metadata_filter(db_client, search_type):
         auto_link=False,
     )
     untagged = nodes.create_node(
-        db_client, cfg, text=text + " other", owner_id=owner, auto_link=False
+        db_client,
+        cfg,
+        text=text + " other",
+        owner_id=owner,
+        auto_link=False,
+        check_duplicates=False,
     )
     assert tagged["success"] and untagged["success"]
 
@@ -161,6 +166,7 @@ def test_project_scoping_filter(db_client):
         owner_id=owner,
         metadata={"project": "zeus", "created_by": "agent:two"},
         auto_link=False,
+        check_duplicates=False,
     )["node"]["node_id"]
 
     scoped = search_mod.search(

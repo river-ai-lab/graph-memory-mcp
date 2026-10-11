@@ -96,7 +96,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
 
         @mcp.tool(
             title="Health check",
-            description="Check server health (FalkorDB, embeddings, vector index).",
+            description="Check server health (graph backend, embeddings, vector index).",
             annotations=ToolAnnotations(readOnlyHint=True),
         )
         def health_check() -> dict:

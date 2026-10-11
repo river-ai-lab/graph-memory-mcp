@@ -193,22 +193,21 @@ class MCPServerConfig(BaseSettings):
     log_ttl_days: int = 10
     log_cleanup_frequency: int = 10
 
-    # Background jobs (APScheduler) — optional
+    # Background jobs (APScheduler). JOBS_ENABLED is enough; both jobs then run.
+    # JOBS_OWNER_IDS limits them to those tenants. Empty means every owner.
     jobs_enabled: bool = False
-    jobs_owner_ids: str = (
-        "default"  # comma-separated list; used when jobs_process_all_owners=false
-    )
-    jobs_process_all_owners: bool = False  # if true, discover owners from the graph
+    jobs_owner_ids: str = ""
+    jobs_process_all_owners: bool = False  # force every owner, even if JOBS_OWNER_IDS is set
     jobs_lock_ttl_seconds: int = 600
 
-    # Job: deduplicate_facts (+ entities in the same job)
-    job_deduplicate_enabled: bool = False
+    # Job: deduplicate_facts (+ entities in the same job). On when jobs are on.
+    job_deduplicate_enabled: bool = True
     job_deduplicate_cron: str = "0 * * * *"
     job_deduplicate_hours_threshold: int = 24
     job_deduplicate_similarity_threshold: float = 0.95
 
-    # Job: archive_old_facts
-    job_archive_enabled: bool = False
+    # Job: archive_old_facts. On when jobs are on.
+    job_archive_enabled: bool = True
     job_archive_cron: str = "0 3 * * 0"
     # Also archive active facts not recalled for `stale_facts_days` (opt-in)
     job_archive_stale_enabled: bool = Field(

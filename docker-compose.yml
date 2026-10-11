@@ -21,3 +21,13 @@ services:
       timeout: 3s
       retries: 15
       start_period: 5s
+
+  arcadedb:
+    image: arcadedata/arcadedb:latest
+    container_name: graph-memory-arcadedb
+    ports:
+      - "2480:2480"
+      - "2424:2424"
+    environment:
+      # First start asks for a password unless this property is set.
+      JAVA_OPTS: "-Darcadedb.server.rootPassword=playwithdata"

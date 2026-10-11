@@ -6,7 +6,6 @@ Agents: [memory_policies_for_LLM.md](./memory_policies_for_LLM.md). Ops: [admin.
 
 - Undirected `get_trace` — bidirectional BFS (path scan is costly on dense graphs)
 - Auto `search_type` by owner size (`pre_filter` vs `post_filter` ANN)
-- `MCP_TOOL_PROFILE=core|full` — fewer tools for weak models
 - Re-embed script — before prod with stable data (model/prefix changes)
 - Redis pub/sub cache invalidation — if multi-instance MCP
 - HA — FalkorDB replica + Sentinel (backups already cover durability)

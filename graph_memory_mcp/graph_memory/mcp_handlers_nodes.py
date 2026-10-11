@@ -68,13 +68,6 @@ def metadata_promoted_props(metadata: Optional[Dict]) -> Dict[str, Any]:
     }
 
 
-def _node_return_fields(alias: str = "n") -> str:
-    """Node projection. The Falkor column list lives on the adapter."""
-    from graph_memory_mcp.graph_memory.backends.falkor_ops import node_return_fields
-
-    return node_return_fields(alias)
-
-
 def _node_from_row(row: List[Any]) -> Dict[str, Any]:
     """Build the public node payload from a projected DB row."""
     source = load_json(row[12], None)
@@ -225,7 +218,7 @@ def create_node(
     *,
     text: str,
     description: Optional[str] = None,
-    node_type: Literal["Fact", "Entity"] = "Fact",
+    node_type: Literal["Fact", "Entity", "Collection", "User", "Project"] = "Fact",
     owner_id: str = "default",
     shared_with_ids: Optional[List[str]] = None,
     collection_id: Optional[str] = None,
@@ -463,7 +456,7 @@ def upsert_node(
     *,
     text: str,
     description: Optional[str] = None,
-    node_type: Literal["Fact", "Entity"] = "Fact",
+    node_type: Literal["Fact", "Entity", "Collection", "User", "Project"] = "Fact",
     owner_id: str = "default",
     metadata: Optional[Dict] = None,
     source: Optional[Dict] = None,
@@ -474,6 +467,8 @@ def upsert_node(
     auto_link: bool = False,
     semantic_threshold: Optional[float] = None,
     links: Optional[List[Dict]] = None,
+    shared_with_ids: Optional[List[str]] = None,
+    collection_id: Optional[str] = None,
 ) -> Dict:
     """Create or update a node using source.ref as the stable sync key."""
     if source is None:
@@ -512,6 +507,8 @@ def upsert_node(
             auto_link=auto_link,
             semantic_threshold=semantic_threshold,
             links=links,
+            shared_with_ids=shared_with_ids,
+            collection_id=collection_id,
             upsert_source=upsert_source,
             source_ref=source_ref,
         )
@@ -537,7 +534,7 @@ def _upsert_check_then_write(
     *,
     text: str,
     description: Optional[str],
-    node_type: Literal["Fact", "Entity"],
+    node_type: Literal["Fact", "Entity", "Collection", "User", "Project"],
     owner_id: str,
     metadata: Optional[Dict],
     status: Optional[str],
@@ -547,6 +544,8 @@ def _upsert_check_then_write(
     auto_link: bool,
     semantic_threshold: Optional[float],
     links: Optional[List[Dict]],
+    shared_with_ids: Optional[List[str]],
+    collection_id: Optional[str],
     upsert_source: Dict[str, Any],
     source_ref: str,
 ) -> Dict:
@@ -559,6 +558,7 @@ def _upsert_check_then_write(
     if existing is None:
         if versioning and "version" not in upsert_source:
             upsert_source["version"] = 1
+        # Identity is source.ref. A new ref is stored even when the text is close.
         result = create_node(
             db,
             config,
@@ -574,6 +574,9 @@ def _upsert_check_then_write(
             auto_link=auto_link,
             semantic_threshold=semantic_threshold,
             links=links,
+            shared_with_ids=shared_with_ids,
+            collection_id=collection_id,
+            check_duplicates=False,
         )
         if not result.get("success"):
             return result
@@ -592,6 +595,7 @@ def _upsert_check_then_write(
         owner_id=owner_id,
         text=text,
         description=description,
+        shared_with_ids=shared_with_ids,
         metadata=metadata,
         source=upsert_source,
         status=status,
@@ -601,6 +605,16 @@ def _upsert_check_then_write(
     )
     if not result.get("success"):
         return result
+    if collection_id:
+        try:
+            _add_to_collection(db, existing["node_id"], collection_id, owner_id)
+        except Exception as exc:
+            logger.warning(
+                "Failed to add node %s to collection %s: %s",
+                existing["node_id"],
+                collection_id,
+                exc,
+            )
 
     link_errors, link_warnings = _apply_inline_links(
         db,
@@ -887,7 +901,7 @@ def _get_node_by_source_ref(
     db: FalkorDBClient,
     *,
     owner_id: str,
-    node_type: Literal["Fact", "Entity"],
+    node_type: Literal["Fact", "Entity", "Collection", "User", "Project"],
     source_ref: str,
 ) -> Optional[Dict[str, Any]]:
     """Load a node by same-owner source.ref, used for idempotent upserts."""

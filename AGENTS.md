@@ -1,6 +1,6 @@
 # Graph Memory MCP — agent notes
 
-Python MCP server (`graph_memory_mcp/`). FalkorDB backend; optional `--simple` profile.
+Python MCP server (`graph_memory_mcp/`). FalkorDB backend. Three profiles: default, `--simple`, `--extended`. Pick one and stay on it.
 
 ## Before commit
 
@@ -22,9 +22,10 @@ For this repo specifically:
 
 | Path | Role |
 |------|------|
-| `graph_memory_mcp/server.py` | Full MCP (nested `source`, `upsert_node`) |
-| `graph_memory_mcp/server_simple.py` | Simple MCP (flat provenance, no `upsert_node`) |
-| `graph_memory_mcp/cli.py` | `--simple` flag |
+| `graph_memory_mcp/server.py` | Default MCP (nested `source`) |
+| `graph_memory_mcp/server_simple.py` | `--simple`: flat provenance |
+| `graph_memory_mcp/server_extended.py` | `--extended`: collections, sharing, node types `Collection` / `User` / `Project` |
+| `graph_memory_mcp/cli.py` | `--simple` or `--extended` |
 | `tests/test_graph_memory_server.py` | Server + integration tests |
 | `graph_memory_mcp/explorer/` | Local graph explorer GUI (`graph-memory-explorer`) |
 

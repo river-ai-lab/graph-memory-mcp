@@ -18,7 +18,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_VERTEX_TYPES = ("Fact", "Entity", "Collection", "FactVersion")
+VERTEX_TYPES = ("Fact", "Entity", "Collection", "User", "Project", "FactVersion")
 _SYSTEM = {"@rid", "@type", "@cat", "@in", "@out"}
 _ASSIGN = re.compile(
     r"^n\.([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
@@ -70,13 +70,13 @@ def _node_row(record: dict, node_type: str) -> list:
     ]
 
 
-def _page_sql(page_clause: str) -> str:
-    if not page_clause:
-        return ""
-    match = _PAGE.match(page_clause)
+def _slice_page(rows: list, page_clause: str | None) -> list:
+    match = _PAGE.match(page_clause or "")
     if not match:
-        return ""
-    return f" SKIP {int(match.group(1))} LIMIT {int(match.group(2))}"
+        return rows
+    start = int(match.group(1))
+    limit = int(match.group(2))
+    return rows[start : start + limit]
 
 
 _NO_OWNER_SCOPE = frozenset(
@@ -188,7 +188,7 @@ class ArcadeOps:
         for owner_id in self.list_owners():
             with self.owner_scope(owner_id):
                 empty = True
-                for label in _VERTEX_TYPES:
+                for label in VERTEX_TYPES:
                     rows = self.query(f"SELECT count(*) AS c FROM {label}")
                     if rows and int(rows[0].get("c") or 0) > 0:
                         empty = False
@@ -225,7 +225,7 @@ class ArcadeOps:
 
         owner = self.owner_literal(owner_id)
         total = 0
-        for label in _VERTEX_TYPES:
+        for label in VERTEX_TYPES:
             rows = self.query(
                 f"SELECT @rid AS rid FROM {label} "
                 f"WHERE owner_id = '{owner}' AND uid IS NULL"
@@ -752,8 +752,12 @@ class ArcadeOps:
         owner_id: str,
         remaining: int,
         include_outdated: bool,
+        include_ttl: bool = False,
+        rank_expr: str = "",
+        exclude_types: list | None = None,
     ) -> list:
         seen_ids = {str(node_id) for node_id in seen}
+        dropped = {str(name) for name in (exclude_types or [])}
         now = _now_ms()
         collected: dict[str, dict] = {}
         for node_id in frontier:
@@ -765,6 +769,9 @@ class ArcadeOps:
                 f"SELECT expand(bothE()) FROM {label} WHERE @rid = {rid}"
             )
             for edge in edges:
+                edge_type = str(edge.get("@type") or "")
+                if edge_type in dropped:
+                    continue
                 other_rid = (
                     edge.get("@in")
                     if str(edge.get("@out")) == rid
@@ -775,11 +782,15 @@ class ArcadeOps:
                     continue
                 other_label, other_rec = other
                 uid = str(other_rec.get("uid"))
-                if uid in seen_ids or not _visible(other_rec, include_outdated, now):
+                if uid in seen_ids or not _visible(
+                    other_rec, include_outdated, now, include_ttl
+                ):
                     continue
-                slot = collected.setdefault(
-                    uid,
-                    {
+                rank = _edge_rank(rank_expr, edge_type)
+                slot = collected.get(uid)
+                if slot is None:
+                    collected[uid] = {
+                        "rank": rank,
                         "row": [
                             other_rec.get("uid"),
                             other_label,
@@ -791,18 +802,20 @@ class ArcadeOps:
                             ),
                             other_rec.get("access_count") or 0,
                             [],
-                        ]
-                    },
-                )
+                        ],
+                    }
+                    slot = collected[uid]
+                elif rank < slot["rank"]:
+                    slot["rank"] = rank
                 parents: list = slot["row"][5]
                 parent = str(node_id)
                 if parent not in parents:
                     parents.append(parent)
-                if len(collected) >= int(remaining):
-                    break
-            if len(collected) >= int(remaining):
-                break
-        return [slot["row"] for slot in list(collected.values())[: int(remaining)]]
+        ordered = sorted(
+            collected.values(),
+            key=lambda slot: (slot["rank"], str(slot["row"][0])),
+        )
+        return [slot["row"] for slot in ordered[: int(remaining)]]
 
     def context_page_rows(
         self,
@@ -813,11 +826,14 @@ class ArcadeOps:
         include_outdated: bool,
         node_id: str,
         owner_id: str,
+        include_ttl: bool = False,
+        exclude_types: list | None = None,
     ) -> list:
         label, center = self._find(node_id, owner_id)
         if center is None or label is None:
             return []
         now = _now_ms()
+        dropped = {str(name) for name in (exclude_types or [])}
         visited = {str(center.get("@rid")): (label, center)}
         frontier = [str(center.get("@rid"))]
         for _hop in range(max(0, int(depth))):
@@ -828,6 +844,8 @@ class ArcadeOps:
                     f"SELECT expand(bothE()) FROM {current_label} WHERE @rid = {rid}"
                 )
                 for edge in edges:
+                    if str(edge.get("@type") or "") in dropped:
+                        continue
                     other_rid = (
                         edge.get("@in")
                         if str(edge.get("@out")) == rid
@@ -842,7 +860,7 @@ class ArcadeOps:
                     other_label, other_rec = other
                     if str(other_rec.get("uid")) != str(
                         center.get("uid")
-                    ) and not _visible(other_rec, include_outdated, now):
+                    ) and not _visible(other_rec, include_outdated, now, include_ttl):
                         continue
                     visited[other_rid] = (other_label, other_rec)
                     nxt.append(other_rid)
@@ -933,44 +951,62 @@ class ArcadeOps:
                 total += len(edges)
         return [[total]]
 
-    def brief_top_facts(self, owner_id: str, limit: int) -> list:
+    def brief_about(self, owner_id: str, source_ref: str) -> list:
+        """Latest active no-TTL fact with this source.ref, or an empty list."""
+        owner = self.owner_literal(owner_id)
+        facts = self.query(
+            "SELECT FROM Fact WHERE owner_id = "
+            f"'{owner}' AND source_ref = :source_ref",
+            {"source_ref": source_ref},
+        )
+        durable = [fact for fact in facts if _durable_active(fact)]
+        durable.sort(
+            key=lambda fact: -(fact.get("updated_at") or fact.get("created_at") or 0)
+        )
+        if not durable:
+            return []
+        fact = durable[0]
+        return [[fact.get("uid"), fact.get("text"), fact.get("source_ref")]]
+
+    def brief_top_facts(self, owner_id: str, limit: int, about_ref: str = "") -> list:
+        """Recent active facts with no TTL. Not a degree ranking."""
         owner = self.owner_literal(owner_id)
         facts = self.query(
             "SELECT FROM Fact WHERE owner_id = "
             f"'{owner}' AND (status IS NULL OR status = 'active')"
         )
-        ranked = []
+        recent = []
         for fact in facts:
-            edges = self.query(
-                f"SELECT expand(bothE()) FROM Fact WHERE @rid = {_rid(fact.get('@rid'))}"
-            )
-            ranked.append((len(edges), fact))
-        ranked.sort(
-            key=lambda item: (-item[0], -(item[1].get("created_at") or 0)),
-        )
+            if not _durable_active(fact):
+                continue
+            if about_ref and str(fact.get("source_ref") or "") == about_ref:
+                continue
+            recent.append(fact)
+        recent.sort(key=lambda fact: -(fact.get("created_at") or 0))
         return [
-            [
-                fact.get("uid"),
-                fact.get("text"),
-                degree,
-                fact.get("created_at"),
-            ]
-            for degree, fact in ranked[: int(limit)]
+            [fact.get("uid"), fact.get("text"), fact.get("created_at")]
+            for fact in recent[: int(limit)]
         ]
+
+    def _vertices_by_rid(self, owner: str) -> dict[str, dict]:
+        by_rid: dict[str, dict] = {}
+        for label in VERTEX_TYPES:
+            for row in self.query(f"SELECT FROM {label} WHERE owner_id = '{owner}'"):
+                by_rid[str(row.get("@rid"))] = row
+        return by_rid
 
     def brief_contradictions(self, owner_id: str) -> list:
         owner = self.owner_literal(owner_id)
         if "CONTRADICTS" not in self._known_edge_types():
             return []
-        by_rid: dict[str, dict] = {}
-        for label in _VERTEX_TYPES:
-            for row in self.query(f"SELECT FROM {label} WHERE owner_id = '{owner}'"):
-                by_rid[str(row.get("@rid"))] = row
+        by_rid = self._vertices_by_rid(owner)
         rows = []
         for edge in self.query("SELECT FROM CONTRADICTS"):
             left = by_rid.get(str(edge.get("@out")))
             right = by_rid.get(str(edge.get("@in")))
             if left is None or right is None:
+                continue
+            if not _durable_active(left) or not _durable_active(right):
                 continue
             if str(left.get("uid")) >= str(right.get("uid")):
                 continue
@@ -981,6 +1017,30 @@ class ArcadeOps:
                 break
         return rows
 
+    def contradicts_among(self, owner_id: str, node_ids: list) -> list:
+        """Existing CONTRADICTS edges whose both ends are in node_ids."""
+        wanted = {str(node_id) for node_id in node_ids}
+        if len(wanted) < 2 or "CONTRADICTS" not in self._known_edge_types():
+            return []
+        owner = self.owner_literal(owner_id)
+        by_rid = self._vertices_by_rid(owner)
+        pairs = []
+        for edge in self.query("SELECT FROM CONTRADICTS"):
+            left = by_rid.get(str(edge.get("@out")))
+            right = by_rid.get(str(edge.get("@in")))
+            if left is None or right is None:
+                continue
+            left_id = str(left.get("uid"))
+            right_id = str(right.get("uid"))
+            if left_id not in wanted or right_id not in wanted:
+                continue
+            if left_id > right_id:
+                left_id, right_id = right_id, left_id
+            pair = [left_id, right_id]
+            if pair not in pairs:
+                pairs.append(pair)
+        return pairs
+
     def brief_stale_facts(self, owner_id: str, cutoff_ms: int) -> list:
         owner = self.owner_literal(owner_id)
         facts = self.query(
@@ -989,6 +1049,8 @@ class ArcadeOps:
         )
         stale = []
         for fact in facts:
+            if fact.get("expires_at") is not None:
+                continue
             touched = fact.get("last_accessed_at")
             if touched is None:
                 touched = fact.get("created_at")
@@ -1017,21 +1079,13 @@ class ArcadeOps:
             for record in records:
                 rows.append([label, _plain(record)])
         rows.sort(key=lambda row: str((row[1] or {}).get("uid") or ""))
-        match = _PAGE.match(page_clause or "")
-        if not match:
-            return rows
-        start = int(match.group(1))
-        limit = int(match.group(2))
-        return rows[start : start + limit]
+        return _slice_page(rows, page_clause)
 
     def export_relation_rows(self, owner_id: str, page_clause: str) -> list:
         owner = self.owner_literal(owner_id)
-        by_rid: dict[str, dict] = {}
-        for label in _VERTEX_TYPES:
-            for record in self.query(f"SELECT FROM {label} WHERE owner_id = '{owner}'"):
-                by_rid[str(record.get("@rid"))] = record
+        by_rid = self._vertices_by_rid(owner)
         edges = []
-        for label in _VERTEX_TYPES:
+        for label in VERTEX_TYPES:
             vertices = [rec for rec in by_rid.values() if rec.get("@type") == label]
             for record in vertices:
                 for edge in self.query(
@@ -1049,15 +1103,7 @@ class ArcadeOps:
                         ]
                     )
         edges.sort(key=lambda row: (str(row[0]), str(row[2]), str(row[1])))
-        page = _page_sql(page_clause)
-        if not page:
-            return edges
-        match = _PAGE.match(page_clause)
-        if not match:
-            return edges
-        start = int(match.group(1))
-        limit = int(match.group(2))
-        return edges[start : start + limit]
+        return _slice_page(edges, page_clause)
 
     def import_node_batch(
         self, *, label: str, has_emb: bool, rows: list, owner_id: str
@@ -1257,24 +1303,23 @@ class ArcadeOps:
         rows = self.brief_stale_facts(owner_id, cutoff_ms)
         return [[row[0]] for row in rows]
 
-    def fact_neighbor_rows(self, fact_id: str) -> list:
-        """Find the fact in whichever owner database holds that uid."""
-        for owner_id in self.list_owners():
-            with self.owner_scope(owner_id):
-                rows = self.query(
-                    "SELECT @rid AS rid FROM Fact WHERE uid = :uid LIMIT 1",
-                    {"uid": fact_id},
-                )
-                if not rows:
-                    continue
-                neighbors = self.query(
-                    "SELECT expand(both()) FROM Fact WHERE @rid = "
-                    f"{_rid(rows[0].get('rid'))}"
-                )
-                return [
-                    [record.get("@type"), record.get("status")] for record in neighbors
-                ]
-        return []
+    def fact_neighbor_rows(self, fact_id: str, owner_id: str) -> list:
+        """Neighbors of one fact in that owner's database."""
+        with self.owner_scope(owner_id):
+            rows = self.query(
+                "SELECT @rid AS rid FROM Fact WHERE uid = :uid LIMIT 1",
+                {"uid": fact_id},
+            )
+            if not rows:
+                return []
+            neighbors = self.query(
+                "SELECT expand(both()) FROM Fact WHERE @rid = "
+                f"{_rid(rows[0].get('rid'))}"
+            )
+        return [
+            [[str(record.get("@type") or "")], record.get("status")]
+            for record in neighbors
+        ]
 
     def _merge_entity(
         self,
@@ -1340,7 +1385,7 @@ class ArcadeOps:
         uid: str,
         owner_id: str,
         *,
-        types: tuple[str, ...] = _VERTEX_TYPES,
+        types: tuple[str, ...] = VERTEX_TYPES,
     ) -> tuple[str | None, dict | None]:
         owner = self.owner_literal(owner_id)
         self.ensure_ready()
@@ -1357,7 +1402,7 @@ class ArcadeOps:
     def _find_rid(self, rid: str, owner_id: str) -> tuple[str, dict] | None:
         owner = self.owner_literal(owner_id)
         safe = _rid(rid)
-        for label in _VERTEX_TYPES:
+        for label in VERTEX_TYPES:
             rows = self.query(
                 f"SELECT FROM {label} WHERE @rid = {safe} AND owner_id = '{owner}' LIMIT 1"
             )
@@ -1515,7 +1560,7 @@ class ArcadeOps:
 
     def _owner_of(self, uid: str) -> str | None:
         self.ensure_ready()
-        for label in _VERTEX_TYPES:
+        for label in VERTEX_TYPES:
             rows = self.query(
                 f"SELECT owner_id FROM {label} WHERE uid = :uid LIMIT 1",
                 {"uid": uid},
@@ -1529,14 +1574,14 @@ class ArcadeOps:
         names = []
         for row in rows:
             name = str(row.get("name") or "")
-            if name in _VERTEX_TYPES or name in {"GmMeta", "V", "E"}:
+            if name in VERTEX_TYPES or name in {"GmMeta", "V", "E"}:
                 continue
             if re.fullmatch(r"[A-Z][A-Z0-9_]*", name):
                 names.append(name)
         return sorted(set(names) | set(self._edge_types))
 
     def _check_label(self, label: str) -> None:
-        if label not in _VERTEX_TYPES:
+        if label not in VERTEX_TYPES:
             raise ValueError(f"Unsupported node type: {label}")
 
 
@@ -1552,13 +1597,40 @@ def _bind_fields(fields: dict) -> tuple[str, dict]:
     return ", ".join(parts), params
 
 
-def _visible(record: dict, include_outdated: bool, now_ms: int) -> bool:
+_WHEN_RANK = re.compile(r"WHEN '([A-Z][A-Z0-9_]*)' THEN (\d+)")
+_ELSE_RANK = re.compile(r"ELSE (\d+)")
+
+
+def _edge_rank(rank_expr: str, edge_type: str) -> int:
+    """Lower rank is kept first. Mirrors ``neighbor_rank_expr`` CASE text."""
+    if not rank_expr:
+        return 0
+    for name, rank in _WHEN_RANK.findall(rank_expr):
+        if name == edge_type:
+            return int(rank)
+    else_match = _ELSE_RANK.search(rank_expr)
+    return int(else_match.group(1)) if else_match else 0
+
+
+def _durable_active(record: dict) -> bool:
+    """Active fact with no TTL. Matches Falkor ``expires_at IS NULL``."""
+    status = record.get("status") or "active"
+    return status == "active" and record.get("expires_at") is None
+
+
+def _visible(
+    record: dict,
+    include_outdated: bool,
+    now_ms: int,
+    include_ttl: bool = False,
+) -> bool:
+    """Active durable nodes by default. ``include_ttl`` keeps unexpired TTL facts."""
     if include_outdated:
         return True
     status = record.get("status") or "active"
     if status != "active":
         return False
     expires = record.get("expires_at")
-    if expires is not None and int(expires) <= now_ms:
-        return False
-    return True
+    if expires is None:
+        return True
+    return bool(include_ttl and int(expires) > now_ms)

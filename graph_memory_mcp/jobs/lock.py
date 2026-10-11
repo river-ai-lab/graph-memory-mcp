@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 import secrets
 from contextlib import contextmanager
 from typing import Iterator
 
 import redis
+
+logger = logging.getLogger(__name__)
 
 
 class RedisDistributedLock:
@@ -73,3 +76,14 @@ def job_lock(
     finally:
         if acquired:
             lock.release()
+
+
+@contextmanager
+def owner_job_lock(db, key: str, ttl_seconds: int, job: str) -> Iterator[bool]:
+    """Per-owner job lock. Yields True when Redis is absent."""
+    if db.redis_client is None:
+        logger.warning("%s: Redis not available, running without lock", job)
+        yield True
+        return
+    with job_lock(db.redis_client, key, ttl_seconds=ttl_seconds) as acquired:
+        yield acquired

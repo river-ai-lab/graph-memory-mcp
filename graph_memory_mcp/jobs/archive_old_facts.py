@@ -6,41 +6,11 @@ from graph_memory_mcp.config import MCPServerConfig
 from graph_memory_mcp.graph_memory import mcp_handlers_nodes
 from graph_memory_mcp.graph_memory.database import FalkorDBClient
 from graph_memory_mcp.graph_memory.utils import normalize_owner_id
-from graph_memory_mcp.jobs.lock import job_lock
+from graph_memory_mcp.jobs.lock import owner_job_lock
+from graph_memory_mcp.jobs.owners import resolve_owner_ids
 from graph_memory_mcp.jobs.retry import retry_async
 
 logger = logging.getLogger(__name__)
-
-
-def _parse_owner_ids(config: MCPServerConfig) -> List[str]:
-    """Parse owner IDs from config."""
-    raw = config.jobs_owner_ids or "default"
-    owners = [o.strip() for o in raw.split(",") if o.strip()]
-    return owners or ["default"]
-
-
-def _resolve_owner_ids(db: FalkorDBClient, config: MCPServerConfig) -> List[str]:
-    """Resolve owner IDs from config or discover them from per-owner graphs."""
-    if not config.jobs_process_all_owners:
-        return _parse_owner_ids(config)
-
-    try:
-        discovered = db.list_owners()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "Archive job: failed to discover owners, falling back to jobs_owner_ids: %s",
-            exc,
-        )
-        return _parse_owner_ids(config)
-
-    owners = []
-    for owner_text in discovered:
-        try:
-            owners.append(normalize_owner_id(owner_text))
-        except ValueError:
-            logger.warning("Archive job: skipping invalid owner_id %r", owner_text)
-
-    return sorted(set(owners)) or _parse_owner_ids(config)
 
 
 async def _invoke(fn):
@@ -70,7 +40,7 @@ async def archive_old_facts(db: FalkorDBClient, config: MCPServerConfig) -> None
         backoff_max=retry_backoff_max,
     )(_invoke)
 
-    owners = _resolve_owner_ids(db, config)
+    owners = resolve_owner_ids(db, config)
     lock_ttl = config.jobs_lock_ttl_seconds
 
     # Fact.created_at / expires_at are stored in milliseconds (timestamp())
@@ -80,15 +50,9 @@ async def archive_old_facts(db: FalkorDBClient, config: MCPServerConfig) -> None
     for owner_id in owners:
         lock_key = f"graph_memory_mcp:job:archive_old_facts:{owner_id}"
 
-        if db.redis_client is None:
-            logger.warning("Archive job: Redis not available, running without lock")
-            acquired = True
-            lock_context = None
-        else:
-            lock_context = job_lock(db.redis_client, lock_key, ttl_seconds=lock_ttl)
-            acquired = lock_context.__enter__()
-
-        try:
+        with owner_job_lock(
+            db, lock_key, ttl_seconds=lock_ttl, job="Archive job"
+        ) as acquired:
             if not acquired:
                 logger.info(
                     "Archive job: lock busy for owner_id=%s, skipping", owner_id
@@ -182,7 +146,9 @@ async def archive_old_facts(db: FalkorDBClient, config: MCPServerConfig) -> None
 
                 try:
                     rel_rows = await invoke_with_retry(
-                        lambda: db.fact_neighbor_rows(fact_id)
+                        lambda fid=fact_id, oid=owner_id_normalized: db.fact_neighbor_rows(
+                            fid, oid
+                        )
                     )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(
@@ -263,7 +229,3 @@ async def archive_old_facts(db: FalkorDBClient, config: MCPServerConfig) -> None
                 skipped_status,
                 skipped_active_relations,
             )
-
-        finally:
-            if lock_context is not None:
-                lock_context.__exit__(None, None, None)

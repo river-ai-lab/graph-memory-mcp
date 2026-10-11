@@ -2,7 +2,7 @@
 
 Normative tool signatures. Jobs: [background_jobs.md](./background_jobs.md). Agents: [memory_policies_for_LLM.md](./memory_policies_for_LLM.md). Admin: [admin.md](./admin.md).
 
-**Storage:** FalkorDB by default, one graph per `owner_id` (`{FALKORDB_GRAPH}_{owner_id}`). `GRAPH_BACKEND=arcadedb` uses one ArcadeDB database per owner (`{ARCADE_DATABASE}_{owner_id}`), with that owner's own HNSW indexes. **IDs:** tools use stable `node_id` (= `uid`, UUID hex); legacy nodes backfilled at startup.
+**Storage:** FalkorDB by default, one graph per `owner_id` (`{FALKORDB_GRAPH}_{owner_id}`). `GRAPH_BACKEND=arcadedb` uses one ArcadeDB database per owner (`{ARCADE_DATABASE}_{owner_id}`), with that owner's own HNSW indexes. **IDs:** tools use stable `node_id` (= `uid`, UUID hex). A node without `uid` receives one at startup.
 
 ## Data model
 
@@ -32,9 +32,15 @@ Errors: `{success:false, error, code}` — `memory_validation_error`, `memory_no
 
 LRU embeddings + TTL search (defaults in `env.example`). Search cache cleared on mutations. In-process only. Falkor locks upsert and jobs with Redis. Arcade is one process and does not. Stats in `health_check` / `/metrics`.
 
-## `--simple` profile
+## Server profiles
 
-Same tools/handlers; provenance is flat (`ref`, `provenance_type`, …) instead of nested `source`. `upsert_node` requires `ref`.
+Three independent processes. Tool names match. Pick one client-side and stay on it. Handlers are the same; write tools expose more or less.
+
+| Profile | Start | What the agent can pass on writes |
+|---------|--------|-------------------------------------|
+| default | `graph-memory-mcp` | Nested `source`. Fact and Entity. |
+| `--simple` | `graph-memory-mcp --simple` | Same tools. Provenance is flat (`ref`, `provenance_type`, …) instead of nested `source`. `upsert_node` requires `ref`. |
+| `--extended` | `graph-memory-mcp --extended` | Same tools as default, plus `description`, `shared_with_ids`, `collection_id` (`CONTAINS`), and node types `Collection`, `User`, `Project`. |
 
 ## Agent tools
 
@@ -44,10 +50,10 @@ Defaults: `owner_id` from `DEFAULT_OWNER_ID` (env, default `"default"`). Pass `o
 
 ### Writes
 
-**`create_node`** — `text`; opt: `node_type`, `owner_id`, `metadata`, `description`, `status`, `ttl_days`, `source`, `entity_type`, `auto_link` (default false), `semantic_threshold`, `links[{to_id,relation_type,properties?}]`, `check_duplicates` (default true). The server never sets `ttl_days`. A Fact near-paraphrase at or above `CREATE_DUPLICATE_BLOCK_THRESHOLD` (0.92) is rejected (`memory_duplicate`, with `diff_hint`) before write. A similar but different fact is written with `check_duplicates=false`. Text longer than `LONG_TEXT_WARN_CHARS` (600) adds `warnings` and is still stored. `auto_link=true` adds `MENTIONS` to similar Entities (threshold `AUTO_LINKING_SEMANTIC_THRESHOLD`).
+**`create_node`** — `text`; opt: `node_type` (`Fact`|`Entity`), `owner_id`, `metadata`, `status`, `ttl_days`, `source`, `entity_type`, `auto_link` (default false), `semantic_threshold`, `links[{to_id,relation_type,properties?}]`, `check_duplicates` (default true). `--extended` also takes `description`, `shared_with_ids`, `collection_id`, and `node_type` `Collection`|`User`|`Project`. The server never sets `ttl_days`. A Fact near-paraphrase at or above `CREATE_DUPLICATE_BLOCK_THRESHOLD` (0.92) is rejected (`memory_duplicate`, with `diff_hint`) before write. A similar but different fact is written with `check_duplicates=false`. Text longer than `LONG_TEXT_WARN_CHARS` (600) adds `warnings` and is still stored. `auto_link=true` adds `MENTIONS` to similar Entities (threshold `AUTO_LINKING_SEMANTIC_THRESHOLD`).
 → success `{node, possible_duplicates?, warnings?, link_errors?, link_warnings?}`
 
-**`upsert_node`** — `text`, `source.ref`; same write fields as `create_node` except `check_duplicates` (upsert updates the node for that ref, including a revised `about`). Opt `auto_link` (default false) + `versioning`. On Falkor, Redis-locked per `(owner_id, node_type, ref)`. Arcade does not take that lock. → `{success, node, operation}`
+**`upsert_node`** — `text`, `source.ref`; same write fields as `create_node` except `check_duplicates` (upsert updates the node for that ref, including a revised `about`). Opt `description`, `auto_link` (default false) + `versioning`. `--extended` also takes `shared_with_ids` and `collection_id`. On Falkor, Redis-locked per `(owner_id, node_type, ref)`. Arcade does not take that lock. → `{success, node, operation}`
 
 **`create_nodes`** — `items[{text,…}]` ≤200; opt `node_type`, `owner_id`. No auto_link / duplicates.
 

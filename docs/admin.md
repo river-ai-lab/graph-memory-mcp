@@ -4,7 +4,7 @@ Same process as `/mcp`. Auth: `ADMIN_TOKEN` → `Authorization: Bearer …` (ope
 
 | Route | Method | Purpose |
 |-------|--------|---------|
-| `/admin/health` | GET | FalkorDB, embeddings, indexes (≤20 owners), cache |
+| `/admin/health` | GET | graph backend, embeddings, indexes (≤20 owners), cache |
 | `/admin/ensure-indexes` | POST | vector/range indexes per owner graph |
 | `/admin/export/{owner_id}` | GET | nodes+relations; `?include_versions=&limit=&offset=&section=nodes\|relations` |
 | `/admin/import` | POST | `{owner_id, nodes, relations?, regenerate_embeddings?}` merge by `uid` (Fact/Entity/FactVersion) |

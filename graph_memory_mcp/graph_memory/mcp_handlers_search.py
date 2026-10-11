@@ -282,8 +282,9 @@ def search(
 
     embedding = db.get_embedding(query, kind="query")
     if not embedding:
-        return _decorate(
-            success_response(results=[], facts=[], entities=[], contradiction_pairs=[])
+        return error_response(
+            "Embedding service returned no vector; search was not run",
+            code="memory_embedding_error",
         )
 
     max_distance = 1.0 - similarity_threshold

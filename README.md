@@ -13,76 +13,27 @@
 
 </div>
 
-It provides **long-term, shared memory** where agents can store facts, entities, and relations, retrieve context semantically, and build on knowledge across sessions.
-
-> Designed as **agent-ready infrastructure**, not just a database wrapper.
-
----
-
-## Why MCP-first?
-
-This system treats memory as an agent-accessible capability rather than an application API.
-MCP provides a stable contract for tool discovery, invocation, and evolution across agents,
-while HTTP remains a low-level transport detail.
-
-### Minimal MCP Flow
-
-```text
-LLM / Agent
-   │
-   │ MCP tool call (e.g., create_node, search)
-   ▼
-Graph Memory MCP
-   │
-   ├─ Semantic Search (Embeddings)
-   ├─ Graph Traversal (Triplets)
-   └─ Memory Governance (Dedup, Archival)
-```
+Agents store facts, entities, and the edges between them here, and read them back in a later session. The text in the graph is the text the agent wrote. One `owner_id` is one graph.
 
 ## Agent policies
 
 Any LLM agent that reads or writes Graph Memory — single-agent or multi-agent — should load the memory ritual from client rules / `AGENTS.md` and keep [`docs/memory_policies_for_LLM.md`](docs/memory_policies_for_LLM.md) (or the shorter [`docs/memory_policy_cheatsheet.md`](docs/memory_policy_cheatsheet.md)) in context **at the start of each session**. That defines what to store, `owner_id` rules, and how to link facts; without it, memory tends to get noisy or mis-scoped. The same full policy is optionally exposed as MCP resource `graph-memory://agent-policies` (clients rarely auto-fetch it — prefer rules).
 
----
-
-## Why Graph Memory MCP?
-
-Modern agents need more than ephemeral context windows.
-
-Graph Memory MCP is built for systems that require:
-
-- **Long-term memory** that persists across agent runs
-- **Graph structure** to model relationships between facts and entities
-- **Semantic recall** over large knowledge bases
-- **Operational controls** suitable for production
-- **Multi-tenant isolation** for safe multi-agent deployments
-
-**Key idea**: combine **facts + graph + semantics + ops** in one lightweight MCP-native service.
-
----
-
-## What it provides (currently - limited functionality)
+## What it provides
 
 - **Fact storage** with embeddings (semantic search; hybrid rank: cosine + identifier match + recency)
-- **Session start** — `get_brief` (project state, not the task) then `search(..., compact=true)`; `suggested_next` is a hint, the agent chooses the next call
-- **Entity & triplet graph** (subject–predicate–object)
-- **Context subgraph extraction** (`get_context`) and paths (`get_trace`). The node budget prefers `CONTRADICTS` and `FOLLOWS_FROM` over `MENTIONS`
-- **Optional hybrid shortcut** (`recall_context`) — one-call search + expand on small graphs
-- **Fact versioning & soft-deletion** (outdated knowledge). Temporary facts stay out of default search until `include_ttl=true`; the agent sets `ttl_days`
-- **Fact auto-linking** — optional: `auto_link=true` on a Fact adds `MENTIONS` to similar Entity nodes (default is false)
+- **`get_brief`** — project anchor and recent durable facts, separate from search
+- **Entity and triplet graph** (subject–predicate–object)
+- **Context subgraph** (`get_context`) and paths (`get_trace`)
+- **`recall_context`** — one-call search and expand on small graphs
+- **Fact versioning and soft-deletion.** Facts with `ttl_days` stay out of default search until `include_ttl=true`
+- **Fact auto-linking** — `auto_link=true` on a Fact adds `MENTIONS` to similar Entity nodes (default is false)
 - **Near-duplicate writes** refused before insert (`memory_duplicate`); a different fact uses `check_duplicates=false`
 - **Multi-tenant isolation** via `owner_id`
 - **Background jobs** (deduplication, archival)
 - **MCP-native API** (FastMCP)
 
-Backed by **FalkorDB** (pluggable storage layer).
-
----
-
-**Key advantage**: Tight coupling of **facts + graph + ops** in one lightweight server with practical "agent-ready" tools. No need to orchestrate separate vector DB + graph DB + deduplication services.
-
-
----
+Backed by **FalkorDB** by default. `GRAPH_BACKEND=arcadedb` uses ArcadeDB with the same tools.
 
 ## Install
 
@@ -105,22 +56,30 @@ PyTorch is installed from the **CPU-only** index by default (no NVIDIA/CUDA whee
 
 ## Run (Development)
 
-### HTTP Server (Debug/Control)
-To run with a persistent HTTP endpoint for manual debugging via `curl`:
+### HTTP server
 
 ```bash
 graph-memory-mcp --host 127.0.0.1 --port 8000
 ```
 
-### Simple server profile (home / personal)
+Streamable HTTP MCP is at `http://127.0.0.1:8000/mcp`. Tools are MCP calls, not REST paths under `/mcp`.
 
-Same handlers and graph behavior as the default server, but MCP tools use **flat provenance fields** (`ref`, `provenance_type`, `uri`, …) instead of a nested `source` object (including `upsert_node`, where `ref` is required).
+### Server profiles
+
+Three processes, one handler layer. Tool names match. A client picks one and stays on it.
+
+| | Start | Writes |
+|--|--------|--------|
+| Default | `graph-memory-mcp` | Nested `source` |
+| Simple | `graph-memory-mcp --simple` | Flat provenance (`ref`, `provenance_type`, …). `upsert_node` requires `ref` |
+| Extended | `graph-memory-mcp --extended` | Same as default, plus `description`, `shared_with_ids`, `collection_id`, and node types `Collection`, `User`, `Project` |
 
 ```bash
 graph-memory-mcp --simple --host 127.0.0.1 --port 8000
+graph-memory-mcp --extended --host 127.0.0.1 --port 8000
 ```
 
-See [Simple server profile](./docs/features.md#simple-server-profile) in the API contract.
+See [Server profiles](./docs/features.md#server-profiles).
 
 ### Graph Explorer (local GUI)
 
@@ -148,18 +107,24 @@ Key defaults live in `graph_memory_mcp/config.py` within the `MCPServerConfig` c
 - `RELATION_POLICY_ENFORCE` — `off` | `warn` (default) | `enforce`
 - `RELATION_ALLOWED_TYPES` — comma-separated allowlist for new edges
 - `OWNER_SCOPE` — `client` (default) | `header`. See [Owner isolation](#owner-isolation).
+- `JOBS_ENABLED` — off by default. On runs archive and dedup. `JOBS_OWNER_IDS` limits them to those owners; empty means every owner. See [background jobs](docs/background_jobs.md).
 - Agent link guidance: `docs/memory_policies_for_LLM.md`
 
-## Running FalkorDB
+## Running the databases
 
-FalkorDB is required for the MCP Graph Memory server and for **all tests**. Recommended: Docker Compose (matches `env.example`):
+Docker Compose starts both databases. It does not start the MCP server. The code default for `FALKORDB_PASSWORD` is empty, so copy `env.example` before connecting.
 
 ```bash
 cp env.example .env   # first time only
-docker compose up -d  # or: ./scripts/falkordb-up.sh
+docker compose up -d
 ```
 
-Web UI: http://localhost:3000 — Redis port `6379`, password `falkordb123` (see `.env`).
+| | Port | Credentials in `env.example` |
+|--|------|------------------------------|
+| FalkorDB | 6379, UI at http://localhost:3000 | password `falkordb123` |
+| ArcadeDB | 2480 | user `root`, password `playwithdata` |
+
+FalkorDB is the default backend and is required for the default test run. `./scripts/falkordb-up.sh` starts only FalkorDB. ArcadeDB tests: `uv run pytest -m arcade`.
 
 <details>
 <summary>Manual <code>docker run</code> (alternative)</summary>
@@ -213,7 +178,7 @@ FalkorDB keeps index data in sync when nodes change; you only need to recreate i
 
 ### Embedding prefixes
 
-Some models are trained with prompt prefixes. The default `intfloat/multilingual-e5-base` expects `"query: "` for search queries and `"passage: "` for stored texts — without them retrieval quality degrades. Configure via `EMBEDDING_QUERY_PREFIX` / `EMBEDDING_PASSAGE_PREFIX` (see `env.example`; empty by default for backward compatibility). Enabling prefixes on an existing corpus counts as a model change — re-embed the corpus (see warning above).
+Some models are trained with prompt prefixes. The default `intfloat/multilingual-e5-base` expects `"query: "` for search queries and `"passage: "` for stored texts. The code default for both prefixes is empty; `env.example` sets them for e5. Enabling prefixes on an existing corpus counts as a model change — re-embed the corpus (see warning above).
 
 ## Persistence & Backups
 
@@ -242,7 +207,7 @@ Use `owner_id` to isolate knowledge between agents/tenants. Values must be alpha
 
 ### Owner Isolation
 
-Isolation is **physical**: every `owner_id` lives in its own FalkorDB graph (`{FALKORDB_GRAPH}_{owner_id}`) with its own vector indexes. Use `owner_id` to:
+On FalkorDB, isolation is physical: every `owner_id` lives in its own graph (`{FALKORDB_GRAPH}_{owner_id}`) with its own vector indexes. Use `owner_id` to:
 - **Isolate agents**: Each agent/team has its own `owner_id` (= its own graph)
 - **Share knowledge**: Use the same `owner_id` for shared knowledge base
 
@@ -264,15 +229,16 @@ See [`docs/memory_policies_for_LLM.md`](docs/memory_policies_for_LLM.md) and [`d
 
 ## ArcadeDB
 
-Optional second graph backend. Leave `GRAPH_BACKEND` unset (or `falkordb`) to keep FalkorDB. Set `GRAPH_BACKEND=arcadedb` and the `ARCADE_*` variables in `.env` to use an ArcadeDB server. Each `owner_id` gets its own database, `{ARCADE_DATABASE}_{owner_id}`, with its own vertices, edges, and HNSW indexes. The embedding is a property on the vertex. Search inside that database uses `vector.neighbors`, with status, expiry, and metadata passed as a RID filter.
+Optional second graph backend. Leave `GRAPH_BACKEND` unset (or `falkordb`) to keep FalkorDB. Set `GRAPH_BACKEND=arcadedb` and the `ARCADE_*` variables in `.env`. Each `owner_id` gets its own database, `{ARCADE_DATABASE}_{owner_id}`, with its own vertices, edges, and HNSW indexes. The embedding is a property on the vertex. Search inside that database uses `vector.neighbors`.
 
 ## Development
 
-The default test run requires FalkorDB (see [Running FalkorDB](#running-falkordb)). ArcadeDB tests are marked `arcade` and need a server on `ARCADE_PORT` (default 2480):
+The default test run requires FalkorDB (see [Running the databases](#running-the-databases)). ArcadeDB tests are marked `arcade` and use the Compose server on port 2480:
 
 ```bash
 ./scripts/test.sh
 # or: docker compose up -d && uv run pytest -q
+# ArcadeDB: uv run pytest -m arcade
 ```
 
 Pre-commit (dev group installed by `uv sync`):
@@ -299,31 +265,19 @@ uv run python examples/http_client_usage.py
 
 That script calls `health_check`, `create_node`, and `search` over Streamable HTTP. See [examples/](examples/) for embedded usage and MCP client configuration.
 
-## Why Choose MCP Graph Memory?
+## Where it fits
 
-### ✅ Best For
+This server is the store. The agent writes the fact, the `owner_id`, the TTL, and the edge. Search returns what was stored. Embeddings are the only model call inside the server.
 
-- **Multi-agent systems with persistent memory**
-- **Agent-oriented memory APIs**
-- **Semantic + relational knowledge**
-- **Lightweight, MCP-native deployments**
-- **Production setups needing ops & control**
+[Mem0](https://docs.mem0.ai/) reads a conversation and extracts what to remember for a user. [Graphiti](https://github.com/getzep/graphiti) (the library behind Zep) ingests episodes and keeps a bi-temporal graph: a new fact invalidates the old one, and the old one stays queryable by time.
 
-### ❌ Not Best For
+| Case | Graph Memory MCP | Mem0 | Graphiti |
+|------|------|------|----------|
+| The agent already has the sentence | `create_node` stores that sentence | An extraction model may split, rewrite, or drop it | An episode pipeline turns it into entities and edges |
+| "Remember this chat" and nobody chose the facts | The server does not read a transcript | `add` extracts memories | `add` extracts a temporal graph |
+| A decision changed | `mark_outdated` plus a new fact, or an explicit `CONTRADICTS` edge | The extraction model updates or deletes the memory | The old edge is invalidated; history stays |
+| A debug note that should disappear | `ttl_days`; default search hides it | No TTL on the memory | Validity windows, not a debug TTL |
+| Two agents, one project | Same `owner_id` | `user_id` / `agent_id` / `run_id` | `group_id` |
+| No extraction model | Writes do not call an LLM | Every `add` calls an LLM | Several LLM calls per episode |
 
-- **Deep graph analytics** (PageRank, community detection) → Use Neo4j
-- **Episodic/temporal memory framework** → Use Graphiti (Zep)
-- **Pure vector search only** → Use Qdrant/Chroma
-
-### Positioning
-
-**Code maps → [Graphify](https://graphify.net/); agent memory → Graph Memory MCP.**
-
-Graph Memory MCP sits between:
-- Vector databases (too flat)
-- Full graph analytics platforms (too heavy)
-
-It provides practical, agent-ready memory infrastructure.
-See [`docs/comparison.md`](docs/comparison.md) for detailed comparison with alternatives.
-
-> **Note:** Some test code was generated with LLM assistance and may require further review and refinement.
+[`docs/comparison.md`](docs/comparison.md).

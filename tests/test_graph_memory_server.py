@@ -164,6 +164,7 @@ async def test_all_mcp_tools_comprehensive(monkeypatch):
                         "node_type": "Fact",
                         "owner_id": owner_id,
                         "auto_link": False,
+                        "check_duplicates": False,
                     },
                 )
                 data = _extract_tool_json(result)
@@ -743,6 +744,7 @@ def test_get_context_default_and_pagination_integration():
             node_type="Fact",
             owner_id=owner_id,
             auto_link=False,
+            check_duplicates=False,
         )
         create_relation(
             db,

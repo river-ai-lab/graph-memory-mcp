@@ -195,10 +195,11 @@ def decorate_search_response(
         contradiction_pairs=out.get("contradiction_pairs") or [],
     )
     out["do_not"] = (
-        "Do not broaden the same search; pick 1-3 node_ids and expand "
-        "with get_context / get_node."
+        "suggested_next is a hint. Another search with this same query is optional; "
+        "pick a node_id and expand with get_context or get_node if you need more."
         if results
-        else "Do not invent facts; lower similarity_threshold or check get_brief."
+        else "Do not invent facts. Another search can lower similarity_threshold, "
+        "or start from get_brief."
     )
     return out
 
@@ -258,7 +259,7 @@ def decorate_recall_response(
         truncated=truncated,
     )
     out["do_not"] = (
-        "Treat returned text/snippets as already read; expand only 1-3 ids. "
-        "If truncated, do not repeat a broader recall_context."
+        "suggested_next is a hint. Returned text is already read. "
+        "Repeating a broader recall_context is optional."
     )
     return out

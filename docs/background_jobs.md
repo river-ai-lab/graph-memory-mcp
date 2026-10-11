@@ -1,13 +1,19 @@
 # Background jobs
 
-Optional (off by default). Normative API: [features.md](./features.md). APScheduler + Redis locks; per-owner; retries with backoff.
+Off until `JOBS_ENABLED=true`. Archive and dedup both run. `JOB_ARCHIVE_ENABLED=false` or `JOB_DEDUPLICATE_ENABLED=false` turns one off.
+
+`JOBS_OWNER_IDS` limits both jobs to those owners (`team_a` or `team_a,team_b`). Empty means every owner. `JOBS_PROCESS_ALL_OWNERS=true` runs for every owner even when the list is set.
+
+Falkor takes a Redis lock per job and owner. Arcade does not. If the graph backend is down at process start, the scheduler retries every 30s.
 
 ## Dedup
 
-Merges near-duplicate Facts (ANN candidates, union-find). Config: `JOB_DEDUPLICATE_ENABLED`, `JOB_DEDUPLICATE_CRON`, `JOB_DEDUPLICATE_*_THRESHOLD`.
+Merges near-duplicate Facts and Entities (cosine ≥ `JOB_DEDUPLICATE_SIMILARITY_THRESHOLD`, default 0.95). Cron: `JOB_DEDUPLICATE_CRON` (hourly).
 
 ## Archive
 
-Sets `status=archived` for expired TTL, including facts that still have relations. With `JOB_ARCHIVE_STALE_ENABLED`, also archives active Facts not recalled for `STALE_FACTS_DAYS`, and that path still skips Facts with active relations. Config: `JOB_ARCHIVE_ENABLED`, `JOB_ARCHIVE_CRON`, …
+Sets `status=archived` on Facts whose `expires_at` has passed, including Facts that still have relations. Cron: `JOB_ARCHIVE_CRON` (weekly).
 
-Locks: `JOBS_LOCK_TTL_SECONDS`. Metrics: `graph_memory_job_*` on `/metrics`.
+`JOB_ARCHIVE_STALE_ENABLED=true` also archives active Facts not recalled for `STALE_FACTS_DAYS`. That path skips a Fact that still has an active neighbor.
+
+Lock TTL: `JOBS_LOCK_TTL_SECONDS`. Metrics: `graph_memory_job_*` on `/metrics`.
