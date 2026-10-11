@@ -31,10 +31,6 @@ Agent memory turns into noise: duplicate facts, contradictions served as truth, 
 
 **[Quickstart](#quickstart-5-minutes)** · **[Comparison](docs/comparison.md)** · **[Agent policies](docs/memory_policies_for_LLM.md)** · **[Features](docs/features.md)**
 
-<p align="center">
-  <img src="assets/demo/demo.gif" alt="Graph Memory MCP Demo" width="100%">
-</p>
-
 ---
 
 ## Quickstart (5 minutes)
