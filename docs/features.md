@@ -1,470 +1,85 @@
-# MCP Graph Memory — API Contract
+# API contract
 
-**Graph-based long-term memory system** for multi-agent and dialog systems via MCP (Model Context Protocol). Built on FalkorDB graph database with vector search capabilities.
+Normative tool signatures. Jobs: [background_jobs.md](./background_jobs.md). Agents: [memory_policies_for_LLM.md](./memory_policies_for_LLM.md). Admin: [admin.md](./admin.md).
 
-This document is the **normative contract** (tool signatures, response shapes, error codes).
+**Storage:** FalkorDB by default, one graph per `owner_id` (`{FALKORDB_GRAPH}_{owner_id}`). `GRAPH_BACKEND=arcadedb` uses one ArcadeDB database per owner (`{ARCADE_DATABASE}_{owner_id}`), with that owner's own HNSW indexes. **IDs:** tools use stable `node_id` (= `uid`, UUID hex). A node without `uid` receives one at startup.
 
-See also:
-- `docs/background_jobs.md` (optional background jobs)
-- `README.md` (install, FalkorDB, CLI including `--simple`)
+## Data model
 
-## Data Model
+**Common:** `node_id`, `owner_id`, `metadata`, `created_at`, `status` (`active`|`outdated`|`archived`), optional `ttl_days`/`expires_at`, `source` `{ref,type,uri,content_hash,updated_at,version}`, `embedding` (not returned via MCP).
 
-### Common Attributes (Fact & Entity)
+**Fact** — `text`. **Entity** — optional `type`. Practical labels, not ontology.
 
-All nodes share these attributes:
-- `id`: unique identifier (string)
-- `owner_id`: multi-tenant isolation (string, default: "default")
-- `metadata`: arbitrary JSON (dict)
-- `created_at`: creation timestamp (int, milliseconds)
-- `last_dedup_at`: last deduplication check (int, milliseconds, optional)
-- `ttl_days`: relative TTL in days (float, optional) — calculates `expires_at` if not set
-- `expires_at`: absolute expiration timestamp (int, milliseconds, optional) — takes precedence over `ttl_days` if both set
-- `embedding`: vector representation (list[float], not returned via MCP)
-- `source`: optional provenance object: `{ref, type, uri, content_hash, updated_at, version}`
-- `status`: lifecycle status (string: "active" | "outdated" | "archived", default: "active")
+**Reserved metadata** (typed, promoted, filterable): `project`, `created_by`, `tags`, `type`, `confidence`. Other keys free-form.
 
-### Fact
-Primary memory unit for detailed information, definitions, reasoning, descriptions.
+**Edges:** `RELATED_TO`, `MENTIONS`, `SUMMARIZES`, `FOLLOWS_FROM`, `CONTRADICTS`, triplet predicates, `EXTRACTED_FROM`. Policy: `RELATION_POLICY_ENFORCE` (`off`|`warn`|`enforce`), `RELATION_ALLOWED_TYPES`. Fact `auto_link` (default false) → `MENTIONS` to similar Entities when passed true.
 
-**Fact-specific attributes:**
-- `text`: fact text (string, required)
+**Indexes:** Fact + Entity vectors — auto on first search/auto_link, `AUTO_CREATE_INDEXES=true`, or `POST /admin/ensure-indexes`.
 
+## Validation
 
-### Entity
-Named concept (person, organization, technology, etc.). **Not a strict ontology** — a practical label distinct from Fact; agents may choose either when storing durable knowledge.
+| Field | Rule | Default |
+|-------|------|---------|
+| `text` | max length | 10_000 |
+| `metadata` | max bytes | 100_000 |
+| `ttl_days` | range | (0, 3650] |
+| `owner_id` | `[A-Za-z0-9_@-]+` | |
+| `relation_type` | `[A-Za-z0-9_]+` | |
 
-**Entity-specific attributes:**
-- `type`: entity type (string, optional, e.g., "PERSON", "ORGANIZATION")
+Errors: `{success:false, error, code}` — `memory_validation_error`, `memory_not_found`, `memory_duplicate`, `memory_relation_policy_error`, `memory_service_error`, `memory_conflict`, `memory_embedding_error`, `connection_error`. `memory_duplicate` also returns `possible_duplicates` (each item has `diff_hint`). The node is not written. `memory_embedding_error` means search did not run: an empty result list is not used for a missing vector. `memory_conflict` is the Falkor Redis lock when two upserts hit the same `(owner_id, node_type, source.ref)`. Arcade has no Redis client, so that lock is skipped.
 
-### Edge
-Typed relationship between nodes.
+## Cache
 
-**Recommended types:**
-- General: `RELATED_TO` (default when unsure)
-- Reference: `MENTIONS` (one node refers to / is about another — any node pair)
-- Semantic: `SUMMARIZES`, `FOLLOWS_FROM`, `CONTRADICTS` (use only when the type matters)
-- Triplets: predicate from `create_triplet` (e.g. `RUNS_ON`, `USES`)
-- System: `EXTRACTED_FROM` (triplet ↔ fact), `SIMILAR_TO` (reserved for jobs/manual use — **not** used by Fact auto_link)
+LRU embeddings + TTL search (defaults in `env.example`). Search cache cleared on mutations. In-process only. Falkor locks upsert and jobs with Redis. Arcade is one process and does not. Stats in `health_check` / `/metrics`.
 
-**Relation policy (server config):**
+## Server profiles
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `RELATION_POLICY_ENFORCE` | `warn` | `off` \| `warn` \| `enforce` |
-| `RELATION_ALLOWED_TYPES` | see `config.py` | Comma-separated allowlist checked on `create_relation`, `create_node.links`, `create_triplet` |
+Three independent processes. Tool names match. Pick one client-side and stay on it. Handlers are the same; write tools expose more or less.
 
-- **`off`**: format validation only (alphanumeric + `_`)
-- **`warn`**: disallowed types still create the edge; response includes `warning`
-- **`enforce`**: disallowed types return `memory_relation_policy_error`
+| Profile | Start | What the agent can pass on writes |
+|---------|--------|-------------------------------------|
+| default | `graph-memory-mcp` | Nested `source`. Fact and Entity. |
+| `--simple` | `graph-memory-mcp --simple` | Same tools. Provenance is flat (`ref`, `provenance_type`, …) instead of nested `source`. `upsert_node` requires `ref`. |
+| `--extended` | `graph-memory-mcp --extended` | Same tools as default, plus `description`, `shared_with_ids`, `collection_id` (`CONTAINS`), and node types `Collection`, `User`, `Project`. |
 
-`create_node` with `links` returns `link_errors` / `link_warnings` when inline relations fail policy (node is still created).
+## Agent tools
 
-**Auto-linking:** `create_node(..., auto_link=true)` on Facts creates `MENTIONS` edges to semantically similar **Entity** nodes (Entity vector index; threshold `AUTO_LINKING_SEMANTIC_THRESHOLD`, default 0.75). Does not link Fact→Fact. Use `create_relation` or `links` for other pairs.
+Defaults: `owner_id` from `DEFAULT_OWNER_ID` (env, default `"default"`). Pass `owner_id` explicitly in agent rules.
 
-**Vector indexes:** Created automatically when missing on first `search`, `find_similar`, or auto_link; optional `AUTO_CREATE_INDEXES=true` at startup; or call `ensure_vector_indexes`.
+`OWNER_SCOPE=client` (default) uses that argument. `OWNER_SCOPE=header` ignores it and takes `X-Owner-Id`; a missing header is `memory_validation_error` and does not use `DEFAULT_OWNER_ID`. Tool schemas do not change. Jobs are in-process and keep their own owner. See [admin.md](./admin.md).
 
-Agent guidance: see [memory_policies_for_LLM.md](./memory_policies_for_LLM.md). Operational FAQ: [memory_faq.md](./memory_faq.md).
+### Writes
 
-**Properties:**
-- `metadata`: edge metadata (dict, optional)
+**`create_node`** — `text`; opt: `node_type` (`Fact`|`Entity`), `owner_id`, `metadata`, `status`, `ttl_days`, `source`, `entity_type`, `auto_link` (default false), `semantic_threshold`, `links[{to_id,relation_type,properties?}]`, `check_duplicates` (default true). `--extended` also takes `description`, `shared_with_ids`, `collection_id`, and `node_type` `Collection`|`User`|`Project`. The server never sets `ttl_days`. A Fact near-paraphrase at or above `CREATE_DUPLICATE_BLOCK_THRESHOLD` (0.92) is rejected (`memory_duplicate`, with `diff_hint`) before write. A similar but different fact is written with `check_duplicates=false`. Text longer than `LONG_TEXT_WARN_CHARS` (600) adds `warnings` and is still stored. `auto_link=true` adds `MENTIONS` to similar Entities (threshold `AUTO_LINKING_SEMANTIC_THRESHOLD`).
+→ success `{node, possible_duplicates?, warnings?, link_errors?, link_warnings?}`
 
-### Alias
-Alternative name for Entity (internal, not exposed via MCP).
+**`upsert_node`** — `text`, `source.ref`; same write fields as `create_node` except `check_duplicates` (upsert updates the node for that ref, including a revised `about`). Opt `description`, `auto_link` (default false) + `versioning`. `--extended` also takes `shared_with_ids` and `collection_id`. On Falkor, Redis-locked per `(owner_id, node_type, ref)`. Arcade does not take that lock. → `{success, node, operation}`
 
----
+**`create_nodes`** — `items[{text,…}]` ≤200; opt `node_type`, `owner_id`. No auto_link / duplicates.
 
-## Input Validation
+**`ingest_knowledge`** — agent extracts; server writes. `document{ref,…}`; opt `facts[{text, ref?,…}]`, `triplets[{subject,predicate,object,metadata?}]`, `owner_id`, `auto_link=false`. Fact key: `facts[].ref` or `hash(text)` → `doc#…` (≤200 facts/triplets).
 
-All inputs are validated to ensure data quality and security. Validation limits are configurable via environment variables or `config.py`.
+**`update_node`** — `node_id`; opt fields + `versioning` (default `VERSIONING_DEFAULT`).
+**`delete_node`** — hard delete (+ FactVersion cascade).
+**`mark_outdated`** — `fact_id`, opt `reason`.
 
-### Validation Rules
+**`create_relation`** / **`delete_relation`** — `from_id`, `to_id`, `relation_type` (delete: type optional).
+**`create_triplet`** / **`search_triplets`** — entities merge by `name_norm`; opt `metadata` on create (reserved keys coalesce on match).
+**`create_summary_fact`** — `fact_ids`, `summary_text`.
 
-| Field | Rule | Default Limit | Error Code |
-|-------|------|---------------|------------|
-| `text` | Maximum length | 10,000 characters | `memory_validation_error` |
-| `metadata` | Maximum size | 100KB (100,000 bytes) | `memory_validation_error` |
-| `ttl_days` | Range | 0 < ttl_days ≤ 3650 | `memory_validation_error` |
-| `owner_id` | Format | Alphanumeric + `-_@` | `memory_validation_error` |
-| `relation_type` | Format | Alphanumeric + `_` | `memory_validation_error` |
-| `source.version` | Range | Integer ≥ 1 | `memory_validation_error` |
+### Reads
 
-### Configuration
+**`get_node`** — `node_id`; opt `as_of` (unix ms, needs versioning snapshots).
+**`get_node_change_history`** — `node_id`.
+**`search`** — `query`; opt `limit` (cap `MAX_SEARCH_LIMIT`), `node_types`, `status`, `similarity_threshold`, `include_outdated`, `include_ttl` (default false: hide facts that have `ttl_days`; true: also still-living temporary facts), `search_type` (`pre_filter`|`post_filter`), `metadata_filter` (`project`/`created_by`/`type`/`tags`/`confidence_min`), `compact` (snippets + token budget). Rank is hybrid (`score`): cosine + identifier match + recency. `contradiction_pairs` lists hits that already have a `CONTRADICTS` edge. Always returns `suggested_next`, `do_not`, `budget`. Bumps access counters.
+**`find_similar`** — `fact_id`.
+**`get_context`** — `node_id`; opt `depth`, `max_nodes`, `offset`, `include_outdated`, `include_ttl`, `relation_priority`, `exclude_relation_types`. Budgeted walk (`offset=0`) fills with `CONTRADICTS`, then `FOLLOWS_FROM`, then other allowlist edges; `MENTIONS` last. Default cap 20 (hard 50). Neighbors with `ttl_days` are omitted unless `include_ttl=true`.
+**`recall_context`** — shortcut search+expand (small graphs). Opt `depth`, `limit`, `max_nodes`, `include_outdated`, `include_ttl`, `include_paths`, `metadata_filter`, `compact`, `relation_priority`, `exclude_relation_types`, time-aware ranking weights. Same neighbor order and TTL filter as `get_context`. Always returns `suggested_next` / `do_not` / `budget`.
+**`get_trace`** — `from_id`, `to_id`; opt `max_depth`, `directed` (default true).
+**`get_brief`** — warm-up, not search and not a degree ranking: `about` if a fact with `source.ref` = `ABOUT_SOURCE_REF` (default `about`) exists, else null. Recent active facts with no TTL, by time. Open `CONTRADICTS` between those durable facts. Stale facts, stats. Facts with `ttl_days` are omitted.
+**`get_stats`** / **`health_check`** — Fact/Entity counts; component flags + `healthy`.
 
-Set validation limits in `.env` or `config.py`:
+## Admin (HTTP; not MCP by default)
 
-```bash
-# .env
-MAX_TEXT_LENGTH=10000
-MAX_METADATA_SIZE=100000
-MIN_TTL_DAYS=0.0
-MAX_TTL_DAYS=3650.0
-```
-
-### Error Responses
-
-When validation fails, the response includes:
-
-```json
-{
-  "success": false,
-  "error": "Text too long (max 10000 chars)",
-  "code": "memory_validation_error"
-}
-```
-
----
-
-## Caching
-
-Query caching improves performance by caching expensive operations.
-
-### Cache Types
-
-| Cache | Type | Default Size | Default TTL | Purpose |
-|-------|------|--------------|-------------|---------|
-| Embeddings | LRU | 1000 items | N/A | Cache embedding API calls |
-| Search | TTL | 100 items | 60s | Cache search results |
-
-### Configuration
-
-Set cache limits in `.env` or `config.py`:
-
-```bash
-# .env
-CACHE_EMBEDDINGS_ENABLED=true
-CACHE_EMBEDDINGS_MAXSIZE=1000
-CACHE_SEARCH_ENABLED=true
-CACHE_SEARCH_MAXSIZE=100
-CACHE_SEARCH_TTL=60
-```
-
-### Cache Invalidation
-
-- **Automatic**: Search cache is invalidated on all mutations (`create_node`, `update_node`, `delete_node`, `create_relation`, `create_triplet`)
-- **Manual**: Not currently supported
-
-### Monitoring
-
-Cache statistics are available in `health_check`:
-
-```json
-{
-  "cache": {
-    "embeddings": {
-      "enabled": true,
-      "size": 42,
-      "maxsize": 1000
-    },
-    "search": {
-      "enabled": true,
-      "size": 5,
-      "maxsize": 100,
-      "ttl": 60
-    }
-  }
-}
-```
-
----
-
-## Simple server profile
-
-`GraphMemorySimpleMCP` (`graph_memory_mcp.server_simple`) and `graph-memory-mcp --simple` expose the **same tool names and handler behavior** as the default server, with these MCP differences:
-
-| Area | Default server | Simple profile |
-|------|----------------|----------------|
-| Provenance | `source: dict` on `create_node` / `update_node` / `upsert_node` | Flat fields: `ref`, `provenance_type`, `uri`, `content_hash`, `updated_at`, `version` (mapped to the same `source` object internally) |
-| `upsert_node` | `source.ref` required (via `source` dict) | Same behavior; **`ref` required** as a flat field |
-
-All other tools (search, triplets, graph traversal, admin, jobs via config, etc.) match the default server.
-
----
-
-## Tools
-
-#### create_node
-**Required:**
-- `text: str`
-
-**Optional:**
-- `node_type: str = "Fact"` — "Fact" or "Entity"
-- `owner_id: str = "default"`
-- `metadata: dict | None = None`
-- `source: dict | None = None` — optional provenance object with keys `ref`, `type`, `uri`, `content_hash`, `updated_at`, `version`
-- `status: str | None = None` — "active" | "outdated" | "archived" (default: "active")
-- `ttl_days: float | None = None`
-- `entity_type: str | None = None` (Entities only)
-- `auto_link: bool = True` (Facts only)
-- `semantic_threshold: float | None = None` (Facts only)
-- `links: list[dict] | None = None` — inline edges after create. Each item:
-  - `to_id` or `node_id` (target node id)
-  - `relation_type` (or `type`)
-  - optional `properties` or `metadata` (edge properties)
-
-**Response:** `{"success": true, "node": {...}}`
-May also include `link_errors` (policy/validation failures per link) and `link_warnings` (policy `warn` mode). The node is still created when inline links fail.
-
-**Errors:** `memory_validation_error`, `memory_service_error`
-
-#### ensure_vector_indexes
-**Required:** (none)
-
-**Optional:** (none)
-
-**Response:** `{"success": true, "indexes": {"Fact": bool, "Entity": bool}, "dimension": int}`
-**Errors:** `memory_service_error`
-
-#### upsert_node
-**Required:**
-- `text: str`
-- `source: dict` — must include `source.ref`
-
-**Optional:**
-- `node_type: str = "Fact"` — "Fact" or "Entity"
-- `owner_id: str = "default"`
-- `metadata: dict | None = None`
-- `description: str | None = None`
-- `status: str | None = None` — "active" | "outdated" | "archived"
-- `ttl_days: float | None = None`
-- `entity_type: str | None = None` (Entities only)
-- `versioning: bool = False` — when true, stores a snapshot before update and auto-increments `source.version` if omitted
-- `auto_link: bool = True` (Facts only)
-- `semantic_threshold: float | None = None` (Facts only)
-- `links: list[dict] | None = None` — inline edges after create **or update** (same shape as `create_node.links`)
-
-**Response:** `{"success": true, "node": {...}, "operation": "created" | "updated"}`
-May also include `link_errors` / `link_warnings` when inline `links` fail policy (node is still created or updated).
-**Errors:** `memory_validation_error`, `memory_service_error`
-
-#### get_node
-**Required:**
-- `node_id: str`
-
-**Optional:**
-- `owner_id: str = "default"`
-
-**Response:** `{"success": true, "node": {...}}`
-**Errors:** `memory_not_found`, `memory_service_error`
-
-#### update_node
-**Required:**
-- `node_id: str`
-
-**Optional:**
-- `owner_id: str = "default"`
-- `text: str | None = None`
-- `metadata: dict | None = None`
-- `source: dict | None = None` — provenance object with keys `ref`, `type`, `uri`, `content_hash`, `updated_at`, `version`
-- `status: str | None = None` — "active" | "outdated" | "archived"
-- `ttl_days: float | None = None`
-- `entity_type: str | None = None` (Entities only)
-- `versioning: bool = False` — stores a snapshot before update and auto-increments `source.version` if omitted
-
-**Response:** `{"success": true, "node": {...}}`
-**Errors:** `memory_validation_error`, `memory_not_found`, `memory_service_error`
-
-#### delete_node
-**Required:**
-- `node_id: str`
-
-**Optional:**
-- `owner_id: str = "default"`
-
-**Response:** `{"success": true}`
-**Errors:** `memory_not_found`, `memory_service_error`
-
-#### get_node_change_history
-**Required:**
-- `node_id: str`
-
-**Optional:**
-- `owner_id: str = "default"`
-
-**Response:** `{"success": true, "versions": [...], "count": int}`
-**Errors:** `memory_not_found`, `memory_service_error`
-
-
-#### search
-
-Semantic similarity over Facts and Entities. See [memory_policies_for_LLM.md](./memory_policies_for_LLM.md) § “How to use search”. Two modes via `search_type`: **`pre_filter`** (filter by owner first — recommended for large / multi-tenant graphs) and **`post_filter`** (global ANN then filter — fine for small graphs). Server default: config `SEARCH_TYPE` (env), overridable per call. For `post_filter`, ANN candidate pool size: `POST_FILTER_ANN_K_MIN` / `POST_FILTER_ANN_K_MAX` (env).
-
-**Required:**
-- `query: str`
-
-**Optional:**
-- `owner_id: str = "default"`
-- `limit: int | None = None` (default from config: 10)
-- `node_types: list[str] | None = None` — ["Fact"], ["Entity"], or ["Fact", "Entity"]
-- `status: str | None = None` — "active" | "outdated" | "archived"
-- `similarity_threshold: float | None = None`
-- `include_outdated: bool = False`
-- `search_type: str | None = None` — `pre_filter` | `post_filter`; falls back to config `SEARCH_TYPE` when omitted
-
-**Response:** `{"success": true, "results": [...], "facts": [...], "entities": [...]}`
-**Errors:** `memory_service_error`
-
-#### find_similar
-**Required:**
-- `fact_id: str`
-
-**Optional:**
-- `owner_id: str = "default"`
-- `similarity_threshold: float | None = None` (default from config)
-- `limit: int = 5`
-
-**Response:** `{"success": true, "similar_facts": [...]}`
-**Errors:** `memory_service_error`
-
-#### mark_outdated
-**Required:**
-- `fact_id: str`
-
-**Optional:**
-- `owner_id: str = "default"`
-- `reason: str | None = None`
-
-**Response:** `{"success": true, "node": {...}}`
-**Errors:** `memory_not_found`, `memory_service_error`
-
-#### create_triplet
-**Required:**
-- `subject: str`
-- `predicate: str`
-- `object_value: str`
-
-**Optional:**
-- `owner_id: str = "default"`
-- `metadata: dict | None = None`
-- `fact_id: str | None = None`
-
-**Response:** `{"success": true, "triplet": {...}}`
-**Errors:** `memory_validation_error`, `memory_relation_policy_error`, `memory_service_error`
-
-#### search_triplets
-**Required:** (none)
-
-**Optional:**
-- `subject: str | None = None`
-- `predicate: str | None = None`
-- `object_value: str | None = None`
-- `owner_id: str = "default"`
-- `limit: int = 10`
-
-**Response:** `{"success": true, "triplets": [...]}`
-**Errors:** `memory_service_error`
-
-#### create_relation
-**Required:**
-- `from_id: str`
-- `to_id: str`
-- `relation_type: str`
-
-**Optional:**
-- `owner_id: str = "default"`
-- `properties: dict | None = None`
-
-**Response:** `{"success": true, "relation_type": str}` — may include `warning` when `RELATION_POLICY_ENFORCE=warn` and type is outside allowlist.
-
-**Errors:** `memory_validation_error`, `memory_relation_policy_error` (enforce mode), `memory_service_error`
-
-#### delete_relation
-**Required:**
-- `from_id: str`
-- `to_id: str`
-
-**Optional:**
-- `owner_id: str = "default"`
-- `relation_type: str | None = None` (if specified, only removes relations of this type)
-
-**Response:** `{"success": true}`
-**Errors:** `memory_service_error`
-
-#### get_context
-**Required:**
-- `node_id: str`
-
-**Optional:**
-- `owner_id: str = "default"`
-- `depth: int = 1`
-- `max_nodes: int = 20` (default from config: `subgraph_default_max_nodes`) — also page size when paginating
-- `offset: int = 0` — when `> 0`, skip nodes (stable `ORDER BY id`) and return `has_more`
-
-**Response:** `{"success": true, "nodes": [...], "edges": [...], "depth": int, "max_nodes": int}`
-
-When `offset > 0`, the response also includes:
-- `offset: int`
-- `has_more: bool` — true when the page is full (`len(nodes) >= max_nodes`)
-
-**Errors:** `memory_service_error`
-
-#### get_trace
-**Required:**
-- `from_id: str`
-- `to_id: str`
-
-**Optional:**
-- `owner_id: str = "default"`
-- `max_depth: int = 5`
-
-**Response:** `{"success": true, "nodes": [...], "relations": [...], "message"?: str}`
-If no path is found, `nodes` and `relations` are returned as empty arrays.
-**Errors:** `memory_service_error`
-
-#### create_summary_fact
-**Required:**
-- `fact_ids: list[str]`
-- `summary_text: str`
-
-**Optional:**
-- `owner_id: str = "default"`
-- `metadata: dict | None = None`
-
-**Response:** `{"success": true, "summary": {...}}`
-**Errors:** `memory_validation_error`, `memory_service_error`
-
-#### test_connection
-**Required:** (none)
-
-**Optional:** (none)
-
-**Response:** `{"success": true, "ready": bool}`
-**Errors:** `memory_service_error`
-
-#### get_stats
-**Required:** (none)
-
-**Optional:**
-- `owner_id: str = "default"`
-
-**Response:** `{"success": true, "stats": {...}}`
-**Errors:** `memory_service_error`
-
-#### health_check
-**Required:** (none)
-
-**Optional:** (none)
-
-**Response:** `{"success": true, "falkordb": bool, "embeddings": bool, "vector_index": bool, "cache": {...}}`
-**Errors:** (none)
-
-### Response Format
-
-**Success:**
-```json
-{"success": true, ...}
-```
-
-**Error:**
-```json
-{"success": false, "error": "error message", "code": "error_code"}
-```
-
-### Error Codes
-
-- `memory_validation_error`: invalid input parameters
-- `memory_not_found`: node not found
-- `memory_relation_policy_error`: relation type blocked (`RELATION_POLICY_ENFORCE=enforce`) or inline `links` / triplet predicate rejected
-- `memory_service_error`: general service error
-- `connection_error`: database connection failure
-- `falkordb_error`: FalkorDB operation error
+See [admin.md](./admin.md): `/admin/health`, `/admin/ensure-indexes`, export/import (incl. `FactVersion` when `include_versions=true`), delete/prune owners, `/metrics`, `/internal/graph-size`.
+Set `MCP_EXPOSE_ADMIN_TOOLS=true` to also expose `test_connection`, `ensure_vector_indexes`, `export_owner`, `import_owner` as MCP tools.

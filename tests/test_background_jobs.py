@@ -19,22 +19,15 @@ from graph_memory_mcp.graph_memory import mcp_handlers_nodes, mcp_handlers_relat
 from graph_memory_mcp.graph_memory.database import FalkorDBClient
 from graph_memory_mcp.graph_memory.embedding_service import EmbeddingService
 from graph_memory_mcp.jobs.archive_old_facts import (
-    _resolve_owner_ids as _resolve_archive_owner_ids,
-)
-from graph_memory_mcp.jobs.archive_old_facts import (
     archive_old_facts,
 )
 from graph_memory_mcp.jobs.deduplicate_facts import (
     _find_duplicate_entity_groups,
     _find_duplicate_fact_groups,
     _merge_duplicate_entities,
-)
-from graph_memory_mcp.jobs.deduplicate_facts import (
-    _resolve_owner_ids as _resolve_dedup_owner_ids,
-)
-from graph_memory_mcp.jobs.deduplicate_facts import (
     deduplicate_facts,
 )
+from graph_memory_mcp.jobs.owners import resolve_owner_ids
 from graph_memory_mcp.jobs.scheduler import (
     get_scheduler_health,
     shutdown_scheduler,
@@ -62,24 +55,19 @@ class _FakeResult:
         self.result_set = rows
 
 
-class _FakeOwnerGraph:
-    def __init__(self, rows):
-        self.rows = rows
-
-    def query(self, query):
-        return _FakeResult(self.rows)
-
-
 class _FakeOwnerDB:
-    def __init__(self, rows):
-        self.graph = _FakeOwnerGraph(rows)
+    def __init__(self, owners):
+        self._owners = owners
+
+    def list_owners(self):
+        return list(self._owners)
 
 
 @pytest.mark.asyncio
 async def test_scheduler_lifecycle(monkeypatch):
     """Test that scheduler starts and stops correctly based on config."""
     # Mock FalkorDBClient to avoid connection errors
-    with patch("graph_memory_mcp.jobs.scheduler.FalkorDBClient") as mock_db_class:
+    with patch("graph_memory_mcp.jobs.scheduler.open_store") as mock_db_class:
         mock_db = mock_db_class.return_value
         mock_health = MagicMock()
         mock_health.get.return_value = "healthy"
@@ -116,18 +104,44 @@ async def test_scheduler_lifecycle(monkeypatch):
         assert health["running"] is False
 
 
-@pytest.mark.parametrize(
-    "resolver",
-    [_resolve_archive_owner_ids, _resolve_dedup_owner_ids],
-)
-def test_jobs_process_all_owners_discovers_graph_owners(resolver):
-    """Owner discovery should honor jobs_process_all_owners when enabled."""
+def test_jobs_process_all_owners_discovers_graph_owners():
     cfg = MCPServerConfig(jobs_process_all_owners=True, jobs_owner_ids="fallback")
-    db = _FakeOwnerDB([["team_b"], ["team_a"], [None], [""]])
+    db = _FakeOwnerDB(["team_b", "team_a", "bad owner!"])
 
-    owners = resolver(db, cfg)
+    assert resolve_owner_ids(db, cfg) == ["team_a", "team_b"]
 
-    assert owners == ["team_a", "team_b"]
+
+def test_jobs_owner_ids_limit_to_that_tenant():
+    cfg = MCPServerConfig(jobs_process_all_owners=False, jobs_owner_ids="team_a")
+    db = _FakeOwnerDB(["team_a", "team_b"])
+
+    assert resolve_owner_ids(db, cfg) == ["team_a"]
+
+
+def test_jobs_without_owner_ids_cover_every_owner():
+    cfg = MCPServerConfig(jobs_process_all_owners=False, jobs_owner_ids="")
+    db = _FakeOwnerDB(["team_b", "team_a", "bad owner!"])
+
+    assert resolve_owner_ids(db, cfg) == ["team_a", "team_b"]
+
+
+@pytest.mark.asyncio
+async def test_scheduler_retries_when_backend_is_down(monkeypatch):
+    """A down backend does not drop the scheduler; it retries the connection."""
+    with patch("graph_memory_mcp.jobs.scheduler.open_store") as mock_db_class:
+        mock_db_class.return_value.health_check.return_value = {"status": "unhealthy"}
+        monkeypatch.setenv("JOBS_ENABLED", "true")
+        shutdown_scheduler()
+
+        start_scheduler()
+        health = get_scheduler_health()
+        assert health["running"] is True
+        ids = {job.get("id") for job in health.get("jobs", [])}
+        assert "jobs_backend_retry" in ids
+        assert "deduplicate_facts" not in ids
+        assert "archive_old_facts" not in ids
+
+        shutdown_scheduler()
 
 
 @pytest.mark.integration
@@ -224,6 +238,7 @@ async def test_deduplication_with_relation_redirection(monkeypatch, db_client):
         node_type="Fact",
         owner_id=owner_id,
         auto_link=False,
+        check_duplicates=False,
     )
     assert result2.get("success")
     fact2_id = result2["node"]["node_id"]
@@ -254,10 +269,10 @@ async def test_deduplication_with_relation_redirection(monkeypatch, db_client):
     # Verify relation exists before dedup
     query_before = f"""
     MATCH (f:Fact)-[r:MENTIONS]->(e:Entity)
-    WHERE id(f) = {int(fact2_id)} AND id(e) = {int(entity_id)}
+    WHERE f.uid = '{fact2_id}' AND e.uid = '{entity_id}'
     RETURN count(r) as cnt
     """
-    result_before = db.graph.query(query_before)
+    result_before = db.query(query_before, owner_id=owner_id)
     assert result_before.result_set[0][0] == 1
 
     # Run deduplication
@@ -276,19 +291,19 @@ async def test_deduplication_with_relation_redirection(monkeypatch, db_client):
     # Verify relation was redirected from Fact2 to Fact1
     query_after = f"""
     MATCH (f:Fact)-[r:MENTIONS]->(e:Entity)
-    WHERE id(f) = {int(fact1_id)} AND id(e) = {int(entity_id)}
+    WHERE f.uid = '{fact1_id}' AND e.uid = '{entity_id}'
     RETURN count(r) as cnt
     """
-    result_after = db.graph.query(query_after)
+    result_after = db.query(query_after, owner_id=owner_id)
     assert result_after.result_set[0][0] == 1, "Relation should be redirected to Fact1"
 
     # Verify old relation from Fact2 is gone
     query_old = f"""
     MATCH (f:Fact)-[r:MENTIONS]->(e:Entity)
-    WHERE id(f) = {int(fact2_id)} AND id(e) = {int(entity_id)}
+    WHERE f.uid = '{fact2_id}' AND e.uid = '{entity_id}'
     RETURN count(r) as cnt
     """
-    result_old = db.graph.query(query_old)
+    result_old = db.query(query_old, owner_id=owner_id)
     assert result_old.result_set[0][0] == 0, "Old relation from Fact2 should be deleted"
 
 
@@ -386,6 +401,7 @@ async def test_find_duplicate_fact_groups(monkeypatch, db_client):
             node_type="Fact",
             owner_id=owner_id,
             auto_link=False,
+            check_duplicates=False,
         )
         assert result.get("success")
         time.sleep(0.05)
@@ -432,18 +448,22 @@ async def test_find_duplicate_fact_groups_backfills_old_pending_facts(
             node_type="Fact",
             owner_id=owner_id,
             auto_link=False,
+            check_duplicates=False,
         )
         assert result.get("success")
         fact_id = result["node"]["node_id"]
         created_ids.append(fact_id)
 
-        db.graph.query(f"""
+        db.query(
+            f"""
             MATCH (f:Fact)
-            WHERE id(f) = {int(fact_id)}
+            WHERE f.uid = '{fact_id}'
             SET f.created_at = {old_ms + offset},
                 f.updated_at = {old_ms + offset},
                 f.last_dedup_at = NULL
-            """)
+            """,
+            owner_id=owner_id,
+        )
 
     groups = await _find_duplicate_fact_groups(
         db,
@@ -495,13 +515,16 @@ async def test_deduplicate_facts_stays_within_owner_and_keeps_oldest_primary(
     old_fact_id = old_result["node"]["node_id"]
 
     old_ms = int((time.time() - 7 * 24 * 3600) * 1000)
-    db.graph.query(f"""
+    db.query(
+        f"""
         MATCH (f:Fact)
-        WHERE id(f) = {int(old_fact_id)}
+        WHERE f.uid = '{old_fact_id}'
         SET f.created_at = {old_ms},
             f.updated_at = {old_ms},
             f.last_dedup_at = NULL
-        """)
+        """,
+        owner_id=owner_id,
+    )
 
     cross_owner_result = mcp_handlers_nodes.create_node(
         db,
@@ -521,6 +544,7 @@ async def test_deduplicate_facts_stays_within_owner_and_keeps_oldest_primary(
         node_type="Fact",
         owner_id=owner_id,
         auto_link=False,
+        check_duplicates=False,
     )
     assert new_result.get("success")
     new_fact_id = new_result["node"]["node_id"]
@@ -546,8 +570,8 @@ async def test_deduplicate_facts_stays_within_owner_and_keeps_oldest_primary(
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_archive_respects_active_relations(monkeypatch, db_client):
-    """Test that archive job doesn't archive facts with active relations."""
+async def test_archive_expired_ttl_despite_relations(monkeypatch, db_client):
+    """Expired TTL is archived even when the fact has an active relation."""
     owner_id = f"pytest_archive_rel_{uuid.uuid4().hex[:8]}"
     monkeypatch.setenv("JOBS_ENABLED", "true")
     monkeypatch.setenv("JOB_ARCHIVE_ENABLED", "true")
@@ -602,9 +626,7 @@ async def test_archive_respects_active_relations(monkeypatch, db_client):
     # Run archive job
     await archive_old_facts(db=db, config=cfg)
 
-    # Fact should NOT be archived because it has active relation to Entity
+    # Fact is archived because its TTL expired. A relation does not keep it active.
     get_result = mcp_handlers_nodes.get_node(db, node_id=fact_id, owner_id=owner_id)
     assert get_result.get("success")
-    assert (
-        get_result["node"]["status"] == "active"
-    ), "Fact with active Entity relation should not be archived"
+    assert get_result["node"]["status"] == "archived"

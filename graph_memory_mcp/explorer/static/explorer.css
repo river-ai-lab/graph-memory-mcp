@@ -70,7 +70,7 @@ body {
 .layout {
   flex: 1;
   display: grid;
-  grid-template-columns: 280px 1fr 300px;
+  grid-template-columns: 300px 1fr 300px;
   min-height: 0;
 }
 
@@ -222,4 +222,131 @@ button.secondary {
 
 .panel-right button {
   margin: 0.25rem 0.25rem 0 0;
+}
+
+select {
+  flex: 1;
+  min-width: 0;
+  padding: 0.35rem 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.8rem;
+}
+
+.filters .chk,
+.row .chk {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  color: var(--text);
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 0.75rem;
+  margin: 0;
+}
+
+.filters .chk input,
+.row .chk input {
+  width: auto;
+  margin: 0;
+}
+
+#filter-project,
+#filter-tags,
+#trace-from,
+#trace-to {
+  margin-top: 0.35rem;
+}
+
+#overview {
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.ov-block {
+  margin-bottom: 0.5rem;
+}
+
+.ov-block h3 {
+  margin: 0 0 0.25rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.ov-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.ov-list li {
+  padding: 0.25rem 0.35rem;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 0.75rem;
+  line-height: 1.3;
+  color: var(--text);
+}
+
+.ov-list li:hover {
+  background: #243044;
+}
+
+.ov-list li.contradict {
+  color: #fca5a5;
+}
+
+.ov-list .sep {
+  color: var(--muted);
+  margin: 0 0.2rem;
+  cursor: default;
+}
+
+.legend-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 0.7rem;
+  color: var(--muted);
+}
+
+.legend-list li {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.2rem;
+}
+
+.swatch {
+  width: 14px;
+  height: 3px;
+  border-radius: 1px;
+  flex-shrink: 0;
+}
+
+.swatch-contradicts {
+  background: #ef4444;
+  height: 4px;
+}
+
+.swatch-summarizes {
+  background: #22d3ee;
+}
+
+.swatch-triplet {
+  background: #f59e0b;
+}
+
+.swatch-default {
+  background: #475569;
+}
+
+.swatch-path {
+  background: #fbbf24;
+  height: 4px;
 }

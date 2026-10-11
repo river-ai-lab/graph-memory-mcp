@@ -11,7 +11,8 @@ services:
       - "6379:6379"
       - "3000:3000"
     environment:
-      REDIS_ARGS: "--requirepass falkordb123"
+      # AOF persistence: survive container crashes with at most ~1s of writes lost.
+      REDIS_ARGS: "--requirepass falkordb123 --appendonly yes --appendfsync everysec"
     volumes:
       - ./data:/var/lib/falkordb/data
     healthcheck:
@@ -20,3 +21,13 @@ services:
       timeout: 3s
       retries: 15
       start_period: 5s
+
+  arcadedb:
+    image: arcadedata/arcadedb:latest
+    container_name: graph-memory-arcadedb
+    ports:
+      - "2480:2480"
+      - "2424:2424"
+    environment:
+      # First start asks for a password unless this property is set.
+      JAVA_OPTS: "-Darcadedb.server.rootPassword=playwithdata"

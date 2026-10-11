@@ -1,14 +1,19 @@
 """Admin handlers for MCP Graph Memory (stats, health, summary)."""
 
+import hashlib
 import logging
+import time
 from typing import Any, Dict, Optional
 
 from graph_memory_mcp.graph_memory import mcp_handlers_nodes
 from graph_memory_mcp.graph_memory.database import FalkorDBClient
 from graph_memory_mcp.graph_memory.utils import (
-    escape_value,
+    ensure_text,
+    error_response,
     mcp_handler,
     normalize_owner_id,
+    normalize_predicate_type,
+    parse_embedding_value,
     success_response,
 )
 
@@ -25,14 +30,16 @@ def test_connection(db: FalkorDBClient) -> Dict:
 def health_check(db: FalkorDBClient, embedding_service: Any) -> Dict:
     """Comprehensive health check."""
     falkordb_ok = False
+    arcade_ok = False
     embeddings_ok = False
     vector_ok = False
 
     try:
         health = db.health_check()
         falkordb_ok = bool(health.get("falkordb_connected"))
+        arcade_ok = bool(health.get("arcade_connected"))
     except Exception as exc:
-        logger.error("health_check: falkordb probe failed: %s", exc)
+        logger.error("health_check: graph store probe failed: %s", exc)
 
     try:
         embeddings_ok = (
@@ -42,21 +49,22 @@ def health_check(db: FalkorDBClient, embedding_service: Any) -> Dict:
         logger.error("health_check: embeddings probe failed: %s", exc)
 
     try:
-        vector = db.get_vector_index_status()
-        vector_ok = bool(vector.get("Fact")) and bool(vector.get("Entity"))
+        # Graph-per-owner: check indexes across existing owner graphs (capped).
+        owners = db.list_owners()[:20] if hasattr(db, "list_owners") else []
+        if owners:
+            vector_ok = all(
+                all(db.get_vector_index_status(owner_id=o).values()) for o in owners
+            )
+        else:
+            vector_ok = True  # no owner graphs yet — nothing to index
     except Exception as exc:
         logger.error("health_check: vector index probe failed: %s", exc)
-
-    all_ok = falkordb_ok and embeddings_ok and vector_ok
-    if not all_ok:
-        falkordb_ok = False
-        embeddings_ok = False
-        vector_ok = False
 
     return success_response(
         falkordb=falkordb_ok,
         embeddings=embeddings_ok,
         vector_index=vector_ok,
+        healthy=(falkordb_ok or arcade_ok) and embeddings_ok and vector_ok,
         cache=db.cache.stats(),
     )
 
@@ -65,16 +73,6 @@ def health_check(db: FalkorDBClient, embedding_service: Any) -> Dict:
 def get_stats(db: FalkorDBClient, *, owner_id: str = "default") -> Dict:
     """Get graph statistics."""
     owner_id = normalize_owner_id(owner_id)
-
-    query = f"""
-    MATCH (n)
-    WHERE n.owner_id = '{escape_value(owner_id)}'
-    WITH labels(n)[0] as label, count(n) as count
-    RETURN label, count
-    """
-
-    result = db.graph.query(query)
-
     stats = {
         "total_nodes": 0,
         "total_facts": 0,
@@ -83,49 +81,265 @@ def get_stats(db: FalkorDBClient, *, owner_id: str = "default") -> Dict:
         "outdated_facts": 0,
     }
 
-    if result and hasattr(result, "result_set"):
-        for row in result.result_set:
-            label = row[0]
-            count = row[1]
-            stats["total_nodes"] += count
-            if label == "Fact":
-                stats["total_facts"] = count
-            elif label == "Entity":
-                stats["total_entities"] = count
+    for row in db.label_counts(owner_id):
+        label = row[0]
+        count = row[1]
+        stats["total_nodes"] += count
+        if label == "Fact":
+            stats["total_facts"] = count
+        elif label == "Entity":
+            stats["total_entities"] = count
 
-    # Get fact status breakdown
-    status_query = f"""
-    MATCH (f:Fact)
-    WHERE f.owner_id = '{escape_value(owner_id)}'
-    WITH f.status as status, count(f) as count
-    RETURN status, count
-    """
+    for row in db.fact_status_counts(owner_id):
+        status = row[0]
+        count = row[1]
+        if status == "active":
+            stats["active_facts"] = count
+        elif status == "outdated":
+            stats["outdated_facts"] = count
 
-    result = db.graph.query(status_query)
-    if result and hasattr(result, "result_set"):
-        for row in result.result_set:
-            status = row[0]
-            count = row[1]
-            if status == "active":
-                stats["active_facts"] = count
-            elif status == "outdated":
-                stats["outdated_facts"] = count
-
-    # Get relation count
-    rel_query = f"""
-    MATCH (a)-[r]->(b)
-    WHERE a.owner_id = '{escape_value(owner_id)}'
-      AND b.owner_id = '{escape_value(owner_id)}'
-    RETURN count(r) as total_relations
-    """
-
-    result = db.graph.query(rel_query)
-    if result and hasattr(result, "result_set") and result.result_set:
-        stats["total_relations"] = result.result_set[0][0]
-    else:
-        stats["total_relations"] = 0
+    rel_rows = db.relation_count(owner_id)
+    stats["total_relations"] = rel_rows[0][0] if rel_rows else 0
 
     return success_response(stats=stats)
+
+
+@mcp_handler
+def get_brief(
+    db: FalkorDBClient,
+    *,
+    owner_id: str = "default",
+    limit: int = 10,
+) -> Dict:
+    """Session warm-up: project anchor, recent facts, open contradictions, stats."""
+    owner_id = normalize_owner_id(owner_id)
+    limit = max(1, min(int(limit), 50))
+    about_ref = (
+        getattr(getattr(db, "config", None), "about_source_ref", None) or "about"
+    )
+
+    about = None
+    about_rows = db.brief_about(owner_id, about_ref)
+    if about_rows:
+        row = about_rows[0]
+        about = {
+            "node_id": str(row[0]),
+            "text": ensure_text(row[1]),
+            "source_ref": ensure_text(row[2]) or about_ref,
+        }
+
+    top_facts = []
+    for row in db.brief_top_facts(owner_id, limit, about_ref):
+        top_facts.append(
+            {
+                "node_id": str(row[0]),
+                "text": ensure_text(row[1]),
+                "created_at": row[2],
+            }
+        )
+
+    contradictions = []
+    for row in db.brief_contradictions(owner_id):
+        contradictions.append(
+            {
+                "from_id": str(row[0]),
+                "from_text": ensure_text(row[1]),
+                "to_id": str(row[2]),
+                "to_text": ensure_text(row[3]),
+            }
+        )
+
+    stale_days = getattr(getattr(db, "config", None), "stale_facts_days", 30)
+    stale_cutoff_ms = int(time.time() * 1000) - stale_days * 24 * 3600 * 1000
+    stale_facts = []
+    for row in db.brief_stale_facts(owner_id, stale_cutoff_ms):
+        stale_facts.append(
+            {
+                "node_id": str(row[0]),
+                "text": ensure_text(row[1]),
+                "last_accessed_at": row[2],
+                "access_count": row[3] or 0,
+            }
+        )
+
+    stats_result = get_stats(db, owner_id=owner_id)
+
+    return success_response(
+        about=about,
+        top_facts=top_facts,
+        contradictions=contradictions,
+        stale_facts=stale_facts,
+        stats=stats_result.get("stats", {}),
+    )
+
+
+_EXPORT_LABELS = ("Fact", "Entity", "FactVersion")
+
+
+@mcp_handler
+def export_owner(
+    db: FalkorDBClient,
+    *,
+    owner_id: str = "default",
+    include_embeddings: bool = True,
+    include_versions: bool = False,
+    offset: int = 0,
+    limit: Optional[int] = None,
+    section: str = "all",
+) -> Dict:
+    """Export owner data (nodes + relations) as JSON-serializable payload.
+
+    One JSON object per node/relation — write each list item as a line for JSONL.
+
+    Pagination for large owners: pass `limit` (+ `offset`) and page one
+    `section` at a time ("nodes", then "relations"); the response carries
+    `has_more` / `next_offset`. Default (`section="all"`, no limit) exports
+    everything in one response.
+    """
+    owner_id = normalize_owner_id(owner_id)
+    if section not in ("all", "nodes", "relations"):
+        return error_response(
+            "section must be one of: all, nodes, relations",
+            code="memory_validation_error",
+        )
+    if section == "all" and (offset or limit is not None):
+        section = "nodes"
+    offset = max(0, int(offset))
+    page_clause = ""
+    if limit is not None:
+        page_clause = f" SKIP {offset} LIMIT {int(limit)}"
+
+    nodes = []
+    if section in ("all", "nodes"):
+        for row in db.export_node_rows(owner_id, page_clause):
+            label = str(row[0])
+            if label == "FactVersion" and not include_versions:
+                continue
+            props = dict(row[1] or {})
+            # Legacy FactVersion rows may lack uid — synthesize a stable one for import.
+            if label == "FactVersion" and not ensure_text(props.get("uid")):
+                fact_id = ensure_text(props.get("fact_id")) or ""
+                ts = props.get("version_timestamp") or ""
+                props["uid"] = hashlib.sha256(
+                    f"{fact_id}:{ts}".encode("utf-8")
+                ).hexdigest()[:32]
+            embedding = props.pop("embedding", None)
+            if include_embeddings and embedding is not None:
+                props["embedding"] = parse_embedding_value(embedding)
+            # FactVersion has no embedding corpus — never regenerate from text on import.
+            if label == "FactVersion":
+                props.pop("embedding", None)
+            nodes.append({"label": label, "properties": props})
+
+    relations = []
+    if section in ("all", "relations"):
+        for row in db.export_relation_rows(owner_id, page_clause):
+            relations.append(
+                {
+                    "from_id": str(row[0]),
+                    "relation_type": str(row[1]),
+                    "to_id": str(row[2]),
+                    "properties": dict(row[3] or {}),
+                }
+            )
+
+    response = success_response(
+        owner_id=owner_id,
+        nodes=nodes,
+        relations=relations,
+        node_count=len(nodes),
+        relation_count=len(relations),
+    )
+    if limit is not None:
+        page_size = len(nodes) if section == "nodes" else len(relations)
+        response["section"] = section
+        response["offset"] = offset
+        response["has_more"] = page_size >= int(limit)
+        response["next_offset"] = offset + page_size
+    return response
+
+
+_IMPORT_BATCH_SIZE = 200
+
+
+@mcp_handler
+def import_owner(
+    db: FalkorDBClient,
+    *,
+    owner_id: str,
+    nodes: list,
+    relations: Optional[list] = None,
+    regenerate_embeddings: bool = False,
+) -> Dict:
+    """Import a previously exported payload into `owner_id`.
+
+    Nodes are merged by `uid` (idempotent) in UNWIND batches grouped by label;
+    relations in batches grouped by type. Embeddings come from the payload, or
+    are recomputed when regenerate_embeddings=true (or missing).
+    """
+    owner_id = normalize_owner_id(owner_id)
+
+    imported = 0
+    skipped = 0
+
+    # Group nodes by (label, has_embedding) for batched UNWIND merges.
+    rows_by_group: Dict[tuple, list] = {}
+    for node in nodes or []:
+        label = str((node or {}).get("label") or "")
+        props = dict((node or {}).get("properties") or {})
+        uid = ensure_text(props.get("uid"))
+        text = ensure_text(props.get("text"))
+        if label not in _EXPORT_LABELS or not uid:
+            skipped += 1
+            continue
+        embedding = props.pop("embedding", None)
+        if label != "FactVersion" and (regenerate_embeddings or not embedding) and text:
+            embedding = db.get_embedding(text)
+        props["owner_id"] = owner_id
+        row = {"uid": uid, "props": props}
+        if embedding:
+            row["emb"] = [float(v) for v in embedding]
+        rows_by_group.setdefault((label, bool(embedding)), []).append(row)
+
+    for (label, has_emb), rows in rows_by_group.items():
+        for start in range(0, len(rows), _IMPORT_BATCH_SIZE):
+            batch = rows[start : start + _IMPORT_BATCH_SIZE]
+            db.import_node_batch(
+                label=label, has_emb=has_emb, rows=batch, owner_id=owner_id
+            )
+            imported += len(batch)
+
+    # Group relations by type for batched UNWIND merges.
+    imported_relations = 0
+    rels_by_type: Dict[str, list] = {}
+    for rel in relations or []:
+        rel_type = normalize_predicate_type(str((rel or {}).get("relation_type") or ""))
+        from_id = ensure_text((rel or {}).get("from_id"))
+        to_id = ensure_text((rel or {}).get("to_id"))
+        if not (from_id and to_id and rel_type):
+            skipped += 1
+            continue
+        rels_by_type.setdefault(rel_type, []).append(
+            {
+                "from_id": from_id,
+                "to_id": to_id,
+                "props": dict((rel or {}).get("properties") or {}),
+            }
+        )
+
+    for rel_type, rows in rels_by_type.items():
+        for start in range(0, len(rows), _IMPORT_BATCH_SIZE):
+            batch = rows[start : start + _IMPORT_BATCH_SIZE]
+            db.import_relation_batch(rel_type=rel_type, rows=batch, owner_id=owner_id)
+            imported_relations += len(batch)
+
+    db.cache.invalidate_search()
+    return success_response(
+        owner_id=owner_id,
+        imported_nodes=imported,
+        imported_relations=imported_relations,
+        skipped=skipped,
+    )
 
 
 @mcp_handler

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Optional
 
 AUTO_LINK_RELATION = "MENTIONS"
@@ -56,6 +57,59 @@ def relation_policy_mode(config: Any | None) -> str:
     cfg = effective_relation_config(config)
     mode = str(getattr(cfg, "relation_policy_enforce", "warn")).strip().lower()
     return mode if mode in VALID_ENFORCE_MODES else "warn"
+
+
+_RELATION_TYPE_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
+
+
+def clean_relation_types(types: list[str] | None) -> list[str]:
+    """Uppercase relation type names safe to interpolate into Cypher."""
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for raw in types or []:
+        name = str(raw).strip().upper()
+        if not _RELATION_TYPE_RE.match(name) or name in seen:
+            continue
+        seen.add(name)
+        cleaned.append(name)
+    return cleaned
+
+
+def neighbor_rank_expr(
+    priority: list[str] | None,
+    allowlist: frozenset[str],
+) -> str:
+    """Cypher CASE on relationship type `t`. Lower rank is returned first.
+
+    Default: CONTRADICTS, then FOLLOWS_FROM, then other allowlist types,
+    then anything else, MENTIONS last. A caller list replaces that order;
+    MENTIONS stays last unless the caller named it.
+    """
+    if priority:
+        lines = ["CASE t"]
+        for index, name in enumerate(priority):
+            lines.append(f" WHEN '{name}' THEN {index}")
+        if "MENTIONS" in priority:
+            lines.append(f" ELSE {len(priority)}")
+        else:
+            lines.append(f" WHEN 'MENTIONS' THEN {len(priority) + 1}")
+            lines.append(f" ELSE {len(priority)}")
+        lines.append(" END")
+        return "".join(lines)
+
+    head = ("CONTRADICTS", "FOLLOWS_FROM")
+    lines = ["CASE t"]
+    for index, name in enumerate(head):
+        lines.append(f" WHEN '{name}' THEN {index}")
+    allow_rank = len(head)
+    for name in sorted(allowlist):
+        if name in head or name == "MENTIONS":
+            continue
+        lines.append(f" WHEN '{name}' THEN {allow_rank}")
+    lines.append(f" WHEN 'MENTIONS' THEN {allow_rank + 2}")
+    lines.append(f" ELSE {allow_rank + 1}")
+    lines.append(" END")
+    return "".join(lines)
 
 
 def allowed_relation_types(config: Any | None) -> frozenset[str]:

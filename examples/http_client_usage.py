@@ -1,23 +1,4 @@
-"""
-HTTP Client Example (Pure Python)
-=================================
-
-This example demonstrates how to act as an MCP client connecting to the
-Graph Memory server over Streamable HTTP.
-
-Architecture:
-  [Your Script] -> (Streamable HTTP) -> [Graph Memory Server]
-
-Prerequisites:
-  1. Start the server (in a separate terminal):
-     $ python examples/run_server.py
-
-  2. Run this client:
-     $ python examples/http_client_usage.py
-
-Dependencies:
-  pip install mcp
-"""
+"""MCP client over Streamable HTTP. Start the server first."""
 
 import asyncio
 
@@ -50,7 +31,10 @@ async def main():
             tools = await session.list_tools()
             print("Tools:", [t.name for t in tools.tools])
 
-            res = await session.call_tool("ensure_vector_indexes", arguments={})
+            # Indexes are created automatically on first search/write if missing.
+            # Admin ensure-indexes lives on HTTP /admin/ensure-indexes (or MCP when
+            # MCP_EXPOSE_ADMIN_TOOLS=true).
+            res = await session.call_tool("health_check", arguments={})
             dump_tool_result(res)
 
             res = await session.call_tool(
