@@ -42,4 +42,26 @@ jobs:
           path: ~/.cache/huggingface
           key: hf-${{ runner.os }}-multilingual-e5-base
       - run: uv sync
-      - run: uv run pytest -q
+      - run: uv run pytest -q -m "not arcade"
+
+  arcade:
+    runs-on: ubuntu-latest
+    services:
+      arcadedb:
+        image: arcadedata/arcadedb:latest
+        ports:
+          - 2480:2480
+        env:
+          JAVA_OPTS: "-Darcadedb.server.rootPassword=playwithdata"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Wait for ArcadeDB
+        run: |
+          for _ in $(seq 1 30); do
+            curl -sf -u root:playwithdata http://127.0.0.1:2480/api/v1/server && exit 0
+            sleep 2
+          done
+          exit 1
+      - run: uv sync
+      - run: uv run pytest -q -m arcade
