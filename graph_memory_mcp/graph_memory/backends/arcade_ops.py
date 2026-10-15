@@ -1040,7 +1040,7 @@ class ArcadeOps:
                 pairs.append(pair)
         return pairs
 
-    def brief_stale_facts(self, owner_id: str, cutoff_ms: int) -> list:
+    def _stale_fact_rows(self, owner_id: str, cutoff_ms: int) -> list:
         owner = self.owner_literal(owner_id)
         facts = self.query(
             "SELECT FROM Fact WHERE owner_id = "
@@ -1067,8 +1067,19 @@ class ArcadeOps:
                 fact.get("last_accessed_at"),
                 fact.get("access_count"),
             ]
-            for fact in stale[:10]
+            for fact in stale
         ]
+
+    def brief_stale_count(self, owner_id: str, cutoff_ms: int) -> int:
+        return len(self._stale_fact_rows(owner_id, cutoff_ms))
+
+    def brief_stale_facts(
+        self, owner_id: str, cutoff_ms: int, *, limit: int | None = 10
+    ) -> list:
+        rows = self._stale_fact_rows(owner_id, cutoff_ms)
+        if limit is None:
+            return rows
+        return rows[: int(limit)]
 
     def export_node_rows(self, owner_id: str, page_clause: str) -> list:
         owner = self.owner_literal(owner_id)

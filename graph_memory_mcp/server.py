@@ -107,15 +107,28 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
             description=(
                 "Session warm-up: optional project anchor (source.ref=about), "
                 "recent active facts without TTL (by time, not connectivity), "
-                "open CONTRADICTS pairs, stale facts, and stats. "
+                "open CONTRADICTS pairs, stale_count, and stats. "
+                "stale_count is active facts not accessed for STALE_FACTS_DAYS. "
+                "Do not pass include_stale at task start: it returns those texts "
+                "and is a maintenance view, not project state. "
+                "limit applies only to recent facts. "
                 "This is where the project stands, not a search for the task. "
                 "After it, search(..., compact=true) for the task topic. "
                 "Keep the about fact current via upsert_node(source.ref='about')."
             ),
             annotations=ToolAnnotations(readOnlyHint=True),
         )
-        def get_brief(owner_id: str = default_owner, limit: int = 10) -> dict:
-            return mcp_handlers_admin.get_brief(db, owner_id=owner_id, limit=limit)
+        def get_brief(
+            owner_id: str = default_owner,
+            limit: int = 10,
+            include_stale: bool = False,
+        ) -> dict:
+            return mcp_handlers_admin.get_brief(
+                db,
+                owner_id=owner_id,
+                limit=limit,
+                include_stale=include_stale,
+            )
 
         if self.config.mcp_expose_admin_tools:
 

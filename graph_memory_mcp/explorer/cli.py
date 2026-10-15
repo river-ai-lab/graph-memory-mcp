@@ -28,7 +28,20 @@ def main() -> None:
         default="INFO",
         choices=["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"],
     )
+    parser.add_argument(
+        "--graph-diff-path",
+        default=os.environ.get("GRAPH_DIFF_PATH"),
+        help="Optional graph-diff source checkout for map evolution analysis",
+    )
     args = parser.parse_args()
+    if args.graph_diff_path:
+        import sys
+        from pathlib import Path
+
+        graph_diff_path = Path(args.graph_diff_path).expanduser().resolve()
+        if not (graph_diff_path / "graphdiff" / "memory.py").is_file():
+            parser.error("--graph-diff-path must contain graphdiff/memory.py")
+        sys.path.insert(0, str(graph_diff_path))
 
     logging.basicConfig(level=getattr(logging, args.log_level))
 

@@ -76,7 +76,7 @@ Defaults: `owner_id` from `DEFAULT_OWNER_ID` (env, default `"default"`). Pass `o
 **`get_context`** — `node_id`; opt `depth`, `max_nodes`, `offset`, `include_outdated`, `include_ttl`, `relation_priority`, `exclude_relation_types`. Budgeted walk (`offset=0`) fills with `CONTRADICTS`, then `FOLLOWS_FROM`, then other allowlist edges; `MENTIONS` last. Default cap 20 (hard 50). Neighbors with `ttl_days` are omitted unless `include_ttl=true`.
 **`recall_context`** — shortcut search+expand (small graphs). Opt `depth`, `limit`, `max_nodes`, `include_outdated`, `include_ttl`, `include_paths`, `metadata_filter`, `compact`, `relation_priority`, `exclude_relation_types`, time-aware ranking weights. Same neighbor order and TTL filter as `get_context`. Always returns `suggested_next` / `do_not` / `budget`.
 **`get_trace`** — `from_id`, `to_id`; opt `max_depth`, `directed` (default true).
-**`get_brief`** — warm-up, not search and not a degree ranking: `about` if a fact with `source.ref` = `ABOUT_SOURCE_REF` (default `about`) exists, else null. Recent active facts with no TTL, by time. Open `CONTRADICTS` between those durable facts. Stale facts, stats. Facts with `ttl_days` are omitted.
+**`get_brief`** — warm-up, not search and not a degree ranking: `about` if a fact with `source.ref` = `ABOUT_SOURCE_REF` (default `about`) exists, else null. Recent active facts with no TTL, by time (`limit` cuts only these). Open `CONTRADICTS` between those durable facts. `stale_count` is active facts not accessed for `STALE_FACTS_DAYS`. `include_stale=true` returns their texts; leave it false at task start. Stats. Facts with `ttl_days` are omitted.
 **`get_stats`** / **`health_check`** — Fact/Entity counts; component flags + `healthy`.
 
 ## Admin (HTTP; not MCP by default)

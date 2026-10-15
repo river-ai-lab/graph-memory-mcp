@@ -16,6 +16,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `get_context` and `recall_context` fill the node budget with `CONTRADICTS` and `FOLLOWS_FROM` before `MENTIONS`. `relation_priority` overrides the order; `exclude_relation_types` drops those edges.
 - Task start is `get_brief`, then `search(..., compact=true)`. `suggested_next` hints at a possible next call; the agent chooses. A near-duplicate write returns `memory_duplicate` and must not be paraphrased again.
 
+### Changed
+
+- `get_brief` returns `stale_count` instead of stale fact texts. `include_stale=true` returns those texts. `limit` still applies only to recent facts.
+
 ## [0.2.0] - 2026-07-20
 
 Owner-scoped memory hardening on top of 0.1.1. **Breaking:** one FalkorDB graph per `owner_id` (`{FALKORDB_GRAPH}_{owner_id}`); old shared-graph data is not migrated.

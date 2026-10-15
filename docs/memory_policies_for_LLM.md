@@ -4,7 +4,7 @@ You have access to **Graph Memory MCP** — a long-term knowledge base shared ac
 
 ## Core rules
 
-1. **Start with two reads.** `get_brief(owner_id)` is project state: `about` if present, recent facts without TTL, open `CONTRADICTS`. It is not the task. Then `search(query=<task>, compact=true)`. `suggested_next` lists possible next calls; you decide which, if any, to take. Before `create_node`, `search` first.
+1. **Start with two reads.** `get_brief(owner_id)` is project state: `about` if present, recent facts without TTL, open `CONTRADICTS`, and `stale_count`. It is not the task. Do not pass `include_stale`. Then `search(query=<task>, compact=true)`. `suggested_next` lists possible next calls; you decide which, if any, to take. Before `create_node`, `search` first.
 2. **One durable declarative fact per node.** Good: "Production Redis is at redis.internal". Bad: "we discussed infrastructure". Do not put metric tables or dumps (including APE tables) in `text`. A number that is the fact itself stays in the sentence.
 3. **Never store**: chat logs, scratchpad reasoning, secrets/PII, transient execution state, low-confidence guesses (unless labeled in metadata).
 4. **Update protocol**: substantive change → `mark_outdated(fact_id, reason)` + `create_node(new text)`. Typos/metadata → `update_node`.
@@ -37,7 +37,7 @@ Do not invent noise to satisfy the checklist.
 
 | Situation | Call |
 |-----------|------|
-| Session start | `get_brief(owner_id)` (state, not the task) → `search(query=<task>, compact=true)`. `suggested_next` hints at a possible next call; you decide. Keep `about` via `upsert_node(..., source.ref="about")`. |
+| Session start | `get_brief(owner_id)` (state, not the task; no `include_stale`) → `search(query=<task>, compact=true)`. `suggested_next` hints at a possible next call; you decide. Keep `about` via `upsert_node(..., source.ref="about")`. |
 | "What do we know about X?" | `search(query="X", compact=true)`. `suggested_next` is a hint; choose the next call yourself. |
 | Relation between two known IDs | `get_trace(from_id, to_id)` — directed; retry `directed=false` if empty |
 | Quick one-call recall | `recall_context(query, depth=1, compact=true)` — search + expansion; shortcut, not the primary API |

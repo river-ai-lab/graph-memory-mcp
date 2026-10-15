@@ -110,6 +110,7 @@ def get_brief(
     *,
     owner_id: str = "default",
     limit: int = 10,
+    include_stale: bool = False,
 ) -> Dict:
     """Session warm-up: project anchor, recent facts, open contradictions, stats."""
     owner_id = normalize_owner_id(owner_id)
@@ -151,26 +152,28 @@ def get_brief(
 
     stale_days = getattr(getattr(db, "config", None), "stale_facts_days", 30)
     stale_cutoff_ms = int(time.time() * 1000) - stale_days * 24 * 3600 * 1000
-    stale_facts = []
-    for row in db.brief_stale_facts(owner_id, stale_cutoff_ms):
-        stale_facts.append(
-            {
-                "node_id": str(row[0]),
-                "text": ensure_text(row[1]),
-                "last_accessed_at": row[2],
-                "access_count": row[3] or 0,
-            }
-        )
+    stale_count = int(db.brief_stale_count(owner_id, stale_cutoff_ms))
+    payload = {
+        "about": about,
+        "top_facts": top_facts,
+        "contradictions": contradictions,
+        "stale_count": stale_count,
+        "stats": get_stats(db, owner_id=owner_id).get("stats", {}),
+    }
+    if include_stale:
+        stale_facts = []
+        for row in db.brief_stale_facts(owner_id, stale_cutoff_ms, limit=None):
+            stale_facts.append(
+                {
+                    "node_id": str(row[0]),
+                    "text": ensure_text(row[1]),
+                    "last_accessed_at": row[2],
+                    "access_count": row[3] or 0,
+                }
+            )
+        payload["stale_facts"] = stale_facts
 
-    stats_result = get_stats(db, owner_id=owner_id)
-
-    return success_response(
-        about=about,
-        top_facts=top_facts,
-        contradictions=contradictions,
-        stale_facts=stale_facts,
-        stats=stats_result.get("stats", {}),
-    )
+    return success_response(**payload)
 
 
 _EXPORT_LABELS = ("Fact", "Entity", "FactVersion")

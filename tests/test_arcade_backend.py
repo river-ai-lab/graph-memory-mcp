@@ -487,6 +487,8 @@ def test_brief_is_about_and_recency_not_degree(store):
     assert about["node_id"] not in ids
     assert ids[0] == newer["node_id"]
     assert "created_at" in brief["top_facts"][0]
+    assert brief["stale_count"] == 0
+    assert "stale_facts" not in brief
 
 
 def test_context_budget_keeps_contradiction_ahead_of_mentions(store):

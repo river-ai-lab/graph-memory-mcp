@@ -4,7 +4,7 @@
 
 A task starts with two reads. You decide what to call after that:
 
-1. `get_brief(owner_id)` — project state: `about` if an agent stored `source.ref=about`, recent facts **without** TTL, open `CONTRADICTS`. Not the task, and not a ranking by how many edges a node has.
+1. `get_brief(owner_id)` — project state: `about` if an agent stored `source.ref=about`, recent facts **without** TTL, open `CONTRADICTS`, and `stale_count`. Not the task, and not a ranking by how many edges a node has. Do not pass `include_stale` here.
 2. `search(query=<task>, compact=true)` — the task. `suggested_next` hints at a possible next call; you decide what to do.
 
 `search` / `get_context` / `recall_context` hide facts that have `ttl_days` until `include_ttl=true` (still living) or `include_outdated=true` (also outdated, archived, expired). If two hits already have a `CONTRADICTS` edge, they come back in `contradiction_pairs` and `suggested_next` leads with `get_trace` / `mark_outdated`.
