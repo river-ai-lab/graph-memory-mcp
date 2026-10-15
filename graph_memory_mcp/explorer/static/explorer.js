@@ -10,7 +10,7 @@ const KNOWN_EDGE_TYPES = new Set([
 ]);
 
 const state = {
-  ownerId: localStorage.getItem("gm_owner_id") || "default",
+  ownerId: new URLSearchParams(location.search).get("owner") || localStorage.getItem("gm_owner_id") || "default",
   anchorId: null,
   depth: 1,
   nodes: new Map(),
@@ -19,31 +19,64 @@ const state = {
   selectedId: null,
   hoverId: null,
   pathEdgeKeys: new Set(),
+  generation: 0,
+  pending: 0,
 };
 
 const $ = (id) => document.getElementById(id);
 
 function log(msg) {
+  if (msg.includes("old response discarded")) return;
   const el = $("log");
   const line = `[${new Date().toLocaleTimeString()}] ${msg}`;
   el.textContent = `${line}\n${el.textContent}`.slice(0, 4000);
+  if (/error:|needs |first$|^no path|^set anchor/.test(msg)) notice(msg, true);
+}
+
+function notice(message, error = false) {
+  $("notice").hidden = false;
+  $("notice-text").textContent = message;
+  $("notice").classList.toggle("error", error);
+}
+
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  })[c]);
 }
 
 async function callTool(tool, arguments_) {
-  const res = await fetch("/api/tool", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ tool, arguments: arguments_ }),
-  });
-  const data = await res.json();
-  if (!res.ok || data.success === false) {
-    throw new Error(data.error || `HTTP ${res.status}`);
+  const generation = state.generation;
+  state.pending++;
+  notice(({ get_brief: "Loading project brief…", get_node: "Loading full node text…", get_context: "Loading connected context…", search: "Searching memory…", recall_context: "Recalling connected context…", get_trace: "Finding a path…", find_similar: "Finding similar facts…", get_node_change_history: "Loading version history…" })[tool] || "Loading memory…");
+  try {
+    const res = await fetch("/api/tool", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tool, arguments: arguments_ }),
+      signal: AbortSignal.timeout(60000),
+    });
+    const data = await res.json();
+    if (generation !== state.generation) throw new Error("Workspace changed; old response discarded.");
+    if (!res.ok || data.success === false) throw new Error(data.error || `HTTP ${res.status}`);
+    if (state.pending === 1) $("notice").hidden = true;
+    return data;
+  } catch (error) {
+    if (generation === state.generation) notice(error.message, true);
+    throw error;
+  } finally {
+    state.pending--;
   }
-  return data;
 }
 
 function ownerArgs(extra = {}) {
-  return { owner_id: $("owner-id").value.trim() || "default", ...extra };
+  syncOwner();
+  return { owner_id: state.ownerId, ...extra };
+}
+
+function nodeText(n) {
+  if (!n) return "";
+  return n.text || n.snippet || "";
 }
 
 function preview(text, n = 48) {
@@ -52,11 +85,64 @@ function preview(text, n = 48) {
   return s.length <= n ? s : `${s.slice(0, n)}…`;
 }
 
+function formatTime(value, includeSeconds = false) {
+  if (!value) return "—";
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? new Intl.DateTimeFormat("en-GB", { dateStyle: "medium", timeStyle: includeSeconds ? "medium" : "short", hour12: false }).format(date) : "—";
+}
+
+function nodeLabel(n) {
+  const text = nodeText(n);
+  if (state.ownerId === "luminaria") {
+    const titles = [
+      [/^Spring wheat neural network$/, "Spring wheat NN"],
+      [/^Corn neural network$/, "Corn NN"],
+      [/^Spring wheat NN reads a county-day/, "Wheat · Weather inputs"],
+      [/^Spring wheat NN encode_mode/, "Wheat · Weather encoder"],
+      [/^Spring wheat NN LSTM_clock/, "Wheat · Growth clock"],
+      [/^Spring wheat NN LSTM_yield/, "Wheat · Yield readout"],
+      [/^Spring wheat NN county embedding/, "Wheat · Location & planting"],
+      [/^Live spring-wheat NN code/, "Wheat · Code location"],
+      [/^Corn NN uses the same/, "Corn · Shared encoder"],
+      [/^Corn NN stage order/, "Corn · Growth stages"],
+      [/^Corn NN clock yaml/, "Corn · Clock & yield"],
+      [/^Luminaria memory for/, "Luminaria · Project brief"],
+    ];
+    for (const [pattern, label] of titles) if (pattern.test(text)) return label;
+  }
+  return preview(text, 62);
+}
+
+function setInspectorOpen(open) {
+  document.body.classList.toggle("inspector-hidden", !open);
+  $("inspector-panel").hidden = !open;
+  $("btn-inspector").setAttribute("aria-expanded", String(open));
+  cy.resize();
+}
+
+function policyHint(text) {
+  if (!text) return "";
+  const t = String(text);
+  const hints = [];
+  if (
+    /\b(launched|relaunched|OOMKilled|backoffLimit)\b/.test(t) &&
+    /\b(\d+\s*CPU|\d+CPU|\d+Gi|RUN )\b/.test(t)
+  ) {
+    hints.push("run diary");
+  }
+  if ((t.match(/\d+\.\d+\/\d+\.\d+/g) || []).length >= 2) {
+    hints.push("metric table");
+  }
+  if (t.length > 600) hints.push("long");
+  if (/\.aws\/credentials|~\/\.kube/.test(t)) hints.push("machine path");
+  return hints.join(" · ");
+}
+
 function nodeStyle(nodeType, status) {
   const base =
     nodeType === "Entity"
-      ? { background: "#7c3aed", shape: "diamond" }
-      : { background: "#16a34a", shape: "ellipse" };
+      ? { background: "#b5a0f2", shape: "diamond" }
+      : { background: "#79e1cb", shape: "ellipse" };
   if (status === "outdated") base.background = "#64748b";
   if (status === "archived") base.background = "#475569";
   return base;
@@ -81,7 +167,8 @@ function searchFilters() {
   const entity = $("type-entity").checked;
   if (fact && !entity) extra.node_types = ["Fact"];
   else if (entity && !fact) extra.node_types = ["Entity"];
-  // both or neither → omit (server default)
+  if (!fact && !entity) throw new Error("Select Fact or Entity to search.");
+  // both → omit (server default)
 
   const project = $("filter-project").value.trim();
   const tagsRaw = $("filter-tags").value.trim();
@@ -107,6 +194,10 @@ function mergeNodes(nodes, meta = {}) {
       node_id: id,
       node_type: n.node_type || prev.node_type || "Fact",
       text: n.text ?? prev.text,
+      snippet: n.snippet ?? prev.snippet,
+      source: n.source ?? prev.source,
+      created_at: n.created_at ?? prev.created_at,
+      updated_at: n.updated_at ?? prev.updated_at,
       status: n.status ?? prev.status,
       similarity: meta.similarity ?? n.similarity ?? n.score ?? prev.similarity,
       metadata: n.metadata ?? prev.metadata,
@@ -125,6 +216,7 @@ function mergeEdges(edges, { path = false } = {}) {
       from_id: from,
       to_id: to,
       relation_type: e.relation_type || "RELATED",
+      properties: e.properties ?? state.edges.get(key)?.properties ?? {},
     });
     if (path) state.pathEdgeKeys.add(key);
   }
@@ -171,10 +263,10 @@ function nodeElementDef(n) {
     group: "nodes",
     data: {
       id: n.node_id,
-      label: preview(n.text, 36),
+      label: nodeLabel(n).replace(" · ", "\n"),
       nodeType: n.node_type,
       status: n.status,
-      fullText: n.text || "",
+      fullText: nodeText(n),
       similarity: n.similarity,
     },
     classes: n._fresh ? "fresh" : "",
@@ -222,6 +314,7 @@ function placeNearNode(originId, index) {
 }
 
 function syncGraph({ fullLayout = false, originNodeId = null } = {}) {
+  if (typeof pausePhysics === "function") pausePhysics();
   const addedNodes = [];
   let newIndex = 0;
 
@@ -238,10 +331,10 @@ function syncGraph({ fullLayout = false, originNodeId = null } = {}) {
       ele = cy.add(def);
       addedNodes.push(ele);
     } else {
-      ele.data("label", preview(n.text, 36));
+      ele.data("label", nodeLabel(n).replace(" · ", "\n"));
       ele.data("nodeType", n.node_type);
       ele.data("status", n.status);
-      ele.data("fullText", n.text || "");
+      ele.data("fullText", nodeText(n));
       if (n._fresh) ele.addClass("fresh");
       else ele.removeClass("fresh");
     }
@@ -249,6 +342,7 @@ function syncGraph({ fullLayout = false, originNodeId = null } = {}) {
 
   for (const [key, e] of state.edges) {
     const def = edgeElementDef(e, key);
+    if (cy.getElementById(e.from_id).empty() || cy.getElementById(e.to_id).empty()) continue;
     let ele = cy.getElementById(def.data.id);
     if (ele.empty()) {
       cy.add(def);
@@ -260,50 +354,75 @@ function syncGraph({ fullLayout = false, originNodeId = null } = {}) {
 
   applyNodeColors();
 
-  if (fullLayout && cy.nodes().length > 1) {
+  if ((fullLayout || (!originNodeId && addedNodes.length > 0)) && cy.nodes().length > 1) {
+    const connected = cy.edges().length > 0;
     cy.layout({
-      name: "cose",
-      animate: true,
-      padding: 40,
-      animationDuration: 250,
+      name: connected ? (cy.nodes().length <= 16 ? "concentric" : "cose") : "grid",
+      animate: false,
+      padding: 60,
+      concentric: node => node.data("nodeType") === "Entity" ? 2 : 1,
+      levelWidth: () => 1,
+      minNodeSpacing: 65,
+      nodeDimensionsIncludeLabels: !connected || cy.nodes().length > 16,
+      avoidOverlap: true,
+      spacingFactor: connected ? 1.1 : 1.15,
+      nodeRepulsion: () => 12000,
+      idealEdgeLength: () => 100,
+      componentSpacing: 180,
       fit: true,
     }).run();
+    if (cy.zoom() > 1.2) cy.zoom({ level: 1.2, renderedPosition: { x: cy.width()/2, y: cy.height()/2 } });
   }
 
   for (const n of state.nodes.values()) n._fresh = false;
+  if (state.selectedId && state.nodes.has(state.selectedId)) showDetail(state.selectedId);
+  updateStats();
+  if (typeof restartPhysics === "function") restartPhysics();
 }
 
 function centerViewOnNode(nodeId) {
   const node = cy.getElementById(nodeId);
   if (node.empty()) return;
-  cy.animate({ center: { eles: node }, duration: 200 });
+  const bounds = node.renderedBoundingBox();
+  if (bounds.x1 >= 24 && bounds.x2 <= cy.width() - 24 && bounds.y1 >= 80 && bounds.y2 <= cy.height() - 100) return;
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) cy.center(node);
+  else cy.animate({ center: { eles: node }, duration: 200 });
 }
 
 let cy = cytoscape({
   container: $("cy"),
   elements: [],
+  wheelSensitivity: 0.05,
+  minZoom: 0.05,
+  maxZoom: 4,
   style: [
     {
       selector: "node",
       style: {
         label: "data(label)",
-        "font-size": 9,
-        color: "#e2e8f0",
+        "font-size": 14,
+        "line-height": 1.4,
+        color: "#d6e5f3",
         "text-valign": "bottom",
-        "text-margin-y": 4,
-        width: 28,
-        height: 28,
+        "text-margin-y": 9,
+        "text-wrap": "wrap",
+        "text-max-width": 160,
+        "text-background-color": "#0b111b",
+        "text-background-opacity": 0.85,
+        "text-background-padding": 3,
+        width: 34,
+        height: 34,
         "border-width": 2,
         "border-color": "#334155",
       },
     },
     {
       selector: "node.fresh",
-      style: { "border-color": "#3b82f6", "border-width": 3 },
+      style: { "border-color": "#bdeee0", "border-width": 3 },
     },
     {
       selector: "node:selected",
-      style: { "border-color": "#fbbf24", "border-width": 3 },
+      style: { "border-color": "#e3edf6", "border-width": 3, "underlay-color": "#79e1cb", "underlay-opacity": 0.15, "underlay-padding": 7 },
     },
     {
       selector: "edge",
@@ -313,17 +432,21 @@ let cy = cytoscape({
         "target-arrow-shape": "triangle",
         "target-arrow-color": "#475569",
         "curve-style": "bezier",
-        label: "data(label)",
-        "font-size": 8,
-        color: "#94a3b8",
+        label: $("edge-labels").checked ? "data(label)" : "",
+        "font-size": 10,
+        color: "#a2b9cd",
+        "text-rotation": "autorotate",
+        "text-background-color": "#0b111b",
+        "text-background-opacity": 0.9,
+        "text-background-padding": 2,
       },
     },
     {
       selector: "edge.edge-contradicts",
       style: {
         width: 2.5,
-        "line-color": "#ef4444",
-        "target-arrow-color": "#ef4444",
+        "line-color": "#f38f9b",
+        "target-arrow-color": "#f38f9b",
         color: "#fca5a5",
       },
     },
@@ -331,8 +454,8 @@ let cy = cytoscape({
       selector: "edge.edge-summarizes",
       style: {
         width: 2,
-        "line-color": "#22d3ee",
-        "target-arrow-color": "#22d3ee",
+        "line-color": "#85c7ed",
+        "target-arrow-color": "#85c7ed",
         color: "#a5f3fc",
       },
     },
@@ -340,8 +463,8 @@ let cy = cytoscape({
       selector: "edge.edge-triplet",
       style: {
         width: 2,
-        "line-color": "#f59e0b",
-        "target-arrow-color": "#f59e0b",
+        "line-color": "#d2ac70",
+        "target-arrow-color": "#d2ac70",
         color: "#fcd34d",
       },
     },
@@ -349,8 +472,8 @@ let cy = cytoscape({
       selector: "edge.edge-path",
       style: {
         width: 3.5,
-        "line-color": "#fbbf24",
-        "target-arrow-color": "#fbbf24",
+        "line-color": "#f0ce83",
+        "target-arrow-color": "#f0ce83",
         "line-style": "solid",
       },
     },
@@ -366,50 +489,87 @@ function applyNodeColors() {
 }
 
 function updateStats() {
-  $("stats-bar").textContent = `${state.nodes.size} nodes · ${state.edges.size} edges`;
+  $("graph-empty").hidden = state.nodes.size > 0;
+  $("tour-section").hidden = state.ownerId !== "luminaria";
+  $("map-title").textContent = state.ownerId === "luminaria" ? "Luminaria" : state.ownerId;
+  $("stats-bar").textContent = `Map: ${cy.nodes().length} nodes · ${cy.edges().length} edges`;
+  $("map-caption").textContent = state.nodes.size ? "Select a node to read its full text." : "Search or choose a model to start.";
+  for (const id of ["btn-fit", "btn-layout", "btn-zoom-in", "btn-zoom-out"]) $(id).disabled = !cy.nodes().length;
 }
 
 async function loadNodeDetail(nodeId) {
+  setInspectorOpen(true);
   const data = await callTool("get_node", ownerArgs({ node_id: nodeId }));
   mergeToolResult(data, {}, { originNodeId: nodeId });
-  showDetail(nodeId, data.node);
+  if (!state.selectedId || state.selectedId === nodeId) showDetail(nodeId);
 }
 
 function showDetail(nodeId, nodeOverride) {
   const n = nodeOverride || state.nodes.get(nodeId);
   if (!n) return;
+  if (state.selectedId !== nodeId) $("detail-history").hidden = true;
   state.selectedId = nodeId;
+  const selectedNode = cy.getElementById(nodeId);
+  if (selectedNode.nonempty() && !selectedNode.selected()) {
+    cy.$(":selected").unselect(); selectedNode.select();
+  }
   $("detail-empty").hidden = true;
   $("detail").hidden = false;
   $("detail-id").textContent = nodeId;
-  $("detail-type").textContent = n.node_type || "—";
+  $("detail-id").title = nodeId;
+  $("btn-copy-id").textContent = "Copy ID";
+  $("detail-type").textContent = n.node_type || "Fact";
+  $("detail-type").dataset.value = n.node_type || "Fact";
   $("detail-status").textContent = n.status || "active";
+  $("detail-status").dataset.value = n.status || "active";
   $("detail-sim").textContent =
-    n.similarity != null ? Number(n.similarity).toFixed(3) : "—";
-  $("detail-text").textContent = n.text || "(no text)";
+    n.similarity != null ? `Similarity ${Number(n.similarity).toFixed(3)}` : "";
+  $("detail-sim").hidden = n.similarity == null;
+  const hint = policyHint(nodeText(n));
+  $("detail-policy").hidden = !hint;
+  $("detail-policy").textContent = hint ? `Review hints (heuristic): ${hint}` : "";
+  $("detail-text").textContent = nodeText(n) || "(no text)";
 
   const related = [];
   for (const e of state.edges.values()) {
-    if (e.from_id === nodeId) related.push(`→ ${e.relation_type} → ${e.to_id}`);
-    if (e.to_id === nodeId) related.push(`← ${e.relation_type} ← ${e.from_id}`);
+    if (e.from_id === nodeId) related.push({ id: e.to_id, kind: `Outgoing · ${e.relation_type}` });
+    if (e.to_id === nodeId) related.push({ id: e.from_id, kind: `Incoming · ${e.relation_type}` });
   }
+  $("detail-metadata").textContent = JSON.stringify({
+    ...n.metadata, ...(n.source ? { source: n.source } : {}),
+    ...(n.created_at ? { created_at: n.created_at } : {}),
+  }, null, 2);
+  const provenance = [
+    ["Source", n.source?.ref], ["Created", n.created_at ? formatTime(n.created_at) : null],
+    ["Author", n.metadata?.created_by], ["Project", n.metadata?.project],
+    ["Tags", n.metadata?.tags?.join(", ")],
+  ].filter(([, value]) => value);
+  $("detail-provenance").innerHTML = provenance.length
+    ? provenance.map(([label, value]) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd>`).join("")
+    : "<dd>No source metadata available.</dd>";
   $("detail-edges").innerHTML = related.length
-    ? related.map((x) => `<li>${x}</li>`).join("")
-    : "<li class='muted'>none in view</li>";
+    ? related.map(r => `<li><button type="button" class="connection-button" data-node-id="${escapeHtml(r.id)}" title="${escapeHtml(r.id)}"><span class="connection-kind">${escapeHtml(r.kind)}</span>${escapeHtml(state.nodes.has(r.id) ? nodeLabel(state.nodes.get(r.id)) : `Node ${r.id.slice(0, 8)}`)}</button></li>`).join("")
+    : "<li class='muted'>No connections in this map. Expand neighbors to explore.</li>";
+  for (const el of document.querySelectorAll("#overview [data-id], #search-results [data-id]")) {
+    el.classList.toggle("active", el.dataset.id === nodeId);
+    el.setAttribute("aria-pressed", String(el.dataset.id === nodeId));
+  }
+
 }
 
 async function loadAnchor(nodeId) {
+  state.selectedId = nodeId;
   state.anchorId = nodeId;
   $("node-id").value = nodeId;
   log(`anchor ${nodeId}`);
   const isEmpty = cy.nodes().length === 0;
   await loadNodeDetail(nodeId);
-  await loadContext(nodeId, { resetOffset: true, originNodeId: nodeId });
+  await loadContext(nodeId, { resetOffset: true, originNodeId: nodeId, fullLayout: isEmpty });
   if (isEmpty) centerViewOnNode(nodeId);
 }
 
 async function loadContext(nodeId, opts = {}) {
-  const depth = opts.depth ?? (Number($("depth").value) || 1);
+  const depth = opts.depth ?? Number($("depth").value);
   const maxNodes = Number($("max-nodes").value) || 10;
   const args = ownerArgs({
     node_id: nodeId,
@@ -461,7 +621,7 @@ async function findSimilar() {
     return;
   }
   const limit = Number($("similar-limit").value) || 5;
-  const threshold = Number($("similar-threshold").value) || 0.55;
+  const threshold = Number($("similar-threshold").value);
   const sim = await callTool(
     "find_similar",
     ownerArgs({
@@ -488,19 +648,19 @@ async function findSimilar() {
 
 async function textSearch() {
   const query = $("search-query").value.trim();
-  if (!query) return;
+  if (!query) { notice("Enter a question to search your memory.", true); return; }
   const limit = Number($("search-limit").value) || 10;
-  const data = await callTool(
-    "search",
-    ownerArgs({ query, limit, ...searchFilters() }),
-  );
+  const args = ownerArgs({ query, limit, ...searchFilters() });
+  if ($("search-compact").checked) args.compact = true;
+  const data = await callTool("search", args);
   mergeToolResult(data, { fresh: true }, { originNodeId: state.anchorId || null });
-  log(`search "${query}" → ${data.results?.length || 0}`);
+  renderResults(data.results || [], data);
+  log(`search "${query}" → ${data.results?.length || 0}${budgetNote(data)}`);
 }
 
 async function recallContext() {
   const query = $("search-query").value.trim();
-  if (!query) return;
+  if (!query) { notice("Enter a question to search your memory.", true); return; }
   const limit = Number($("search-limit").value) || 10;
   const depth = Number($("depth").value) || 1;
   const maxNodes = Number($("max-nodes").value) || 10;
@@ -515,8 +675,10 @@ async function recallContext() {
   });
   if (filters.metadata_filter) args.metadata_filter = filters.metadata_filter;
   if (filters.include_outdated) args.include_outdated = true;
+  if ($("search-compact").checked) args.compact = true;
   const data = await callTool("recall_context", args);
   mergeToolResult(data, { fresh: true }, { fullLayout: true });
+  renderResults(data.seeds || [], data);
   const seed = data.seeds?.[0]?.node_id;
   if (seed) {
     state.anchorId = seed;
@@ -524,8 +686,16 @@ async function recallContext() {
     centerViewOnNode(seed);
   }
   log(
-    `recall "${query}" → ${data.nodes?.length || 0} nodes, ${data.seeds?.length || 0} seeds`,
+    `recall "${query}" → ${data.nodes?.length || 0} nodes, ${data.seeds?.length || 0} seeds${budgetNote(data)}`,
   );
+}
+
+function budgetNote(data) {
+  const b = data && data.budget;
+  if (!b) return "";
+  const cap = b.tokens_max != null ? `/${b.tokens_max}` : "";
+  const cut = b.truncated ? " truncated" : "";
+  return ` · ${b.mode || "full"} ~${b.tokens_est}${cap}${cut}`;
 }
 
 function renderOverview(data) {
@@ -540,15 +710,24 @@ function renderOverview(data) {
     : "no stats";
 
   const blocks = [];
+  const about = data.about;
+  if (about && (about.text || about.snippet)) {
+    const aboutText = about.text || about.snippet;
+    blocks.push(
+      `<div class="ov-block"><h3>About</h3><ul class="ov-list"><li data-id="${escapeHtml(about.node_id)}">${escapeHtml(preview(aboutText, 140))}</li></ul></div>`,
+    );
+  }
 
   const top = data.top_facts || [];
+  const rankedByDegree = top.some((f) => f.degree != null);
   if (top.length) {
-    blocks.push(`<div class="ov-block"><h3>Top facts</h3><ul class="ov-list">
+    blocks.push(`<div class="ov-block"><h3>${rankedByDegree ? "Most linked" : "Recent"}</h3><ul class="ov-list">
       ${top
-        .map(
-          (f) =>
-            `<li data-id="${f.node_id}" title="${f.node_id}">${preview(f.text, 56)}${f.degree != null ? ` <span class="muted">·${f.degree}</span>` : ""}</li>`,
-        )
+        .map((f) => {
+          const text = nodeText(f);
+          const noise = policyHint(text);
+          return `<li data-id="${escapeHtml(f.node_id)}" title="${escapeHtml(f.node_id)}">${escapeHtml(preview(text, 90))}${f.degree != null ? ` <span class="muted">·${escapeHtml(f.degree)}</span>` : ""}${noise ? ` <span class="chip-noise">${noise}</span>` : ""}</li>`;
+        })
         .join("")}
     </ul></div>`);
   }
@@ -559,10 +738,10 @@ function renderOverview(data) {
       ${contra
         .map(
           (c) =>
-            `<li class="contradict" data-from="${c.from_id}" data-to="${c.to_id}">
-              <span data-id="${c.from_id}">${preview(c.from_text, 28)}</span>
+            `<li class="contradict" data-from="${escapeHtml(c.from_id)}" data-to="${escapeHtml(c.to_id)}">
+              <span data-id="${escapeHtml(c.from_id)}">${escapeHtml(preview(c.from_text, 28))}</span>
               <span class="sep">⚡</span>
-              <span data-id="${c.to_id}">${preview(c.to_text, 28)}</span>
+              <span data-id="${escapeHtml(c.to_id)}">${escapeHtml(preview(c.to_text, 28))}</span>
             </li>`,
         )
         .join("")}
@@ -571,14 +750,14 @@ function renderOverview(data) {
 
   const stale = data.stale_facts || [];
   if (stale.length) {
-    blocks.push(`<div class="ov-block"><h3>Stale</h3><ul class="ov-list">
+    blocks.push(`<details class="ov-block"><summary>Not recently accessed</summary><ul class="ov-list">
       ${stale
         .map(
           (f) =>
-            `<li data-id="${f.node_id}" title="${f.node_id}">${preview(f.text, 56)}</li>`,
+            `<li data-id="${escapeHtml(f.node_id)}" title="${escapeHtml(f.node_id)}">${escapeHtml(preview(f.text, 90))}</li>`,
         )
         .join("")}
-    </ul></div>`);
+    </ul></details>`);
   }
 
   $("overview").innerHTML = blocks.length
@@ -586,13 +765,15 @@ function renderOverview(data) {
     : `<p class="muted">empty owner</p>`;
 }
 
-async function loadBrief() {
-  const data = await callTool("get_brief", ownerArgs({ limit: 10 }));
+async function loadBrief({ open = true, seedGraph = true } = {}) {
+  const data = await callTool("get_brief", ownerArgs({ limit: 10, include_stale: true }));
   renderOverview(data);
+  $("overview-section").open = open;
+  if (!seedGraph) { updateStats(); log("project brief loaded"); return; }
   // seed graph with top + contradict endpoints for click targets
   const seedNodes = [
+    ...(data.about ? [data.about] : []),
     ...(data.top_facts || []),
-    ...(data.stale_facts || []),
   ];
   for (const c of data.contradictions || []) {
     seedNodes.push(
@@ -610,7 +791,7 @@ async function loadBrief() {
   syncGraph({ fullLayout: cy.nodes().length === 0 && seedNodes.length > 1 });
   updateStats();
   log(
-    `brief: top=${data.top_facts?.length || 0} contra=${data.contradictions?.length || 0} stale=${data.stale_facts?.length || 0}`,
+    `brief: top=${data.top_facts?.length || 0} contra=${data.contradictions?.length || 0} stale=${data.stale_count || 0}`,
   );
 }
 
@@ -641,19 +822,36 @@ async function runTrace() {
   mergeNodes(nodes, { fresh: true });
   mergeEdges(edgesFromTrace(nodes, data.relations || []), { path: true });
   syncGraph({ fullLayout: true, originNodeId: fromId });
-  centerViewOnNode(fromId);
+  if (cy.nodes().length === nodes.length) {
+    const order = new Map(nodes.map((node, index) => [node.node_id, index]));
+    cy.layout({ name: "grid", rows: 1, padding: 80,
+      nodeDimensionsIncludeLabels: true,
+      sort: (a, b) => order.get(a.id()) - order.get(b.id()),
+    }).run();
+  }
   log(`trace ${fromId} → ${toId}: ${nodes.length} nodes`);
 }
 
 function clearGraph() {
+  for (const el of document.querySelectorAll("#overview [data-id], #search-results [data-id]")) {
+    el.classList.remove("active"); el.setAttribute("aria-pressed", "false");
+  }
+  for (const id of ["btn-wheat", "btn-corn", "btn-both"]) $(id).setAttribute("aria-pressed", "false");
+  if (typeof pausePhysics === "function") pausePhysics();
+  state.generation++;
   cy.elements().remove();
   state.nodes.clear();
   state.edges.clear();
   state.neighborOffset.clear();
   state.pathEdgeKeys.clear();
   state.selectedId = null;
+  state.anchorId = null;
+  state.hoverId = null;
+  $("hover-plus").classList.remove("visible");
+  $("node-id").value = "";
   updateStats();
   $("detail").hidden = true;
+  $("detail-history").hidden = true;
   $("detail-empty").hidden = false;
   log("graph cleared");
 }
@@ -733,23 +931,45 @@ hoverPlus.addEventListener("click", (e) => {
 });
 
 $("owner-id").value = state.ownerId;
-$("owner-id").addEventListener("change", () => {
+function syncOwner() {
+  const owner = $("owner-id").value.trim() || "default";
+  if (owner === state.ownerId) return false;
+
+  if ($("evolution-dialog").open) $("evolution-dialog").close();
+  state.generation++;
+  clearGraph();
+  $("overview").replaceChildren();
+  $("overview-stats").textContent = "Loading workspace…";
+  $("results-section").hidden = true;
+  $("search-results").replaceChildren();
+  $("trace-from").value = "";
+  $("trace-to").value = "";
+  $("filter-project").value = "";
+  $("filter-tags").value = "";
   state.ownerId = $("owner-id").value.trim() || "default";
+  $("owner-id").value = state.ownerId;
   localStorage.setItem("gm_owner_id", state.ownerId);
-  loadBrief().catch((e) => log(`brief: ${e.message}`));
+  updateStats();
+  return true;
+}
+$("owner-id").addEventListener("change", () => {
+  if (syncOwner()) loadBrief().catch(e => notice(e.message, true));
+});
+$("owner-id").addEventListener("blur", () => {
+  if (syncOwner()) loadBrief().catch(e => notice(e.message, true));
 });
 
 $("btn-brief").addEventListener("click", () => {
-  loadBrief().catch((e) => log(`brief: ${e.message}`));
+  loadBrief().catch((e) => log(`brief error: ${e.message}`));
 });
 
 $("overview").addEventListener("click", (e) => {
-  const idEl = e.target.closest("[data-id]");
+  const pair = e.target.closest("[data-from][data-to]");
+  const idEl = pair ? null : e.target.closest("[data-id]");
   if (idEl?.dataset.id) {
     loadAnchor(idEl.dataset.id).catch((err) => log(err.message));
     return;
   }
-  const pair = e.target.closest("[data-from][data-to]");
   if (pair) {
     $("trace-from").value = pair.dataset.from;
     $("trace-to").value = pair.dataset.to;
@@ -760,11 +980,11 @@ $("overview").addEventListener("click", (e) => {
 $("btn-load-node").addEventListener("click", () => {
   const id = $("node-id").value.trim();
   if (!id) return;
-  loadAnchor(id).catch((e) => log(`load: ${e.message}`));
+  loadAnchor(id).catch((e) => log(`load error: ${e.message}`));
 });
 
 $("btn-search").addEventListener("click", () => {
-  textSearch().catch((e) => log(`search: ${e.message}`));
+  textSearch().catch((e) => log(`search error: ${e.message}`));
 });
 
 $("btn-recall").addEventListener("click", () => {
@@ -772,7 +992,7 @@ $("btn-recall").addEventListener("click", () => {
 });
 
 $("btn-trace").addEventListener("click", () => {
-  runTrace().catch((e) => log(`trace: ${e.message}`));
+  runTrace().catch((e) => log(`trace error: ${e.message}`));
 });
 
 $("btn-similar").addEventListener("click", () => {
@@ -781,7 +1001,7 @@ $("btn-similar").addEventListener("click", () => {
 
 $("btn-context").addEventListener("click", () => {
   const id = state.anchorId || $("node-id").value.trim();
-  if (!id) return;
+  if (!id) { notice("Select an anchor node first.", true); return; }
   loadContext(id, { originNodeId: id }).catch((e) => log(`context: ${e.message}`));
 });
 
@@ -789,7 +1009,7 @@ $("btn-hop").addEventListener("click", () => {
   const d = Number($("depth").value) || 1;
   $("depth").value = String(Math.min(3, d + 1));
   const id = state.anchorId || $("node-id").value.trim();
-  if (!id) return;
+  if (!id) { notice("Select an anchor node first.", true); return; }
   loadContext(id, { depth: Number($("depth").value), originNodeId: id }).catch((e) =>
     log(`hop: ${e.message}`),
   );
@@ -815,24 +1035,105 @@ $("btn-trace-to").addEventListener("click", () => {
 });
 
 async function checkHealth() {
+  const generation = state.generation;
   const badge = $("status-badge");
   try {
     const res = await fetch("/health");
     const data = await res.json();
     if (data.ready) {
-      badge.textContent = "DB connected";
+      badge.textContent = "Memory connected";
       badge.className = "badge badge-ok";
-      loadBrief().catch((e) => log(`brief: ${e.message}`));
+      if (generation === state.generation) loadBrief({ open: window.innerWidth > 600, seedGraph: false }).catch((e) => log(`brief error: ${e.message}`));
     } else {
-      badge.textContent = "DB offline";
+      badge.textContent = "Memory offline";
+      notice("MCP is unavailable. Check the port-forward and restart Explorer to reconnect.", true);
       badge.className = "badge badge-err";
     }
   } catch {
-    badge.textContent = "server error";
+    badge.textContent = "Connection error";
+    notice("Explorer cannot reach its backend. Check the local server.", true);
     badge.className = "badge badge-err";
   }
 }
 
+function renderResults(nodes, data) {
+  $("results-section").hidden = false;
+  $("overview-section").open = false;
+  $("result-summary").textContent = `${nodes.length} results${data.budget?.tokens_est != null ? ` · ≈${data.budget.tokens_est} tokens` : ""}. Open a result for full text.`;
+  $("search-results").innerHTML = nodes.length
+    ? `<ul class="ov-list">${nodes.map(n => `<li data-id="${escapeHtml(n.node_id)}">${escapeHtml(preview(nodeText(n), 150))}<span class="result-meta">${escapeHtml(n.node_type || "Fact")}${n.similarity != null ? ` · similarity ${Number(n.similarity).toFixed(3)}` : ""}</span></li>`).join("")}</ul>`
+    : '<p class="muted">No matches. Try a broader question or adjust your filters.</p>';
+  if (!nodes.length) notice("No matches. Try a broader question or adjust your filters.");
+}
+
+$("search-results").addEventListener("click", e => {
+  const id = e.target.closest("[data-id]")?.dataset.id;
+  if (id) loadAnchor(id).catch(error => notice(error.message, true));
+});
+$("search-query").addEventListener("keydown", e => {
+  if (e.key === "Enter") textSearch().catch(error => notice(error.message, true));
+});
+$("node-id").addEventListener("keydown", e => {
+  if (e.key === "Enter") $("btn-load-node").click();
+});
+$("btn-fit").addEventListener("click", () => cy.fit(undefined, 60));
+$("btn-layout").addEventListener("click", () => syncGraph({ fullLayout: true }));
+function zoomBy(factor) {
+  cy.zoom({ level: Math.min(cy.maxZoom(), Math.max(cy.minZoom(), cy.zoom() * factor)), renderedPosition: { x: cy.width()/2, y: cy.height()/2 } });
+}
+$("btn-zoom-in").addEventListener("click", () => zoomBy(1.25));
+$("btn-zoom-out").addEventListener("click", () => zoomBy(.8));
+cy.on("zoom", () => { $("zoom-level").textContent = `${Math.round(cy.zoom()*100)}%`; });
+$("edge-labels").addEventListener("change", () => {
+  cy.style().selector("edge").style("label", $("edge-labels").checked ? "data(label)" : "").update();
+});
+$("btn-present").addEventListener("click", () => {
+  const active = document.body.classList.toggle("presenting");
+  $("btn-present").setAttribute("aria-pressed", String(active));
+  $("btn-present").textContent = active ? "Exit present" : "Present";
+  cy.resize();
+  cy.fit(undefined, 60);
+});
+$("btn-inspector").addEventListener("click", () => setInspectorOpen($("inspector-panel").hidden));
+$("btn-dismiss-notice").addEventListener("click", () => { $("notice").hidden = true; });
+$("btn-copy-id").addEventListener("click", async () => {
+  if (!state.selectedId) return;
+  try { await navigator.clipboard.writeText(state.selectedId); $("btn-copy-id").textContent = "Copied"; }
+  catch { notice("Copy is unavailable. Select the node ID to copy it manually.", true); }
+});
+$("detail-edges").addEventListener("click", e => {
+  const id = e.target.closest("[data-node-id]")?.dataset.nodeId;
+  if (!id) return;
+  showDetail(id);
+  cy.$(":selected").unselect(); cy.getElementById(id).select();
+  centerViewOnNode(id);
+  loadNodeDetail(id).catch(error => notice(error.message, true));
+});
+for (const [id, field] of [["btn-trace-from", "trace-from"], ["btn-trace-to", "trace-to"]]) {
+  $(id).addEventListener("click", () => {
+    document.querySelector(".advanced").open = true;
+    if (document.body.classList.contains("presenting")) $("btn-present").click();
+    $(field).scrollIntoView({ block: "nearest" });
+    $(field).focus();
+  });
+}
+cy.on("mouseover", "edge", event => { event.target.style("label", event.target.data("label")); });
+cy.on("mouseout", "edge", event => { event.target.removeStyle("label"); });
+new ResizeObserver(() => cy.resize()).observe($("cy"));
+for (const el of document.querySelectorAll("input, select")) {
+  if (!el.labels?.length) el.setAttribute("aria-label", el.placeholder || el.title || el.id.replaceAll("-", " "));
+}
+function activateListItem(e) {
+  if ((e.key === "Enter" || e.key === " ") && e.target.matches("li[data-id], li[data-from]")) {
+    e.preventDefault(); e.target.click();
+  }
+}
+for (const id of ["overview", "search-results"]) {
+  $(id).addEventListener("keydown", activateListItem);
+  new MutationObserver(() => {
+    $(id).querySelectorAll("li[data-id], li[data-from]").forEach(el => { el.tabIndex = 0; el.setAttribute("role", "button"); });
+  }).observe($(id), { childList: true, subtree: true });
+}
 checkHealth();
 updateStats();
 log("ready — Brief loads overview; Search / Recall / Trace explore");
