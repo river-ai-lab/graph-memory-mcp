@@ -75,6 +75,8 @@ def test_explorer_api_with_mock_client():
         assert 'id="btn-recall"' in page.text
         assert 'id="btn-trace"' in page.text
         assert 'id="search-status"' in page.text
+        assert 'id="search-compact"' in page.text
+        assert 'id="detail-policy"' in page.text
 
         static = client.get("/static/explorer.js")
         assert static.status_code == 200

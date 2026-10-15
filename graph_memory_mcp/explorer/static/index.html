@@ -5,144 +5,94 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Graph Memory Explorer</title>
   <link rel="stylesheet" href="/static/explorer.css" />
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.30.2/cytoscape.min.js"></script>
+  <script src="/static/cytoscape.min.js"></script>
 </head>
 <body>
   <header class="topbar">
-    <h1>Graph Memory Explorer</h1>
-    <span id="status-badge" class="badge badge-warn">checking…</span>
-    <span id="stats-bar" class="stats"></span>
+    <div class="brand-mark" aria-hidden="true">◈</div>
+    <div class="brand"><span class="eyebrow">CONNECTED KNOWLEDGE</span><h1>Graph Memory Explorer</h1></div>
+    <span class="read-only">Read only</span>
+    <span id="status-badge" class="badge badge-warn">Connecting…</span>
+    <span id="stats-bar" class="stats" aria-live="polite"></span>
+    <div class="header-actions"><button id="btn-evolution" type="button" class="secondary">Evolution</button><button id="btn-present" class="secondary" type="button" aria-pressed="false">Present</button></div>
   </header>
 
   <div class="layout">
-    <aside class="panel panel-left">
+    <aside class="panel panel-left" aria-label="Explore memory">
+      <div class="panel-heading"><span class="eyebrow">WORKSPACE</span><h2>Explore memory</h2></div>
       <section>
-        <label>owner_id</label>
-        <div class="row">
-          <input id="owner-id" type="text" value="default" placeholder="default" />
-          <button id="btn-brief" type="button">Brief</button>
-        </div>
+        <label for="owner-id">Memory owner</label>
+        <div class="row owner-row"><input id="owner-id" type="text" value="default" placeholder="default" /><button id="btn-brief" type="button" class="secondary">Brief</button></div>
       </section>
-
-      <section id="overview-section">
-        <label>Overview</label>
-        <p id="overview-stats" class="muted">Load brief to see top facts.</p>
-        <div id="overview"></div>
+      <section id="tour-section" hidden>
+        <label>Model lenses · Luminaria</label>
+        <div class="model-lenses"><button id="btn-wheat" title="Architecture view; mentions are hidden" type="button" class="secondary" aria-pressed="false">Spring wheat</button><button id="btn-corn" title="Architecture view; mentions are hidden" type="button" class="secondary" aria-pressed="false">Corn</button><button id="btn-both" title="Shared architecture; mentions are hidden" type="button" class="secondary" aria-pressed="false">Both models</button></div>
       </section>
-
-      <section>
-        <label>Anchor node ID</label>
-        <div class="row">
-          <input id="node-id" type="text" placeholder="e.g. uuid hex" />
-          <button id="btn-load-node" type="button">Load</button>
-        </div>
+      <section class="search-section">
+        <label for="search-query">Ask your memory</label>
+        <input id="search-query" type="text" placeholder="What do we know about…?" />
+        <div class="search-actions"><button id="btn-search" type="button">Search</button><button id="btn-recall" type="button" class="secondary" title="Search and expand connected context">Recall context</button></div>
+        <details class="search-options"><summary>Search options</summary>
+          <div class="row"><label class="inline" for="search-limit">Results</label><input id="search-limit" type="number" value="10" min="1" max="50" /><label class="chk" title="Short previews; open a node for its full text"><input id="search-compact" type="checkbox" checked /> Compact</label></div>
+          <div class="row filters"><select id="search-status" aria-label="Search status"><option value="">Any status</option><option value="active">Active</option><option value="outdated">Outdated</option><option value="archived">Archived</option></select><label class="chk"><input id="type-fact" type="checkbox" checked /> Fact</label><label class="chk"><input id="type-entity" type="checkbox" checked /> Entity</label></div>
+          <p class="filter-note muted">Type and status filter Search. Recall expands connected context.</p>
+          <div class="row"><input id="filter-project" type="text" placeholder="Project" aria-label="Filter by project" /><input id="filter-tags" type="text" placeholder="Tags, separated by commas" aria-label="Filter by tags" /></div>
+        </details>
       </section>
-
-      <section>
-        <label>Search / recall</label>
-        <input id="search-query" type="text" placeholder="query…" />
-        <div class="row">
-          <label class="inline">limit</label>
-          <input id="search-limit" type="number" value="10" min="1" max="50" />
-          <button id="btn-search" type="button">Search</button>
-          <button id="btn-recall" type="button">Recall</button>
-        </div>
-        <div class="row filters">
-          <select id="search-status" title="status">
-            <option value="">status: any</option>
-            <option value="active">active</option>
-            <option value="outdated">outdated</option>
-            <option value="archived">archived</option>
-          </select>
-          <label class="inline chk"><input id="type-fact" type="checkbox" checked /> Fact</label>
-          <label class="inline chk"><input id="type-entity" type="checkbox" checked /> Entity</label>
-        </div>
-        <div class="row">
-          <input id="filter-project" type="text" placeholder="project" />
-          <input id="filter-tags" type="text" placeholder="tags (a, b)" />
-        </div>
-      </section>
-
-      <section>
-        <label>Trace A → B</label>
-        <input id="trace-from" type="text" placeholder="from_id" />
-        <input id="trace-to" type="text" placeholder="to_id" />
-        <div class="row">
-          <label class="inline">depth</label>
-          <input id="trace-depth" type="number" value="5" min="1" max="10" />
-          <label class="inline chk"><input id="trace-undirected" type="checkbox" /> undirected</label>
-          <button id="btn-trace" type="button">Trace</button>
-        </div>
-      </section>
-
-      <section>
-        <label>Similar facts (from anchor)</label>
-        <div class="row">
-          <label class="inline">top</label>
-          <input id="similar-limit" type="number" value="5" min="1" max="30" />
-          <label class="inline">threshold</label>
-          <input id="similar-threshold" type="number" value="0.55" min="0" max="1" step="0.05" />
-        </div>
-        <button id="btn-similar" type="button">Find similar</button>
-      </section>
-
-      <section>
-        <label>Graph expansion</label>
-        <div class="row">
-          <label class="inline">depth</label>
-          <input id="depth" type="number" value="1" min="0" max="3" />
-          <label class="inline">max_nodes</label>
-          <input id="max-nodes" type="number" value="10" min="1" max="50" />
-        </div>
-        <div class="row">
-          <button id="btn-context" type="button">Context</button>
-          <button id="btn-hop" type="button">+1 hop</button>
-          <button id="btn-clear" type="button" class="secondary">Clear graph</button>
-        </div>
-      </section>
-
-      <section class="legend">
-        <label>Edge legend</label>
-        <ul class="legend-list">
-          <li><span class="swatch swatch-contradicts"></span> CONTRADICTS</li>
-          <li><span class="swatch swatch-summarizes"></span> SUMMARIZES</li>
-          <li><span class="swatch swatch-triplet"></span> triplet / other</li>
-          <li><span class="swatch swatch-default"></span> RELATED / MENTIONS…</li>
-          <li><span class="swatch swatch-path"></span> path (trace)</li>
-        </ul>
-      </section>
-
-      <section id="log-section">
-        <label>Log</label>
-        <pre id="log"></pre>
-      </section>
+      <section id="results-section" hidden><label>Search results</label><p id="result-summary" class="muted"></p><div id="search-results"></div></section>
+      <details id="overview-section" class="sidebar-disclosure" open><summary>Project brief</summary><p id="overview-stats" class="muted">Load a brief to see the project context.</p><div id="overview"></div></details>
+      <details class="sidebar-disclosure"><summary>Load a node</summary><label for="node-id">Node ID</label><div class="row"><input id="node-id" type="text" placeholder="Paste a node ID" /><button id="btn-load-node" type="button" class="secondary">Load</button></div></details>
+      <details class="advanced sidebar-disclosure"><summary>Trace & discovery</summary>
+        <section><label>Find a path</label><input id="trace-from" type="text" placeholder="From node ID" aria-label="Trace from node" /><input id="trace-to" type="text" placeholder="To node ID" aria-label="Trace to node" /><div class="row"><label class="inline" for="trace-depth">Depth</label><input id="trace-depth" type="number" value="5" min="1" max="10" /><label class="chk"><input id="trace-undirected" type="checkbox" /> Both directions</label><button id="btn-trace" type="button">Trace</button></div></section>
+        <section><label>Similar facts from your anchor</label><div class="row"><label class="inline" for="similar-limit">Results</label><input id="similar-limit" type="number" value="5" min="1" max="30" /><label class="inline" for="similar-threshold">Threshold</label><input id="similar-threshold" type="number" value="0.55" min="0" max="1" step="0.05" /></div><button id="btn-similar" type="button" class="secondary">Find similar</button></section>
+      </details>
+      <details class="sidebar-disclosure"><summary>Expand the map</summary><div class="row"><label class="inline" for="depth">Depth</label><input id="depth" type="number" value="1" min="0" max="3" /><label class="inline" for="max-nodes">Node limit</label><input id="max-nodes" type="number" value="10" min="1" max="50" /></div><div class="row"><button id="btn-context" type="button" class="secondary">Context</button><button id="btn-hop" type="button" class="secondary">+1 hop</button><button id="btn-clear" type="button" class="secondary">Clear map</button></div></details>
+      <details class="legend sidebar-disclosure"><summary>Relation legend</summary><ul class="legend-list"><li><span class="swatch swatch-contradicts"></span>Contradicts</li><li><span class="swatch swatch-summarizes"></span>Summarizes</li><li><span class="swatch swatch-triplet"></span>Domain relation</li><li><span class="swatch swatch-default"></span>Related / mentions</li><li><span class="swatch swatch-path"></span>Highlighted path</li></ul></details>
+      <details id="log-section" class="sidebar-disclosure"><summary>Activity log</summary><pre id="log"></pre></details>
     </aside>
 
     <main class="graph-wrap">
-      <div id="cy"></div>
-      <div id="hover-plus" class="hover-plus" title="Load 10 neighbors">+</div>
+      <div class="canvas-heading"><div><span class="eyebrow">KNOWLEDGE MAP</span><h2 id="map-title">Your memory</h2><span id="map-caption" class="muted">Select a node to read its full text.</span></div><div class="canvas-actions"><label class="chk"><input id="edge-labels" type="checkbox" /> Relations</label><button id="btn-inspector" type="button" class="secondary" aria-expanded="true" aria-controls="inspector-panel">Details</button></div></div>
+      <div id="cy" role="img" aria-label="Interactive knowledge graph"></div>
+      <div id="graph-empty" class="graph-empty"><div class="empty-orbit" aria-hidden="true">◈</div><h2>Start with a question.</h2><p>Search your memory or choose a model<br />to explore its facts and connections.</p></div>
+      <div id="notice" class="notice" role="status" aria-live="polite" hidden><span id="notice-text"></span><button id="btn-dismiss-notice" type="button" aria-label="Dismiss message">×</button></div>
+      <div class="graph-toolbar" role="toolbar" aria-label="Map controls"><div class="map-actions"><button id="btn-fit" type="button" class="secondary" title="Show the whole map">Fit view</button><button id="btn-layout" type="button" class="secondary" title="Rearrange nodes">Arrange</button><button id="btn-physics" type="button" class="secondary" aria-pressed="false" title="Enable attraction along connections and node repulsion">Physics</button></div><div class="zoom-controls"><button id="btn-zoom-out" type="button" class="secondary" aria-label="Zoom out">−</button><span id="zoom-level">100%</span><button id="btn-zoom-in" type="button" class="secondary" aria-label="Zoom in">+</button></div></div>
+      <div class="canvas-footer"><span><i class="dot fact-dot"></i>Fact</span><span><i class="dot entity-dot"></i>Entity</span><span>Drag to move · Scroll to zoom</span></div>
+      <button id="hover-plus" type="button" class="hover-plus" title="Load 10 neighbors" aria-label="Load 10 neighbors">+</button>
     </main>
 
-    <aside class="panel panel-right">
-      <h2>Node detail</h2>
-      <p id="detail-empty" class="muted">Click a node to see full text.</p>
+    <aside id="inspector-panel" class="panel panel-right" aria-label="Node details">
+      <span class="eyebrow">INSPECTOR</span><h2>Node details</h2>
+      <p id="detail-empty" class="muted">Select a node or a search result to read its full text and explore its connections.</p>
       <div id="detail" hidden>
-        <p><strong>ID</strong> <span id="detail-id"></span></p>
-        <p><strong>Type</strong> <span id="detail-type"></span></p>
-        <p><strong>Status</strong> <span id="detail-status"></span></p>
-        <p><strong>Similarity</strong> <span id="detail-sim"></span></p>
-        <label>Text</label>
+        <div class="detail-badges"><span id="detail-type" class="node-chip"></span><span id="detail-status" class="node-chip"></span><span id="detail-sim" class="node-chip"></span></div>
+        <p id="detail-policy" class="policy-hint" hidden></p>
         <pre id="detail-text"></pre>
-        <label>Edges</label>
-        <ul id="detail-edges"></ul>
-        <button id="btn-set-anchor" type="button">Set as anchor</button>
-        <button id="btn-neighbors" type="button">+10 neighbors</button>
-        <button id="btn-trace-from" type="button" class="secondary">Trace from</button>
-        <button id="btn-trace-to" type="button" class="secondary">Trace to</button>
+        <div class="detail-actions"><button id="btn-neighbors" type="button">Expand neighbors</button><button id="btn-set-anchor" type="button" class="secondary">Explore context</button></div>
+        <div class="detail-id-row"><span id="detail-id"></span><button id="btn-copy-id" type="button" class="secondary">Copy ID</button></div>
+        <label>Connections in this map</label><ul id="detail-edges"></ul>
+        <div class="trace-actions"><button id="btn-trace-from" type="button" class="secondary">Trace from</button><button id="btn-trace-to" type="button" class="secondary">Trace to</button></div>
+        <details class="sidebar-disclosure provenance"><summary>Source & metadata</summary><dl id="detail-provenance"></dl><details><summary>Raw metadata</summary><pre id="detail-metadata"></pre></details><button id="btn-history" type="button" class="secondary">Version history</button><pre id="detail-history" hidden></pre></details>
       </div>
     </aside>
   </div>
 
+  <dialog id="evolution-dialog" aria-labelledby="evolution-title">
+    <div class="evolution-header"><div><span class="eyebrow">GRAPH MEMORY × GRAPHDIFF</span><h2 id="evolution-title">How your memory evolves</h2></div><button id="btn-close-evolution" class="secondary" type="button">Close</button></div>
+    <p class="muted">Inspect activity by date, or compare two saved observations.</p>
+    <p id="evolution-scope" class="scope-note">Capture the loaded map to begin. Each map belongs to one owner.</p>
+    <div class="row capture-actions"><button id="btn-capture-map" type="button">Capture map</button><button id="btn-export-capture" type="button" class="secondary" disabled>Download snapshot</button><label class="snapshot-import">Import snapshots<input id="import-captures" type="file" accept=".json,application/json" multiple /></label></div>
+    <div class="evolution-grid">
+      <section><h3>Activity by period</h3><label for="evolution-period">Look back from capture time</label><select id="evolution-period"><option value="1">Last 24 hours</option><option value="7" selected>Last 7 days</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option><option value="custom">Custom dates</option></select><div id="custom-period" hidden class="row"><label>From<input id="period-start" type="datetime-local" /></label><label>Through<input id="period-end" type="datetime-local" /></label><span class="muted">Dates use your browser timezone.</span></div><button id="btn-period" type="button" disabled>Show activity</button></section>
+      <section><h3>Compare snapshots</h3><label for="capture-before">Before</label><select id="capture-before"><option value="">Capture or import first</option></select><label for="capture-after">After</label><select id="capture-after"><option value="">Capture or import first</option></select><button id="btn-compare-captures" type="button" disabled>Compare with GraphDiff</button><p id="evolution-compare-hint" class="muted"></p></section>
+    </div>
+    <p id="evolution-status" role="status" aria-live="polite" class="muted"></p>
+    <div id="evolution-summary" class="evolution-summary"></div><div id="evolution-results"></div>
+    <details class="evolution-caveat"><summary>What this view can tell you</summary><p>Activity shows surviving objects by their creation and update dates. It cannot recover deleted objects or earlier text and status. Comparing partial maps shows changes in those views; a full graph diff needs two complete captures.</p></details>
+  </dialog>
+  <script src="/static/forces.js"></script>
   <script src="/static/explorer.js"></script>
+  <script src="/static/physics.js"></script>
+  <script src="/static/evolution.js"></script>
 </body>
 </html>
