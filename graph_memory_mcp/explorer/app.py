@@ -13,6 +13,7 @@ from starlette.responses import FileResponse, JSONResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
+from graph_memory_mcp.explorer import evolution
 from graph_memory_mcp.explorer.mcp_client import McpToolClient
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,7 @@ def create_app(mcp_client: McpToolClient) -> Starlette:
         payload: dict[str, Any] = {
             "ready": False,
             "mcp_url": mcp_client.url,
+            "graph_diff_available": evolution.graphdiff_available(),
         }
         if not mcp_client.connected:
             payload["error"] = "MCP server not connected"
@@ -122,10 +124,54 @@ def create_app(mcp_client: McpToolClient) -> Starlette:
 
         return JSONResponse(result)
 
+    async def evolution_tool(request: Request) -> JSONResponse:
+        if not evolution.graphdiff_available():
+            return JSONResponse(
+                {
+                    "success": False,
+                    "error": "GraphDiff is not configured. Start Explorer with --graph-diff-path pointing to the graph-diff checkout.",
+                },
+                status_code=503,
+            )
+        try:
+            raw = await request.body()
+            if len(raw) > 4_000_000:
+                raise ValueError("Snapshot payload exceeds 4 MB")
+            body = await request.json()
+            if not isinstance(body, dict):
+                raise ValueError("Expected a JSON object")
+            action = request.path_params["action"]
+            if action == "capture":
+                if not mcp_client.connected:
+                    return JSONResponse(
+                        {"success": False, "error": "MCP server not connected"},
+                        status_code=503,
+                    )
+                result = await evolution.capture_map(mcp_client, body)
+            elif action == "activity":
+                result = evolution.activity(body)
+            elif action == "compare":
+                result = evolution.compare(body)
+            else:
+                raise ValueError("Unknown evolution action")
+            return JSONResponse(result)
+        except (ValueError, TypeError, KeyError) as exc:
+            return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
+        except Exception:
+            logger.exception("Evolution analysis failed")
+            return JSONResponse(
+                {
+                    "success": False,
+                    "error": "Evolution analysis failed; inspect the local Explorer log.",
+                },
+                status_code=500,
+            )
+
     routes = [
         Route("/", index),
         Route("/health", health),
         Route("/api/tools", list_tools),
+        Route("/api/evolution/{action}", evolution_tool, methods=["POST"]),
         Route("/api/tool", call_tool, methods=["POST"]),
         Mount("/static", StaticFiles(directory=STATIC_DIR), name="static"),
     ]

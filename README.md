@@ -90,17 +90,27 @@ Backed by **FalkorDB** by default. `GRAPH_BACKEND=arcadedb` uses ArcadeDB with t
 
 ## Where it fits
 
+Mem0 remembers facts. Graph Memory keeps them current.
+
 This server is the store. The agent writes the fact, the `owner_id`, the TTL, and the edge. Search returns what was stored. Embeddings are the only model call inside the server.
 
-[Mem0](https://docs.mem0.ai/) (v3) extracts memories from conversations with an LLM (one call per add by default; `infer=False` stores text verbatim). Memories are add-only (nothing is overwritten or deleted), with optional `expiration_date` (hidden from search after the date). Search uses semantic + BM25 + entity signals from a built-in graph. [Graphiti](https://github.com/getzep/graphiti) (the library behind Zep) ingests episodes and keeps a bi-temporal graph: a new fact invalidates the old one, and the old one stays queryable by time.
+- **Real graph you can traverse, in open source. Not a hidden ranking signal.** Mem0 OSS has no graph. The Platform graph only changes search order. Here the agent walks the edges.
+- **Outdated is marked.** Mem0 keeps both facts and ranks the newer one higher. `mark_outdated`, `CONTRADICTS`, and version snapshots say what is current.
+- **Near-duplicates are refused at write, without an LLM.** Mem0 skips exact copies. Near-copies are stored.
+
+Each `owner_id` is its own graph. Mem0 keeps every `user_id` in one store.
+
+[Graphiti](https://github.com/getzep/graphiti) (the library behind Zep) ingests episodes and keeps a bi-temporal graph: a new fact invalidates the old one, and the old one stays queryable by time.
 
 | Case | Graph Memory MCP | Mem0 | Graphiti |
 |------|------|------|----------|
-| The agent already has the sentence | `create_node` stores that sentence | An extraction model may split, rewrite, or drop it (default `infer=True`; `infer=False` stores verbatim, one LLM call skipped) | An episode pipeline turns it into entities and edges |
+| The graph | Edges are readable (`get_context`, `get_trace`) | OSS: no graph. Platform: ranking only, `relations` not returned | Temporal graph you can query |
+| A decision changed | `mark_outdated`, `CONTRADICTS`, or a version snapshot | Add-only. Both stay; the newer one ranks higher. No outdated mark. | The old edge is invalidated; history stays |
+| A near-duplicate write | Refused at write (`memory_duplicate`). Embeddings only | Exact text skipped by hash. Near-copies stored | New edges |
+| The agent already has the sentence | `create_node` stores that sentence | An extraction model may split, rewrite, or drop it | An episode pipeline turns it into entities and edges |
 | "Remember this chat" and nobody chose the facts | The server does not read a transcript | `add` extracts memories (default; skip with `infer=False`) | `add` extracts a temporal graph |
-| A decision changed | `mark_outdated` plus a new fact, or an explicit `CONTRADICTS` edge | Add-only; the extraction model adds new memories (old ones stay unless manually deleted) | The old edge is invalidated; history stays |
-| A debug note that should disappear | `ttl_days`; default search hides it | `expiration_date` (hidden from search after the date, not deleted) | Validity windows, not a debug TTL |
-| Two agents, one project | Same `owner_id` | `user_id` / `agent_id` / `run_id` | `group_id` |
+| A debug note that should disappear | `ttl_days`; default search hides it | `expiration_date`. `show_expired` or get-by-id still returns it | Validity windows, not a debug TTL |
+| Two agents, one project | Same `owner_id`, its own graph | `user_id`, `agent_id`, `run_id`, `app_id` in one store | `group_id` |
 | No extraction model | Writes do not call an LLM | `infer=False` skips the LLM; embeddings are still computed | Several LLM calls per episode |
 
 [`docs/comparison.md`](docs/comparison.md).

@@ -15,7 +15,7 @@ Constants from your operator (apply, never invent): `<OWNER_ID>` required — pa
 | Situation | Call |
 |-----------|------|
 | After meaningful work | GROW: Ground → Record → Orient? → Write (`project`+`created_by`); skip if nothing durable |
-| Session start | `get_brief(owner_id)` (about + recent facts without TTL + `CONTRADICTS`; not the task) → `search(query=<task>, compact=true)`. `suggested_next` hints at a possible next call; you decide. |
+| Session start | `get_brief(owner_id)` (about + recent facts without TTL + `CONTRADICTS` + `stale_count`; not the task; no `include_stale`) → `search(query=<task>, compact=true)`. `suggested_next` hints at a possible next call; you decide. |
 | "What do we know about X?" | `search(query="X", compact=true)`. `suggested_next` is a hint; choose the next call yourself. |
 | Opinion changed | `mark_outdated` + `create_node` (no separate supersede tool) |
 | Path between two known IDs | `get_trace(from_id, to_id)` (directed; retry `directed=false`) |

@@ -658,17 +658,33 @@ class FalkorOps:
             {"owner_id": owner_id, "ids": [str(node_id) for node_id in node_ids]},
         )
 
-    def brief_stale_facts(self, owner_id: str, cutoff_ms: int) -> list:
-        return self.rows(
+    def brief_stale_count(self, owner_id: str, cutoff_ms: int) -> int:
+        rows = self.rows(
             """
     MATCH (f:Fact)
     WHERE f.owner_id = $owner_id
       AND (f.status IS NULL OR f.status = 'active')
       AND f.expires_at IS NULL
       AND coalesce(f.last_accessed_at, f.created_at) < $cutoff_ms
+    RETURN count(f)
+    """,
+            {"owner_id": owner_id, "cutoff_ms": cutoff_ms},
+        )
+        return int(rows[0][0]) if rows else 0
+
+    def brief_stale_facts(
+        self, owner_id: str, cutoff_ms: int, *, limit: int | None = 10
+    ) -> list:
+        limit_clause = "" if limit is None else f"\n    LIMIT {int(limit)}"
+        return self.rows(
+            f"""
+    MATCH (f:Fact)
+    WHERE f.owner_id = $owner_id
+      AND (f.status IS NULL OR f.status = 'active')
+      AND f.expires_at IS NULL
+      AND coalesce(f.last_accessed_at, f.created_at) < $cutoff_ms
     RETURN f.uid, f.text, f.last_accessed_at, f.access_count
-    ORDER BY coalesce(f.last_accessed_at, f.created_at) ASC
-    LIMIT 10
+    ORDER BY coalesce(f.last_accessed_at, f.created_at) ASC{limit_clause}
     """,
             {"owner_id": owner_id, "cutoff_ms": cutoff_ms},
         )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 import uuid
 
 import pytest
@@ -119,6 +120,49 @@ def test_get_brief_anchor_recency_and_ttl():
     pairs = {(row["from_id"], row["to_id"]) for row in brief["contradictions"]}
     assert (hub_id, recent_id) in pairs or (recent_id, hub_id) in pairs
     assert all(temporary_id not in pair for pair in pairs)
+    assert brief["stale_count"] == 0
+    assert "stale_facts" not in brief
+
+
+@pytest.mark.integration
+def test_get_brief_hides_stale_texts_until_asked():
+    """Default brief returns stale_count. Texts need include_stale."""
+    cfg, db = _db()
+    owner_id = f"pytest_stale_{uuid.uuid4().hex[:8]}"
+    old = create_node(
+        db,
+        cfg,
+        text="durable note nobody has opened for a month",
+        owner_id=owner_id,
+        auto_link=False,
+        check_duplicates=False,
+    )
+    fresh = create_node(
+        db,
+        cfg,
+        text="decision recorded today",
+        owner_id=owner_id,
+        auto_link=False,
+        check_duplicates=False,
+    )
+    old_ms = int(time.time() * 1000) - 40 * 24 * 3600 * 1000
+    db.query(
+        """
+        MATCH (f:Fact) WHERE f.uid = $uid
+        SET f.created_at = $ts, f.last_accessed_at = $ts
+        """,
+        {"uid": old["node"]["node_id"], "ts": old_ms, "owner_id": owner_id},
+    )
+
+    brief = get_brief(db, owner_id=owner_id)
+    assert brief["stale_count"] == 1
+    assert "stale_facts" not in brief
+    assert fresh["node"]["node_id"] in {row["node_id"] for row in brief["top_facts"]}
+
+    listed = get_brief(db, owner_id=owner_id, include_stale=True)
+    assert listed["stale_count"] == 1
+    assert [row["node_id"] for row in listed["stale_facts"]] == [old["node"]["node_id"]]
+    assert listed["stale_facts"][0]["text"].startswith("durable note")
 
 
 @pytest.mark.integration
