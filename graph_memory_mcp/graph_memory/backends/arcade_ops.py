@@ -73,8 +73,69 @@ def expand_principal_tokens(
     if viewer_id == owner_id:
         tokens.append(f"owner:{owner_id}")
     
-    # TODO: Walk HAS_ACCESS from User/Project to Collections/Projects
-    # This is a simplified implementation - full version would traverse the graph
+    with db.owner_scope(owner_id):
+        # Find User node for this viewer
+        user_rows = db.query(
+            "SELECT FROM User WHERE text = :user_id AND owner_id = :owner LIMIT 1",
+            {"user_id": viewer_id, "owner": owner_id},
+        )
+        
+        if not user_rows:
+            return sorted(set(tokens))
+        
+        user_rid = _rid(user_rows[0].get("@rid"))
+        
+        # BFS: Walk HAS_ACCESS from User to Collections and Projects
+        visited = {user_rid}
+        accessible = []
+        
+        # Get all HAS_ACCESS edges from user
+        edges = db.query(
+            f"SELECT expand(out('HAS_ACCESS')) FROM User WHERE @rid = {user_rid}"
+        )
+        
+        for edge in edges:
+            edge_type = edge.get("@type")
+            edge_rid = str(edge.get("@rid"))
+            
+            if edge_rid in visited:
+                continue
+            visited.add(edge_rid)
+            
+            # Add token for this accessible node
+            uid = edge.get("uid")
+            if edge_type == "Collection":
+                accessible.append(f"coll:{uid}")
+                tokens.append(f"coll:{uid}")
+            elif edge_type == "Project":
+                accessible.append(f"proj:{uid}")
+                tokens.append(f"proj:{uid}")
+            
+            # Check for ALL token
+            acl_tokens = edge.get("acl_tokens") or []
+            if "ALL" in acl_tokens:
+                tokens.append("ALL")
+        
+        # For each accessible collection, walk CONTAINS transitively
+        for coll_token in accessible:
+            if coll_token.startswith("coll:"):
+                coll_id = coll_token[5:]
+                coll_rows = db.query(
+                    f"SELECT FROM Collection WHERE uid = :uid AND owner_id = :owner LIMIT 1",
+                    {"uid": coll_id, "owner": owner_id},
+                )
+                if coll_rows:
+                    coll_rid = _rid(coll_rows[0].get("@rid"))
+                    # Get all nodes in this collection (via CONTAINS)
+                    contained = db.query(
+                        f"SELECT expand(out('CONTAINS')) FROM Collection WHERE @rid = {coll_rid}"
+                    )
+                    for node in contained:
+                        # If contained node is also a collection, add it
+                        if node.get("@type") == "Collection":
+                            sub_coll_id = node.get("uid")
+                            if f"coll:{sub_coll_id}" not in tokens:
+                                tokens.append(f"coll:{sub_coll_id}")
     
     return sorted(set(tokens))
 

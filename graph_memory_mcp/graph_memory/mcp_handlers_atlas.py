@@ -13,6 +13,54 @@ from graph_memory_mcp.graph_memory.utils import new_uid
 logger = logging.getLogger(__name__)
 
 
+def check_node_access(
+    db: Any,
+    node_id: str,
+    owner_id: str,
+    viewer_id: str,
+    require_write: bool = False,
+) -> tuple[bool, Optional[str]]:
+    """Check if viewer can access a node (read or write).
+    
+    Args:
+        db: Database client
+        node_id: Node to check
+        owner_id: Owner scope
+        viewer_id: Viewer requesting access
+        require_write: If True, require owner access
+        
+    Returns:
+        (has_access, error_message) tuple
+    """
+    if not db.shared_graph:
+        # No ACL in per-owner mode
+        return True, None
+    
+    from graph_memory_mcp.graph_memory.backends.arcade_ops import expand_principal_tokens
+    
+    viewer_tokens = expand_principal_tokens(db, viewer_id, owner_id)
+    
+    # Write access requires owner
+    if require_write and f"owner:{owner_id}" not in viewer_tokens:
+        return False, "Write access requires owner permission"
+    
+    # Read access: check if node acl_tokens intersect viewer_tokens
+    with db.owner_scope(owner_id):
+        for label in ("Fact", "Entity", "Collection", "User", "Project"):
+            rows = db.query(
+                f"SELECT acl_tokens FROM {label} WHERE uid = :uid AND owner_id = :owner LIMIT 1",
+                {"uid": node_id, "owner": owner_id},
+            )
+            if rows:
+                node_tokens = rows[0].get("acl_tokens") or []
+                # Check intersection
+                if "ALL" in node_tokens or any(t in viewer_tokens for t in node_tokens):
+                    return True, None
+                return False, "Access denied: node not visible to viewer"
+    
+    return False, "Node not found"
+
+
 def ensure_default_collection(db: Any, owner_id: str, user_id: str) -> str:
     """Ensure user has exactly one default collection; return its uid.
     
@@ -142,11 +190,47 @@ def add_to_collection(
 ) -> Dict:
     """Add a node to a collection (CONTAINS edge).
     
+    Also updates node's acl_tokens to include collection's tokens (propagation).
+    
     Returns:
         Success dict with edge info
     """
     try:
+        # Create CONTAINS edge
         rows = db.add_to_collection(node_id, collection_id, owner_id)
+        
+        # Propagate collection's ACL tokens to the node
+        if db.shared_graph:
+            with db.owner_scope(owner_id):
+                # Get collection's acl_tokens
+                coll_rec = db.query(
+                    "SELECT acl_tokens FROM Collection WHERE uid = :uid AND owner_id = :owner LIMIT 1",
+                    {"uid": collection_id, "owner": owner_id},
+                )
+                
+                if coll_rec:
+                    coll_tokens = coll_rec[0].get("acl_tokens") or []
+                    
+                    # Get node's current acl_tokens
+                    from graph_memory_mcp.graph_memory.backends.arcade_ops import _rid
+                    
+                    for label in ("Fact", "Entity", "Collection", "Project"):
+                        node_rec = db.query(
+                            f"SELECT acl_tokens FROM {label} WHERE uid = :uid AND owner_id = :owner LIMIT 1",
+                            {"uid": node_id, "owner": owner_id},
+                        )
+                        if node_rec:
+                            node_tokens = node_rec[0].get("acl_tokens") or []
+                            # Merge tokens: node's tokens + collection's tokens + coll:<collection_id>
+                            new_tokens = sorted(set(node_tokens + coll_tokens + [f"coll:{collection_id}"]))
+                            
+                            # Update node
+                            db.command(
+                                f"UPDATE {label} SET acl_tokens = :tokens WHERE uid = :uid AND owner_id = :owner",
+                                {"tokens": new_tokens, "uid": node_id, "owner": owner_id},
+                            )
+                            break
+        
         return {
             "success": True,
             "node_id": node_id,
@@ -170,23 +254,27 @@ def remove_from_collection(
 ) -> Dict:
     """Remove a node from a collection (delete CONTAINS edge).
     
+    Also removes collection's tokens from node's acl_tokens (revocation).
+    
     Returns:
         Success dict
     """
     try:
         with db.owner_scope(owner_id):
-            # Find the CONTAINS edge and delete it
             from graph_memory_mcp.graph_memory.backends.arcade_ops import _rid
             
-            node_rec = db.query(
-                f"SELECT FROM Fact WHERE uid = :uid AND owner_id = :owner LIMIT 1",
-                {"uid": node_id, "owner": owner_id},
-            )
-            if not node_rec:
-                node_rec = db.query(
-                    f"SELECT FROM Entity WHERE uid = :uid AND owner_id = :owner LIMIT 1",
+            # Find node
+            node_rec = None
+            node_label = None
+            for label in ("Fact", "Entity", "Collection", "Project"):
+                rows = db.query(
+                    f"SELECT FROM {label} WHERE uid = :uid AND owner_id = :owner LIMIT 1",
                     {"uid": node_id, "owner": owner_id},
                 )
+                if rows:
+                    node_rec = rows[0]
+                    node_label = label
+                    break
             
             coll_rec = db.query(
                 f"SELECT FROM Collection WHERE uid = :uid AND owner_id = :owner LIMIT 1",
@@ -200,13 +288,29 @@ def remove_from_collection(
                     "code": "memory_not_found",
                 }
             
-            node_rid = _rid(node_rec[0].get("@rid"))
-            coll_rid = _rid(coll_rec[0].get("@rid"))
+            node_rid = _rid(node_rec.get("@rid"))
+            coll_rid = _rid(coll_rec.get("@rid"))
             
             # Delete CONTAINS edge from collection to node
             result = db.command(
                 f"DELETE FROM CONTAINS WHERE @out = {coll_rid} AND @in = {node_rid}"
             )
+            
+            # Remove collection's tokens from node (revocation)
+            if db.shared_graph:
+                coll_tokens = coll_rec.get("acl_tokens") or []
+                node_tokens = node_rec.get("acl_tokens") or []
+                
+                # Remove coll:<collection_id> and any tokens that came from the collection
+                tokens_to_remove = set([f"coll:{collection_id}"])
+                # Don't remove owner/user tokens that might be direct, only collection-derived ones
+                
+                new_tokens = [t for t in node_tokens if t not in tokens_to_remove]
+                
+                db.command(
+                    f"UPDATE {node_label} SET acl_tokens = :tokens WHERE uid = :uid AND owner_id = :owner",
+                    {"tokens": sorted(set(new_tokens)), "uid": node_id, "owner": owner_id},
+                )
             
             return {
                 "success": True,
@@ -410,6 +514,8 @@ def share_collection(
 ) -> Dict:
     """Share a collection with users/projects (add HAS_ACCESS edges).
     
+    Recursively updates acl_tokens of collection and all contained nodes.
+    
     Args:
         collection_id: Collection to share
         owner_id: Owner scope
@@ -427,7 +533,7 @@ def share_collection(
         
         with db.owner_scope(owner_id):
             coll_rec = db.query(
-                f"SELECT uid, acl_tokens FROM Collection WHERE uid = :uid AND owner_id = :owner LIMIT 1",
+                f"SELECT acl_tokens FROM Collection WHERE uid = :uid AND owner_id = :owner LIMIT 1",
                 {"uid": collection_id, "owner": owner_id},
             )
             if not coll_rec:
@@ -467,22 +573,45 @@ def share_collection(
                     )
                     if user_rec:
                         user_rid = _rid(user_rec[0].get("@rid"))
-                        db.command(
-                            f"CREATE EDGE HAS_ACCESS FROM {user_rid} TO {coll_rid} SET created_at = {now_ms}"
+                        # Check if edge already exists
+                        existing = db.query(
+                            f"SELECT FROM HAS_ACCESS WHERE @out = {user_rid} AND @in = {coll_rid} LIMIT 1"
                         )
+                        if not existing:
+                            db.command(
+                                f"CREATE EDGE HAS_ACCESS FROM {user_rid} TO {coll_rid} SET created_at = {now_ms}"
+                            )
                         created.append(f"user:{user_id}")
                 elif share_id.startswith("proj:"):
                     # Similar for projects
-                    pass
+                    proj_id = share_id[5:]
+                    proj_rec = db.query(
+                        f"SELECT FROM Project WHERE uid = :proj_id AND owner_id = :owner LIMIT 1",
+                        {"proj_id": proj_id, "owner": owner_id},
+                    )
+                    if proj_rec:
+                        proj_rid = _rid(proj_rec[0].get("@rid"))
+                        existing = db.query(
+                            f"SELECT FROM HAS_ACCESS WHERE @out = {proj_rid} AND @in = {coll_rid} LIMIT 1"
+                        )
+                        if not existing:
+                            db.command(
+                                f"CREATE EDGE HAS_ACCESS FROM {proj_rid} TO {coll_rid} SET created_at = {now_ms}"
+                            )
+                        created.append(f"proj:{proj_id}")
                 elif share_id == "ALL":
                     created.append("ALL")
             
             # Update collection ACL tokens
             if db.shared_graph:
+                new_coll_tokens = sorted(set(coll_tokens))
                 db.command(
                     f"UPDATE Collection SET acl_tokens = :tokens WHERE uid = :uid AND owner_id = :owner",
-                    {"tokens": sorted(set(coll_tokens)), "uid": collection_id, "owner": owner_id},
+                    {"tokens": new_coll_tokens, "uid": collection_id, "owner": owner_id},
                 )
+                
+                # Recursively propagate to all nodes in CONTAINS tree
+                _propagate_collection_tokens(db, coll_rid, new_coll_tokens, owner_id)
         
         return {
             "success": True,
@@ -497,6 +626,46 @@ def share_collection(
             "error": str(exc),
             "code": "memory_service_error",
         }
+
+
+def _propagate_collection_tokens(
+    db: Any,
+    coll_rid: str,
+    coll_tokens: list[str],
+    owner_id: str,
+) -> None:
+    """Recursively propagate collection's ACL tokens to all contained nodes.
+    
+    Args:
+        db: Database client
+        coll_rid: Collection RID
+        coll_tokens: Tokens to propagate
+        owner_id: Owner scope
+    """
+    # Get all nodes directly contained by this collection
+    contained = db.query(
+        f"SELECT expand(out('CONTAINS')) FROM Collection WHERE @rid = {coll_rid}"
+    )
+    
+    for node in contained:
+        node_type = node.get("@type")
+        node_uid = node.get("uid")
+        node_tokens = node.get("acl_tokens") or []
+        
+        # Merge tokens
+        new_tokens = sorted(set(node_tokens + coll_tokens))
+        
+        # Update node
+        db.command(
+            f"UPDATE {node_type} SET acl_tokens = :tokens WHERE uid = :uid AND owner_id = :owner",
+            {"tokens": new_tokens, "uid": node_uid, "owner": owner_id},
+        )
+        
+        # If this node is also a collection, recurse
+        if node_type == "Collection":
+            from graph_memory_mcp.graph_memory.backends.arcade_ops import _rid
+            sub_coll_rid = _rid(node.get("@rid"))
+            _propagate_collection_tokens(db, sub_coll_rid, coll_tokens, owner_id)
 
 
 def create_relation_with_weight(
