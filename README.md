@@ -296,7 +296,48 @@ See [`docs/memory_policies_for_LLM.md`](docs/memory_policies_for_LLM.md) and [`d
 
 ## ArcadeDB
 
-Optional second graph backend. Leave `GRAPH_BACKEND` unset (or `falkordb`) to keep FalkorDB. Set `GRAPH_BACKEND=arcadedb` and the `ARCADE_*` variables in `.env`. Each `owner_id` gets its own database, `{ARCADE_DATABASE}_{owner_id}`, with its own vertices, edges, and HNSW indexes. The embedding is a property on the vertex. Search inside that database uses `vector.neighbors`.
+Optional second graph backend. Leave `GRAPH_BACKEND` unset (or `falkordb`) to keep FalkorDB. Set `GRAPH_BACKEND=arcadedb` and the `ARCADE_*` variables in `.env`.
+
+### Layouts
+
+ArcadeDB supports two isolation layouts:
+
+| Layout | Config | What | Use Case |
+|--------|--------|------|----------|
+| **Database-per-owner** (default) | `ARCADE_SHARED_GRAPH=false` | Each `owner_id` gets its own database, `{ARCADE_DATABASE}_{owner_id}`, with its own vertices, edges, and HNSW indexes | Simple server, existing tests, physical isolation |
+| **Shared-graph** (Atlas) | `ARCADE_SHARED_GRAPH=true` | ONE database for all owners; ACL tokens on every node control visibility | Extended server with collections, multi-tenant, cross-owner sharing |
+
+### Shared-Graph Mode (Atlas)
+
+**Requires**: ArcadeDB >= 26.10.2, `GRAPH_BACKEND=arcadedb`, `ARCADE_SHARED_GRAPH=true`
+
+**Extended server only**. The simple server always uses database-per-owner layout.
+
+All owners' data lives in a single ArcadeDB database. Every node carries an `acl_tokens` array:
+- `owner:<id>` — the owner
+- `user:<id>` — individual users with access
+- `coll:<id>` — collections containing the node
+- `proj:<id>` — projects with access
+- `ALL` — publicly visible
+
+**Vector search** is filter-first: the server-side subquery pre-filters visible nodes by `acl_tokens CONTAINSANY [viewer's tokens]` before the HNSW walk, ensuring the index only visits accessible records.
+
+**Access control**: 
+- Viewer's principal tokens = `user:<viewer_id>` + `owner:<id>` (if viewer is owner) + collections/projects reachable via `HAS_ACCESS` + `ALL` if any.
+- Node is visible if `node.acl_tokens ∩ viewer_tokens ≠ ∅`.
+- Write access: owner only (per Atlas spec).
+
+**Collections**: Every user has one default collection (auto-created). Nodes created without `collection_id` go there. Collections can be shared via `share_collection` (adds `HAS_ACCESS` edges and updates `acl_tokens`).
+
+**Tools** (extended server):
+- `add_to_collection`, `remove_from_collection`
+- `list_collections` (ACL-filtered)
+- `get_collection_contents` (depth traversal, ACL-filtered)
+- `share_collection` (grant access)
+- `create_relation_ext` (weighted relations)
+- `update_relation_weight`
+
+The embedding is a property on the vertex. Search inside that database uses `vector.neighbors`.
 
 ## Development
 
