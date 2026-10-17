@@ -19,6 +19,127 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 VERTEX_TYPES = ("Fact", "Entity", "Collection", "User", "Project", "FactVersion")
+
+
+def compute_acl_tokens(
+    owner_id: str,
+    shared_with_ids: list[str] | None = None,
+    collection_id: str | None = None,
+) -> list[str]:
+    """Compute ACL tokens for a node.
+    
+    Returns list with:
+    - owner:<owner_id>
+    - Any shared_with_ids (user:<id>, coll:<id>, proj:<id>)
+    - collection:<collection_id> if provided
+    - "ALL" if explicitly shared with everyone
+    """
+    tokens = [f"owner:{owner_id}"]
+    
+    if shared_with_ids:
+        for share_id in shared_with_ids:
+            if share_id == "ALL":
+                tokens.append("ALL")
+            elif ":" in share_id:
+                # Already prefixed: user:id, coll:id, proj:id
+                tokens.append(share_id)
+            else:
+                # Assume user ID if no prefix
+                tokens.append(f"user:{share_id}")
+    
+    if collection_id:
+        tokens.append(f"coll:{collection_id}")
+    
+    return sorted(set(tokens))
+
+
+def expand_principal_tokens(
+    db: Any,
+    viewer_id: str,
+    owner_id: str,
+) -> list[str]:
+    """Expand viewer's principal tokens by walking HAS_ACCESS and CONTAINS edges.
+    
+    Returns all tokens the viewer can see:
+    - owner:<viewer_id> if viewer is owner
+    - user:<viewer_id>
+    - coll:<id> for each Collection with HAS_ACCESS from User/Project
+    - proj:<id> for each Project with HAS_ACCESS from User
+    - ALL if any node grants universal access
+    """
+    tokens = [f"user:{viewer_id}"]
+    
+    # Owner always has full access
+    if viewer_id == owner_id:
+        tokens.append(f"owner:{owner_id}")
+    
+    with db.owner_scope(owner_id):
+        # Find User node for this viewer
+        user_rows = db.query(
+            "SELECT FROM User WHERE text = :user_id AND owner_id = :owner LIMIT 1",
+            {"user_id": viewer_id, "owner": owner_id},
+        )
+        
+        if not user_rows:
+            return sorted(set(tokens))
+        
+        user_rid = _rid(user_rows[0].get("@rid"))
+        
+        # BFS: Walk HAS_ACCESS from User to Collections and Projects
+        visited = {user_rid}
+        accessible = []
+        
+        # Get all HAS_ACCESS edges from user
+        edges = db.query(
+            f"SELECT expand(out('HAS_ACCESS')) FROM User WHERE @rid = {user_rid}"
+        )
+        
+        for edge in edges:
+            edge_type = edge.get("@type")
+            edge_rid = str(edge.get("@rid"))
+            
+            if edge_rid in visited:
+                continue
+            visited.add(edge_rid)
+            
+            # Add token for this accessible node
+            uid = edge.get("uid")
+            if edge_type == "Collection":
+                accessible.append(f"coll:{uid}")
+                tokens.append(f"coll:{uid}")
+            elif edge_type == "Project":
+                accessible.append(f"proj:{uid}")
+                tokens.append(f"proj:{uid}")
+            
+            # Check for ALL token
+            acl_tokens = edge.get("acl_tokens") or []
+            if "ALL" in acl_tokens:
+                tokens.append("ALL")
+        
+        # For each accessible collection, walk CONTAINS transitively
+        for coll_token in accessible:
+            if coll_token.startswith("coll:"):
+                coll_id = coll_token[5:]
+                coll_rows = db.query(
+                    f"SELECT FROM Collection WHERE uid = :uid AND owner_id = :owner LIMIT 1",
+                    {"uid": coll_id, "owner": owner_id},
+                )
+                if coll_rows:
+                    coll_rid = _rid(coll_rows[0].get("@rid"))
+                    # Get all nodes in this collection (via CONTAINS)
+                    contained = db.query(
+                        f"SELECT expand(out('CONTAINS')) FROM Collection WHERE @rid = {coll_rid}"
+                    )
+                    for node in contained:
+                        # If contained node is also a collection, add it
+                        if node.get("@type") == "Collection":
+                            sub_coll_id = node.get("uid")
+                            if f"coll:{sub_coll_id}" not in tokens:
+                                tokens.append(f"coll:{sub_coll_id}")
+    
+    return sorted(set(tokens))
+
+
 _SYSTEM = {"@rid", "@type", "@cat", "@in", "@out"}
 _ASSIGN = re.compile(
     r"^n\.([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
@@ -295,6 +416,13 @@ class ArcadeOps:
             "source_updated_at": params.get("source_updated_at"),
             "embedding": embedding,
         }
+        # Compute ACL tokens in shared-graph mode
+        if self.shared_graph:
+            fields["acl_tokens"] = compute_acl_tokens(
+                owner_id=owner,
+                shared_with_ids=params.get("shared_with_ids"),
+                collection_id=params.get("collection_id"),
+            )
         if node_type == "Entity":
             fields["name_norm"] = params.get("name_norm")
             if entity_type:
@@ -332,6 +460,13 @@ class ArcadeOps:
                     "name_norm": row.get("name_norm"),
                     "last_dedup_at": None,
                 }
+                # Compute ACL tokens in shared-graph mode
+                if self.shared_graph:
+                    fields["acl_tokens"] = compute_acl_tokens(
+                        owner_id=owner,
+                        shared_with_ids=row.get("shared_with_ids"),
+                        collection_id=row.get("collection_id"),
+                    )
                 self._insert(node_type, fields, session=session)
                 created.append([row.get("uid")])
         return created

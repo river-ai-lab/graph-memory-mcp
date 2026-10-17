@@ -273,6 +273,7 @@ def create_node(
         "status": status or "active",
         "metadata_str": metadata_str,
         "shared_with_ids": shared_with_ids or [],
+        "collection_id": collection_id,
         "ttl_days": ttl_days,
         "expires_at": expires_at,
         **metadata_promoted_props(metadata),
@@ -634,10 +635,22 @@ def get_node(
     node_id: str,
     owner_id: str = "default",
     as_of: Optional[int] = None,
+    viewer_id: Optional[str] = None,
 ) -> Dict:
-    """Get a node by ID; `as_of` (unix ms) reads state at that time via FactVersion."""
+    """Get a node by ID; `as_of` (unix ms) reads state at that time via FactVersion.
+    
+    In shared-graph mode, checks ACL tokens to ensure viewer has access.
+    """
     owner_id = normalize_owner_id(owner_id)
     node_id = require_node_id(node_id)
+    
+    # ACL check in shared-graph mode
+    if hasattr(db, "shared_graph") and db.shared_graph and viewer_id:
+        from graph_memory_mcp.graph_memory.mcp_handlers_atlas import check_node_access
+        
+        has_access, error_msg = check_node_access(db, node_id, owner_id, viewer_id, require_write=False)
+        if not has_access:
+            return error_response(error_msg or "Access denied", code="memory_access_denied")
 
     rows = db.fetch_node_row(node_id, owner_id)
     if not rows:
@@ -829,10 +842,28 @@ def update_node(
 
 
 @mcp_handler
-def delete_node(db: FalkorDBClient, *, node_id: str, owner_id: str = "default") -> Dict:
-    """Delete a node, its relationships and its version snapshots."""
+def delete_node(
+    db: FalkorDBClient,
+    *,
+    node_id: str,
+    owner_id: str = "default",
+    viewer_id: Optional[str] = None,
+) -> Dict:
+    """Delete a node, its relationships and its version snapshots.
+    
+    In shared-graph mode, requires owner permission (write access).
+    """
     owner_id = normalize_owner_id(owner_id)
     node_id = require_node_id(node_id)
+    
+    # ACL check: write access requires owner permission
+    if hasattr(db, "shared_graph") and db.shared_graph and viewer_id:
+        from graph_memory_mcp.graph_memory.mcp_handlers_atlas import check_node_access
+        
+        has_access, error_msg = check_node_access(db, node_id, owner_id, viewer_id, require_write=True)
+        if not has_access:
+            return error_response(error_msg or "Write access denied", code="memory_access_denied")
+    
     db.delete_fact_versions(node_id, owner_id)
     rows = db.delete_node_row(node_id, owner_id)
     if not rows:

@@ -197,10 +197,23 @@ def get_context(
     include_ttl: bool = False,
     relation_priority: Optional[List[str]] = None,
     exclude_relation_types: Optional[List[str]] = None,
+    viewer_id: Optional[str] = None,
 ) -> Dict:
-    """Get subgraph context around a node."""
+    """Get subgraph context around a node.
+    
+    In shared-graph mode, filters neighbors by ACL (only returns visible nodes).
+    """
     owner_id = normalize_owner_id(owner_id)
     node_id = require_node_id(node_id)
+    
+    # ACL check: ensure center node is visible
+    if hasattr(db, "shared_graph") and db.shared_graph and viewer_id:
+        from graph_memory_mcp.graph_memory.mcp_handlers_atlas import check_node_access
+        
+        has_access, error_msg = check_node_access(db, node_id, owner_id, viewer_id, require_write=False)
+        if not has_access:
+            return error_response(error_msg or "Access denied", code="memory_access_denied")
+    
     depth = max(
         0, min(depth or config.subgraph_default_depth, config.subgraph_max_depth)
     )
@@ -214,6 +227,13 @@ def get_context(
 
     nodes: Dict[str, Dict[str, Any]] = {}
     edges: List[Dict] = []
+    
+    # Compute viewer tokens for ACL filtering
+    viewer_tokens = None
+    if hasattr(db, "shared_graph") and db.shared_graph and viewer_id:
+        from graph_memory_mcp.graph_memory.backends.arcade_ops import expand_principal_tokens
+        viewer_tokens = set(expand_principal_tokens(db, viewer_id, owner_id))
+    
     if offset == 0:
         # Iterative BFS with a node budget — no [*0..depth] path explosion.
         visited = _bfs_expand(
@@ -221,18 +241,44 @@ def get_context(
             owner_id=owner_id,
             seed_labels={node_id: {node_id: 0}},
             depth=depth,
-            budget=effective_max_nodes,
+            budget=effective_max_nodes * 2,  # Fetch more to account for ACL filtering
             include_outdated=include_outdated,
             include_ttl=include_ttl,
             rank_expr=rank_expr,
             exclude_types=exclude_types,
         )
+        
+        # Filter by ACL if in shared-graph mode
+        filtered_count = 0
         for uid, record in visited.items():
+            # Check if node is visible to viewer
+            if viewer_tokens is not None:
+                # Get node's acl_tokens
+                node_visible = False
+                with db.owner_scope(owner_id):
+                    for label in ("Fact", "Entity", "Collection", "User", "Project"):
+                        rows = db.query(
+                            f"SELECT acl_tokens FROM {label} WHERE uid = :uid AND owner_id = :owner LIMIT 1",
+                            {"uid": uid, "owner": owner_id},
+                        )
+                        if rows:
+                            node_tokens = rows[0].get("acl_tokens") or []
+                            if "ALL" in node_tokens or any(t in viewer_tokens for t in node_tokens):
+                                node_visible = True
+                            break
+                
+                if not node_visible:
+                    continue
+            
+            if filtered_count >= effective_max_nodes:
+                break
+            
             nodes[uid] = {
                 "node_id": uid,
                 "node_type": record["node_type"],
                 "text": record["text"],
             }
+            filtered_count += 1
         paginated = False
     else:
         # Paginated (operator/explorer) path: full expansion with stable order.
