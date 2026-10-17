@@ -19,6 +19,66 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 VERTEX_TYPES = ("Fact", "Entity", "Collection", "User", "Project", "FactVersion")
+
+
+def compute_acl_tokens(
+    owner_id: str,
+    shared_with_ids: list[str] | None = None,
+    collection_id: str | None = None,
+) -> list[str]:
+    """Compute ACL tokens for a node.
+    
+    Returns list with:
+    - owner:<owner_id>
+    - Any shared_with_ids (user:<id>, coll:<id>, proj:<id>)
+    - collection:<collection_id> if provided
+    - "ALL" if explicitly shared with everyone
+    """
+    tokens = [f"owner:{owner_id}"]
+    
+    if shared_with_ids:
+        for share_id in shared_with_ids:
+            if share_id == "ALL":
+                tokens.append("ALL")
+            elif ":" in share_id:
+                # Already prefixed: user:id, coll:id, proj:id
+                tokens.append(share_id)
+            else:
+                # Assume user ID if no prefix
+                tokens.append(f"user:{share_id}")
+    
+    if collection_id:
+        tokens.append(f"coll:{collection_id}")
+    
+    return sorted(set(tokens))
+
+
+def expand_principal_tokens(
+    db: Any,
+    viewer_id: str,
+    owner_id: str,
+) -> list[str]:
+    """Expand viewer's principal tokens by walking HAS_ACCESS and CONTAINS edges.
+    
+    Returns all tokens the viewer can see:
+    - owner:<viewer_id> if viewer is owner
+    - user:<viewer_id>
+    - coll:<id> for each Collection with HAS_ACCESS from User/Project
+    - proj:<id> for each Project with HAS_ACCESS from User
+    - ALL if any node grants universal access
+    """
+    tokens = [f"user:{viewer_id}"]
+    
+    # Owner always has full access
+    if viewer_id == owner_id:
+        tokens.append(f"owner:{owner_id}")
+    
+    # TODO: Walk HAS_ACCESS from User/Project to Collections/Projects
+    # This is a simplified implementation - full version would traverse the graph
+    
+    return sorted(set(tokens))
+
+
 _SYSTEM = {"@rid", "@type", "@cat", "@in", "@out"}
 _ASSIGN = re.compile(
     r"^n\.([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
@@ -295,6 +355,13 @@ class ArcadeOps:
             "source_updated_at": params.get("source_updated_at"),
             "embedding": embedding,
         }
+        # Compute ACL tokens in shared-graph mode
+        if self.shared_graph:
+            fields["acl_tokens"] = compute_acl_tokens(
+                owner_id=owner,
+                shared_with_ids=params.get("shared_with_ids"),
+                collection_id=params.get("collection_id"),
+            )
         if node_type == "Entity":
             fields["name_norm"] = params.get("name_norm")
             if entity_type:
@@ -332,6 +399,13 @@ class ArcadeOps:
                     "name_norm": row.get("name_norm"),
                     "last_dedup_at": None,
                 }
+                # Compute ACL tokens in shared-graph mode
+                if self.shared_graph:
+                    fields["acl_tokens"] = compute_acl_tokens(
+                        owner_id=owner,
+                        shared_with_ids=row.get("shared_with_ids"),
+                        collection_id=row.get("collection_id"),
+                    )
                 self._insert(node_type, fields, session=session)
                 created.append([row.get("uid")])
         return created

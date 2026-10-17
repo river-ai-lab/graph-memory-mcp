@@ -63,12 +63,15 @@ class ArcadeDBClient(ArcadeOps):
         if not _DB_NAME.match(str(database)):
             raise ValueError(f"Invalid ArcadeDB database name: {database!r}")
         self.database_prefix = str(database)
+        self.shared_graph = bool(getattr(config, "arcade_shared_graph", False))
         token = base64.b64encode(f"{self._user}:{self._password}".encode()).decode()
         self._auth = f"Basic {token}"
+        layout = "shared-graph" if self.shared_graph else "database-per-owner"
         logger.info(
-            "ArcadeDB client initialized (url=%s, database prefix=%s, layout=database-per-owner)",
+            "ArcadeDB client initialized (url=%s, database prefix=%s, layout=%s)",
             self._base,
             self.database_prefix,
+            layout,
         )
 
     def owner_literal(self, owner_id: str) -> str:
@@ -78,7 +81,9 @@ class ArcadeDBClient(ArcadeOps):
         return owner_id
 
     def database_name(self, owner_id: str) -> str:
-        """``{ARCADE_DATABASE}_{owner_id}``, matching Falkor's graph name."""
+        """``{ARCADE_DATABASE}_{owner_id}`` (per-owner) or ``{ARCADE_DATABASE}`` (shared)."""
+        if self.shared_graph:
+            return self.database_prefix
         return f"{self.database_prefix}_{self.owner_literal(owner_id)}"
 
     @contextmanager
@@ -227,6 +232,12 @@ class ArcadeDBClient(ArcadeOps):
         self.command(f"CREATE PROPERTY {label}.owner_id IF NOT EXISTS STRING")
         self.command(f"CREATE PROPERTY {label}.uid IF NOT EXISTS STRING")
         self.command(f"CREATE INDEX IF NOT EXISTS ON {label} (uid) UNIQUE")
+        # ACL tokens for shared-graph mode (array of strings: owner:id, user:id, coll:id, proj:id, ALL)
+        if self.shared_graph:
+            self.command(
+                f"CREATE PROPERTY {label}.acl_tokens IF NOT EXISTS LIST_OF_STRINGS"
+            )
+            self.command(f"CREATE INDEX IF NOT EXISTS ON {label} (acl_tokens) NOTUNIQUE")
         if label in VECTOR_TYPES:
             self.command(
                 f"CREATE PROPERTY {label}.embedding IF NOT EXISTS ARRAY_OF_FLOATS"

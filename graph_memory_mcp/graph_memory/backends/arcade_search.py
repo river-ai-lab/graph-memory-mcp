@@ -59,16 +59,27 @@ def _attribute_where(
     exclude_node_id: Optional[str],
     now_ms: int,
     include_ttl: bool = False,
+    acl_tokens: Optional[list[str]] = None,
 ) -> tuple[str, Dict[str, Any]]:
-    """SQL predicates for status, expiry, metadata, and an excluded uid.
+    """SQL predicates for status, expiry, metadata, ACL, and an excluded uid.
 
     Default Fact search hides every node that has ``expires_at``.
     ``include_ttl`` also keeps facts that have not expired yet.
     ``include_outdated`` drops the expiry predicate.
+    
+    ACL filtering: if acl_tokens provided, only return nodes where
+    acl_tokens CONTAINSANY viewer's tokens (server-side filter).
     """
     _validate_metadata(metadata_filter)
     parts: list[str] = ["embedding IS NOT NULL"]
     params: Dict[str, Any] = {}
+    
+    # ACL filtering (shared-graph mode only)
+    if acl_tokens:
+        # Server-side filter: acl_tokens CONTAINSANY [:token0, :token1, ...]
+        params["acl_check"] = acl_tokens
+        parts.append("acl_tokens CONTAINSANY :acl_check")
+    
     if status:
         parts.append("status = :status")
         params["status"] = status
@@ -151,8 +162,13 @@ def neighbor_rows(
     exclude_node_id: Optional[str] = None,
     ann_k: int | None = None,
     include_ttl: bool = False,
+    acl_tokens: Optional[list[str]] = None,
 ) -> List[List[Any]]:
-    """Top-k cosine neighbors from this owner's own HNSW index."""
+    """Top-k cosine neighbors from this owner's own HNSW index.
+    
+    ACL filtering: if acl_tokens provided (shared-graph mode), use filter-first
+    ArcadeDB server-side subquery to pre-filter visible nodes before vector search.
+    """
     if node_type not in ("Fact", "Entity"):
         raise ValueError(f"Vector search is not indexed for {node_type}")
     with store.owner_scope(owner_id):
@@ -169,6 +185,7 @@ def neighbor_rows(
             exclude_node_id=exclude_node_id,
             ann_k=ann_k,
             include_ttl=include_ttl,
+            acl_tokens=acl_tokens,
         )
 
 
@@ -186,6 +203,7 @@ def _neighbor_rows(
     exclude_node_id: Optional[str],
     ann_k: int | None,
     include_ttl: bool = False,
+    acl_tokens: Optional[list[str]] = None,
 ) -> List[List[Any]]:
     owner = store.owner_literal(owner_id)
     k = max(int(limit), 1)
@@ -199,7 +217,7 @@ def _neighbor_rows(
         status=status,
         metadata_filter=metadata_filter,
         exclude_node_id=exclude_node_id,
-    )
+    ) or acl_tokens is not None
     opts: Dict[str, Any] = {"maxDistance": float(max_distance)}
     plan: Dict[str, Any] = {
         "filtered": filtered,
@@ -207,6 +225,7 @@ def _neighbor_rows(
         "rid_count": None,
         "labeled": None,
         "k": k,
+        "acl_filtered": acl_tokens is not None,
     }
     if filtered:
         where, params = _attribute_where(
@@ -217,6 +236,7 @@ def _neighbor_rows(
             exclude_node_id=exclude_node_id,
             now_ms=now_ms,
             include_ttl=include_ttl,
+            acl_tokens=acl_tokens,
         )
         rid_rows = store.query(
             f"SELECT @rid AS rid FROM {node_type} "

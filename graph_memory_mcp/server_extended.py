@@ -20,10 +20,20 @@ class GraphMemoryExtendedMCP(GraphMemoryMCP):
     """Default tools, plus collections, sharing, and Collection / User / Project nodes."""
 
     def __init__(self, server_config: MCPServerConfig):
+        # Extended server requires ArcadeDB backend
+        if server_config.graph_backend != "arcadedb":
+            raise ValueError(
+                "Extended server (Atlas) requires GRAPH_BACKEND=arcadedb. "
+                "The simple server works with any backend. "
+                "Set GRAPH_BACKEND=arcadedb and ARCADE_SHARED_GRAPH=true in your .env"
+            )
         super().__init__(server_config)
         logger.info(
             "GraphMemoryExtendedMCP: like GraphMemoryMCP; "
-            "writes also take description, shared_with_ids, collection_id"
+            "writes also take description, shared_with_ids, collection_id; "
+            "backend=%s, shared_graph=%s",
+            server_config.graph_backend,
+            getattr(server_config, "arcade_shared_graph", False),
         )
 
     def _register_node_write_tools(self) -> Dict[str, Any]:

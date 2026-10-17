@@ -60,6 +60,10 @@ class MCPServerConfig(BaseSettings):
     arcade_user: str = Field(default="root", validation_alias="ARCADE_USER")
     arcade_password: str = Field(default="", validation_alias="ARCADE_PASSWORD")
     arcade_database: str = Field(default="memory", validation_alias="ARCADE_DATABASE")
+    # Shared-graph mode: use ONE database for all owners with ACL tokens (extended server only)
+    arcade_shared_graph: bool = Field(
+        default=False, validation_alias="ARCADE_SHARED_GRAPH"
+    )
 
     # Embeddings
     embedding_model: str = "intfloat/multilingual-e5-base"
