@@ -415,9 +415,9 @@ def get_collection_contents(
     """
     try:
         # Check viewer can access this collection
-        from graph_memory_mcp.graph_memory.backends.arcade_ops import expand_principal_tokens
+        from graph_memory_mcp.graph_memory.backends.arcade_ops import expand_principal_tokens, _rid
         
-        viewer_tokens = expand_principal_tokens(db, viewer_id, owner_id)
+        viewer_tokens = set(expand_principal_tokens(db, viewer_id, owner_id))
         
         with db.owner_scope(owner_id):
             # Check collection exists and is visible
@@ -441,8 +441,6 @@ def get_collection_contents(
                 }
             
             # BFS from collection via CONTAINS edges
-            from graph_memory_mcp.graph_memory.backends.arcade_ops import _rid
-            
             coll_rid = _rid(coll_rec[0].get("@rid"))
             visited = set()
             current = [coll_rid]
