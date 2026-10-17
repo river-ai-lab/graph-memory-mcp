@@ -10,7 +10,7 @@ import logging
 from typing import Any, Dict, Literal
 
 from graph_memory_mcp.config import MCPServerConfig
-from graph_memory_mcp.graph_memory import mcp_handlers_nodes
+from graph_memory_mcp.graph_memory import mcp_handlers_atlas, mcp_handlers_nodes
 from graph_memory_mcp.server import GraphMemoryMCP
 
 logger = logging.getLogger(__name__)
@@ -35,6 +35,153 @@ class GraphMemoryExtendedMCP(GraphMemoryMCP):
             server_config.graph_backend,
             getattr(server_config, "arcade_shared_graph", False),
         )
+        # Register Atlas-specific tools
+        self._register_atlas_tools()
+
+    def _register_atlas_tools(self) -> None:
+        """Register collection and access control tools."""
+        exposed: Dict[str, Any] = {}
+        db = self.db_client
+        mcp = self.mcp
+        assert mcp is not None
+        default_owner = self.config.default_owner_id
+
+        @mcp.tool(
+            title="Add to collection",
+            description=(
+                "Add a node to a collection (creates CONTAINS edge). "
+                "Required: node_id, collection_id, owner_id. "
+                "The node and collection must exist."
+            ),
+        )
+        def add_to_collection(
+            node_id: str,
+            collection_id: str,
+            owner_id: str = default_owner,
+        ) -> dict:
+            return mcp_handlers_atlas.add_to_collection(
+                db, node_id, collection_id, owner_id
+            )
+
+        @mcp.tool(
+            title="Remove from collection",
+            description=(
+                "Remove a node from a collection (deletes CONTAINS edge). "
+                "Required: node_id, collection_id, owner_id."
+            ),
+        )
+        def remove_from_collection(
+            node_id: str,
+            collection_id: str,
+            owner_id: str = default_owner,
+        ) -> dict:
+            return mcp_handlers_atlas.remove_from_collection(
+                db, node_id, collection_id, owner_id
+            )
+
+        @mcp.tool(
+            title="List collections",
+            description=(
+                "List collections visible to the viewer (ACL-filtered). "
+                "Required: viewer_id (the user requesting the list). "
+                "Returns collections the viewer can access."
+            ),
+        )
+        def list_collections(
+            viewer_id: str,
+            owner_id: str = default_owner,
+            limit: int = 50,
+        ) -> dict:
+            return mcp_handlers_atlas.list_collections(
+                db, owner_id, viewer_id, limit
+            )
+
+        @mcp.tool(
+            title="Get collection contents",
+            description=(
+                "Get nodes in a collection (ACL-filtered, with depth traversal). "
+                "Required: collection_id, viewer_id. "
+                "Optional: depth (how many CONTAINS hops, default 1), limit (max nodes). "
+                "Returns nodes the viewer can access."
+            ),
+        )
+        def get_collection_contents(
+            collection_id: str,
+            viewer_id: str,
+            owner_id: str = default_owner,
+            depth: int = 1,
+            limit: int = 50,
+        ) -> dict:
+            return mcp_handlers_atlas.get_collection_contents(
+                db, collection_id, owner_id, viewer_id, depth, limit
+            )
+
+        @mcp.tool(
+            title="Share collection",
+            description=(
+                "Share a collection with users/projects (creates HAS_ACCESS edges). "
+                "Required: collection_id, viewer_id (must be owner), share_with_ids. "
+                "share_with_ids: list of 'user:id', 'proj:id', or 'ALL' for public access."
+            ),
+        )
+        def share_collection(
+            collection_id: str,
+            viewer_id: str,
+            share_with_ids: list[str],
+            owner_id: str = default_owner,
+        ) -> dict:
+            return mcp_handlers_atlas.share_collection(
+                db, collection_id, owner_id, viewer_id, share_with_ids
+            )
+
+        @mcp.tool(
+            title="Create weighted relation",
+            description=(
+                "Create a relation with an optional weight (0-1). "
+                "Required: from_id, to_id, relation_type, owner_id. "
+                "Optional: weight (edge weight), properties (additional edge data)."
+            ),
+        )
+        def create_relation_ext(
+            from_id: str,
+            to_id: str,
+            relation_type: str,
+            owner_id: str = default_owner,
+            weight: float | None = None,
+            properties: dict | None = None,
+        ) -> dict:
+            return mcp_handlers_atlas.create_relation_with_weight(
+                db, from_id, to_id, relation_type, owner_id, weight, properties
+            )
+
+        @mcp.tool(
+            title="Update relation weight",
+            description=(
+                "Update the weight of an existing relation. "
+                "Required: from_id, to_id, relation_type, weight, owner_id."
+            ),
+        )
+        def update_relation_weight(
+            from_id: str,
+            to_id: str,
+            relation_type: str,
+            weight: float,
+            owner_id: str = default_owner,
+        ) -> dict:
+            return mcp_handlers_atlas.update_relation_weight(
+                db, from_id, to_id, relation_type, owner_id, weight
+            )
+
+        exposed["add_to_collection"] = add_to_collection
+        exposed["remove_from_collection"] = remove_from_collection
+        exposed["list_collections"] = list_collections
+        exposed["get_collection_contents"] = get_collection_contents
+        exposed["share_collection"] = share_collection
+        exposed["create_relation_ext"] = create_relation_ext
+        exposed["update_relation_weight"] = update_relation_weight
+
+        for attr, func in exposed.items():
+            setattr(self, attr, func)
 
     def _register_node_write_tools(self) -> Dict[str, Any]:
         """Same create/upsert/update as the default server, plus extended fields."""

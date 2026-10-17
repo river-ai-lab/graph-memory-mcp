@@ -273,6 +273,7 @@ def create_node(
         "status": status or "active",
         "metadata_str": metadata_str,
         "shared_with_ids": shared_with_ids or [],
+        "collection_id": collection_id,
         "ttl_days": ttl_days,
         "expires_at": expires_at,
         **metadata_promoted_props(metadata),
