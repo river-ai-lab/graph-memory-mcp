@@ -1,4 +1,4 @@
-"""Graph backends. FalkorDB is the default; ArcadeDB is the second store."""
+"""Graph backends. ArcadeDB is the default; FalkorDB is the second store."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ __all__ = ["GraphStore", "FalkorDBClient", "open_store"]
 
 
 def open_store(config: Any) -> GraphStore:
-    """Open the graph backend selected by config.graph_backend (default falkordb)."""
+    """Open the graph backend selected by config.graph_backend (default arcadedb)."""
     backend = (
         str(getattr(config, "graph_backend", "falkordb") or "falkordb").strip().lower()
     )

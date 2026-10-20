@@ -45,8 +45,8 @@ class MCPServerConfig(BaseSettings):
         validation_alias="MCP_SERVER_DESCRIPTION",
     )
 
-    # Graph backend. falkordb is the default. arcadedb is the other implemented store.
-    graph_backend: str = Field(default="falkordb", validation_alias="GRAPH_BACKEND")
+    # Graph backend. arcadedb is the default. falkordb is the other implemented store.
+    graph_backend: str = Field(default="arcadedb", validation_alias="GRAPH_BACKEND")
 
     # FalkorDB
     falkordb_host: str = "localhost"

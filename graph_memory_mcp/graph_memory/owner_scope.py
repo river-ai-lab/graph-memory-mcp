@@ -1,9 +1,10 @@
 """Who chooses owner_id on an MCP HTTP call.
 
-`client` (default): the tool argument, as in a trusted local or company deploy.
-`header`: the tool argument is ignored. The owner is `X-Owner-Id`, set by the
-SaaS gateway. Jobs and in-process calls are not HTTP requests, so they keep
-the owner they were given.
+`client` (default): the tool argument, as in a trusted local or company
+    deploy.
+`header`: the tool argument is ignored. The owner is `X-Owner-Id`, set by
+    an authenticating gateway in front of the server. Jobs and in-process
+    calls are not HTTP requests, so they keep the owner they were given.
 
 The header is bound on the HTTP request task. FastMCP runs the tool in a child
 task started after that bind; the child copies the context.

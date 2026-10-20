@@ -6,7 +6,7 @@ That database holds only that owner's vertices, edges, and HNSW indexes.
 The embedding is a property on the vertex, written in the same statement or
 transaction as the vertex and its edges.
 
-FalkorDB stays the default. This module does not import FalkorDB.
+ArcadeDB is the default. This module does not import FalkorDB.
 """
 
 from __future__ import annotations

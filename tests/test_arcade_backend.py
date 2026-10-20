@@ -105,16 +105,18 @@ def _create(store, config, owner_id: str, text: str, **kwargs):
     return result["node"]
 
 
-def test_default_backend_stays_falkordb(monkeypatch):
+def test_default_backend_is_arcadedb(monkeypatch):
     created = {}
 
     class Fake:
         def __init__(self, config):
             created["config"] = config
 
-    monkeypatch.setattr("graph_memory_mcp.graph_memory.backends.FalkorDBClient", Fake)
+    monkeypatch.setattr(
+        "graph_memory_mcp.graph_memory.backends.arcade.ArcadeDBClient", Fake
+    )
     config = MCPServerConfig()
-    assert config.graph_backend == "falkordb"
+    assert config.graph_backend == "arcadedb"
     opened = open_store(config)
     assert isinstance(opened, Fake)
     assert created["config"] is config
