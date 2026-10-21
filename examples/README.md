@@ -1,14 +1,12 @@
 # Examples
 
-`docker compose up -d` starts FalkorDB and ArcadeDB. It does not start the MCP server. Copy `env.example` to `.env` first: Compose requires `FALKORDB_PASSWORD=falkordb123`, and the code default is an empty password.
+Copy `env.example` to `.env`, then run `docker compose up -d arcadedb` to start ArcadeDB (default backend, port 2480). For FalkorDB instead, set `GRAPH_BACKEND=falkordb` in `.env` and run `docker compose up -d falkordb` (port 6379). The first example run downloads the embedding model.
 
 ```bash
 cp env.example .env
 uv sync
-docker compose up -d
+docker compose up -d arcadedb  # Or: docker compose up -d falkordb
 ```
-
-The default backend is FalkorDB. ArcadeDB is `GRAPH_BACKEND=arcadedb` in `.env` (`root` / `playwithdata`, port 2480). The first example run downloads the embedding model.
 
 | Mode | Process | Example |
 |------|---------|---------|

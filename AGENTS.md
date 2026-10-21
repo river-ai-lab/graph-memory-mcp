@@ -1,6 +1,6 @@
 # Graph Memory MCP — agent notes
 
-Python MCP server (`graph_memory_mcp/`). FalkorDB by default, ArcadeDB with `GRAPH_BACKEND=arcadedb`. Three profiles: default, `--simple`, `--extended`. Pick one and stay on it.
+Python MCP server (`graph_memory_mcp/`). ArcadeDB by default, FalkorDB with `GRAPH_BACKEND=falkordb`. Three profiles: default, `--simple`, `--extended`. Pick one and stay on it.
 
 ## Before commit
 

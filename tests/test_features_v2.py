@@ -390,14 +390,15 @@ def test_metrics_endpoint(db_client):
 
 
 @pytest.mark.integration
-def test_admin_routes_and_agent_tool_separation(db_client, monkeypatch):
+def test_admin_routes_and_agent_tool_separation(memory_backend, monkeypatch):
     """Admin ops live on /admin/*; agent MCP does not expose them by default."""
     from starlette.testclient import TestClient
 
     from graph_memory_mcp.server import GraphMemoryMCP
 
     monkeypatch.delenv("MCP_EXPOSE_ADMIN_TOOLS", raising=False)
-    cfg = load_mcp_server_config()
+    cfg = memory_backend.config
+    db_client = memory_backend.db
     server = GraphMemoryMCP(cfg)
 
     # Admin-only tools are not registered as MCP tools by default...
@@ -415,7 +416,7 @@ def test_admin_routes_and_agent_tool_separation(db_client, monkeypatch):
     owner = f"pytest_admin_{uuid.uuid4().hex[:8]}"
     nodes.create_node(
         db_client,
-        load_mcp_server_config(),
+        cfg,
         text="admin route fact",
         owner_id=owner,
         auto_link=False,

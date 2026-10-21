@@ -1,7 +1,7 @@
 """Graph store entry point.
 
 `FalkorDBClient` remains the name used across the process. `open_store`
-selects FalkorDB (default) or ArcadeDB.
+selects ArcadeDB (default) or FalkorDB.
 """
 
 from graph_memory_mcp.graph_memory.backends import open_store

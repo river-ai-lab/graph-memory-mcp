@@ -11,9 +11,6 @@ import pytest
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
-from graph_memory_mcp.config import load_mcp_server_config
-from graph_memory_mcp.graph_memory.database import FalkorDBClient
-from graph_memory_mcp.graph_memory.embedding_service import EmbeddingService
 from graph_memory_mcp.graph_memory.mcp_handlers_nodes import create_node
 from graph_memory_mcp.graph_memory.mcp_handlers_relations import (
     create_relation,
@@ -72,16 +69,6 @@ def _extract_tool_json(result) -> dict:
             except json.JSONDecodeError:
                 return {"raw": text}
     return {}
-
-
-def _strict_policy_config():
-    base = load_mcp_server_config()
-    return base.model_copy(
-        update={
-            "relation_policy_enforce": "enforce",
-            "relation_allowed_types": "RELATED_TO",
-        }
-    )
 
 
 def test_auto_link_relation_constant():
@@ -210,13 +197,14 @@ def test_create_triplet_enforce_blocks_disallowed_predicate():
 
 
 @pytest.mark.integration
-def test_create_node_links_surface_policy_errors():
-    cfg = _strict_policy_config()
-
-    db = FalkorDBClient(cfg)
-    if not db.connect():
-        pytest.fail("FalkorDB connection failed")
-    db.set_embedding_service(EmbeddingService(model_name=cfg.embedding_model))
+def test_create_node_links_surface_policy_errors(memory_backend):
+    cfg = memory_backend.config.model_copy(
+        update={
+            "relation_policy_enforce": "enforce",
+            "relation_allowed_types": "RELATED_TO",
+        }
+    )
+    db = memory_backend.db
 
     owner_id = f"pytest_link_policy_{uuid.uuid4().hex[:8]}"
     target = create_node(
@@ -250,13 +238,14 @@ def test_create_node_links_surface_policy_errors():
 
 
 @pytest.mark.integration
-def test_auto_link_skipped_under_strict_policy():
-    cfg = _strict_policy_config()
-
-    db = FalkorDBClient(cfg)
-    if not db.connect():
-        pytest.fail("FalkorDB connection failed")
-    db.set_embedding_service(EmbeddingService(model_name=cfg.embedding_model))
+def test_auto_link_skipped_under_strict_policy(memory_backend):
+    cfg = memory_backend.config.model_copy(
+        update={
+            "relation_policy_enforce": "enforce",
+            "relation_allowed_types": "RELATED_TO",
+        }
+    )
+    db = memory_backend.db
 
     owner_id = f"pytest_autolink_policy_{uuid.uuid4().hex[:8]}"
 
@@ -291,12 +280,17 @@ def test_auto_link_skipped_under_strict_policy():
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_mcp_create_relation_policy_enforce():
-    cfg = _strict_policy_config()
+async def test_mcp_create_relation_policy_enforce(memory_backend):
+    cfg = memory_backend.config.model_copy(
+        update={
+            "relation_policy_enforce": "enforce",
+            "relation_allowed_types": "RELATED_TO",
+        }
+    )
 
     server = GraphMemoryMCP(cfg)
     if not server._db_connected:
-        pytest.fail("FalkorDB connection failed")
+        pytest.fail(f"{cfg.graph_backend} connection failed")
 
     app = server.get_mcp_app()
     owner_id = f"pytest_mcp_policy_{uuid.uuid4().hex[:8]}"
@@ -365,12 +359,17 @@ async def test_mcp_create_relation_policy_enforce():
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_mcp_create_triplet_policy_enforce():
-    cfg = _strict_policy_config()
+async def test_mcp_create_triplet_policy_enforce(memory_backend):
+    cfg = memory_backend.config.model_copy(
+        update={
+            "relation_policy_enforce": "enforce",
+            "relation_allowed_types": "RELATED_TO",
+        }
+    )
 
     server = GraphMemoryMCP(cfg)
     if not server._db_connected:
-        pytest.fail("FalkorDB connection failed")
+        pytest.fail(f"{cfg.graph_backend} connection failed")
 
     app = server.get_mcp_app()
     owner_id = f"pytest_mcp_triplet_{uuid.uuid4().hex[:8]}"

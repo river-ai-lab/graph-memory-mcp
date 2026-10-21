@@ -8,7 +8,6 @@ import httpx
 import pytest
 from starlette.testclient import TestClient
 
-from graph_memory_mcp.config import load_mcp_server_config
 from graph_memory_mcp.explorer.app import READ_ONLY_TOOLS, STATIC_DIR, create_app
 from graph_memory_mcp.explorer.mcp_client import McpHttpClient
 
@@ -89,14 +88,14 @@ def test_explorer_api_with_mock_client():
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_explorer_live_get_stats():
-    cfg = load_mcp_server_config()
+async def test_explorer_live_get_stats(memory_backend):
+    cfg = memory_backend.config
 
     from graph_memory_mcp.server import GraphMemoryMCP
 
     server = GraphMemoryMCP(cfg)
     if not server._db_connected:
-        pytest.fail("FalkorDB connection failed")
+        pytest.fail(f"{cfg.graph_backend} connection failed")
 
     mcp_app = server.get_mcp_app()
 

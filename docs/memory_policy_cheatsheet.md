@@ -9,6 +9,11 @@ Constants from your operator (apply, never invent): `<OWNER_ID>` required — pa
 3. `memory_duplicate` or `possible_duplicates`: do not write a third paraphrase. Update, `mark_outdated` + `create_node`, or `check_duplicates=false` only if the fact is different.
 4. After meaningful work — GROW before final reply (Ground → Record → Orient? → Write); skip if nothing durable.
 5. Temporary note → `ttl_days` (14–30). Decision or durable outcome → no TTL. Server never sets TTL from `type`. Do not store a pod lifecycle. Default search and brief hide facts that have a TTL; `include_ttl=true` shows ones that have not expired.
+6. Write back what you had to find:
+   - If `search` returned nothing useful and you later found/figured out/did the answer (code, docs, user, debugging), write it as a Fact phrased close to the original question so the same query finds it next time
+   - Put the source in `metadata` (file, URL, `"source": "user"`)
+   - If it contradicts an existing fact, `mark_outdated` the old one and link new `FOLLOWS_FROM` old instead of creating a duplicate
+   - Don't store things cheap to re-read (file contents, transient values)
 
 ## Situation → tool
 

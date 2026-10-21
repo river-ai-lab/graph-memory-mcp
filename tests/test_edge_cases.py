@@ -53,10 +53,15 @@ def _extract_tool_json(result) -> dict:
     return {"raw": repr(result)}
 
 
-@pytest.fixture(scope="module")
-def server_instance():
-    """Shared server instance for the module to avoid reloading models."""
-    cfg = load_mcp_server_config()
+@pytest.fixture(
+    scope="module",
+    params=["falkordb", pytest.param("arcadedb", marks=pytest.mark.arcade)],
+)
+def server_instance(request):
+    """One server per backend, so the model is not reloaded per test."""
+    cfg = load_mcp_server_config().model_copy(update={"graph_backend": request.param})
+    if request.param == "arcadedb":
+        cfg = cfg.model_copy(update={"arcade_password": "playwithdata"})
     return GraphMemoryMCP(cfg)
 
 

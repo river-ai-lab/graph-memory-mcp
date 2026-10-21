@@ -1,4 +1,4 @@
-"""Default reads hide facts that have a TTL. Needs FalkorDB."""
+"""Default reads hide facts that have a TTL. Runs on FalkorDB and ArcadeDB."""
 
 from __future__ import annotations
 
@@ -6,21 +6,15 @@ import uuid
 
 import pytest
 
-from graph_memory_mcp.config import load_mcp_server_config
-from graph_memory_mcp.graph_memory.database import FalkorDBClient
-from graph_memory_mcp.graph_memory.embedding_service import EmbeddingService
 from graph_memory_mcp.graph_memory.mcp_handlers_admin import get_brief
 from graph_memory_mcp.graph_memory.mcp_handlers_nodes import create_node
 from graph_memory_mcp.graph_memory.mcp_handlers_search import search
 
 
 @pytest.mark.integration
-def test_default_search_and_brief_hide_living_ttl_facts():
-    cfg = load_mcp_server_config()
-    db = FalkorDBClient(cfg)
-    if not db.connect():
-        pytest.fail("FalkorDB connection failed")
-    db.set_embedding_service(EmbeddingService(model_name=cfg.embedding_model))
+def test_default_search_and_brief_hide_living_ttl_facts(memory_backend):
+    cfg = memory_backend.config
+    db = memory_backend.db
     owner_id = f"pytest_ttl_{uuid.uuid4().hex[:8]}"
 
     durable = create_node(

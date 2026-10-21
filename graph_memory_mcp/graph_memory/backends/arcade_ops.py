@@ -1588,7 +1588,9 @@ class ArcadeOps:
                 continue
             if re.fullmatch(r"[A-Z][A-Z0-9_]*", name):
                 names.append(name)
-        return sorted(set(names) | set(self._edge_types))
+        # _edge_types is keyed by database name. The values are edge types.
+        current = self._edge_types.get(self._require_db(), ())
+        return sorted(set(names) | set(current))
 
     def _check_label(self, label: str) -> None:
         if label not in VERTEX_TYPES:
