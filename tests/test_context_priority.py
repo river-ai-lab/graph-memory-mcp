@@ -6,9 +6,6 @@ import uuid
 
 import pytest
 
-from graph_memory_mcp.config import load_mcp_server_config
-from graph_memory_mcp.graph_memory.database import FalkorDBClient
-from graph_memory_mcp.graph_memory.embedding_service import EmbeddingService
 from graph_memory_mcp.graph_memory.mcp_handlers_graph import get_context
 from graph_memory_mcp.graph_memory.mcp_handlers_nodes import create_node
 from graph_memory_mcp.graph_memory.mcp_handlers_relations import create_relation
@@ -34,12 +31,9 @@ def test_caller_priority_can_name_mentions():
 
 
 @pytest.mark.integration
-def test_context_budget_keeps_contradiction_ahead_of_mentions():
-    cfg = load_mcp_server_config()
-    db = FalkorDBClient(cfg)
-    if not db.connect():
-        pytest.fail("FalkorDB connection failed")
-    db.set_embedding_service(EmbeddingService(model_name=cfg.embedding_model))
+def test_context_budget_keeps_contradiction_ahead_of_mentions(memory_backend):
+    cfg = memory_backend.config
+    db = memory_backend.db
     owner_id = f"pytest_ctxpri_{uuid.uuid4().hex[:8]}"
 
     center = create_node(

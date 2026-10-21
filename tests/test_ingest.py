@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 import uuid
 
 import pytest
@@ -337,12 +338,13 @@ def test_owner_graph_delete_and_prune(db_client):
 
 
 @pytest.mark.integration
-def test_admin_owner_routes(db_client):
+def test_admin_owner_routes(memory_backend):
     from starlette.testclient import TestClient
 
     from graph_memory_mcp.server import GraphMemoryMCP
 
-    cfg = load_mcp_server_config()
+    cfg = memory_backend.config
+    db_client = memory_backend.db
     owner = f"pytest_admin_del_{uuid.uuid4().hex[:8]}"
     nodes.create_node(
         db_client, cfg, text="to be deleted", owner_id=owner, auto_link=False
@@ -434,14 +436,18 @@ def test_bfs_skips_outdated_neighbors_unless_flag(db_client):
 
 
 @pytest.mark.integration
-def test_export_import_fact_versions_roundtrip(db_client):
-    cfg = load_mcp_server_config()
+def test_export_import_fact_versions_roundtrip(memory_backend):
+    cfg = memory_backend.config
+    db_client = memory_backend.db
     src = f"pytest_verexp_{uuid.uuid4().hex[:8]}"
     dst = f"{src}_copy"
     created = nodes.create_node(
         db_client, cfg, text="version one", owner_id=src, auto_link=False
     )
     node_id = created["node"]["node_id"]
+    # Snapshot time must fall after creation. Same-millisecond clocks make
+    # as_of=snap_ts-1 look like the node did not exist yet.
+    time.sleep(0.02)
     nodes.update_node(
         db_client,
         node_id=node_id,

@@ -1,4 +1,4 @@
-"""create_node duplicate gate and long-text warning. Needs FalkorDB."""
+"""create_node duplicate gate and long-text warning. Live case runs on both stores."""
 
 from __future__ import annotations
 
@@ -7,8 +7,6 @@ import uuid
 import pytest
 
 from graph_memory_mcp.config import load_mcp_server_config
-from graph_memory_mcp.graph_memory.database import FalkorDBClient
-from graph_memory_mcp.graph_memory.embedding_service import EmbeddingService
 from graph_memory_mcp.graph_memory.mcp_handlers_nodes import (
     _blocking_duplicates,
     _long_text_warnings,
@@ -53,12 +51,9 @@ def test_long_text_warns_without_being_a_limit():
 
 
 @pytest.mark.integration
-def test_create_node_blocks_paraphrase_until_check_is_disabled():
-    cfg = load_mcp_server_config()
-    db = FalkorDBClient(cfg)
-    if not db.connect():
-        pytest.fail("FalkorDB connection failed")
-    db.set_embedding_service(EmbeddingService(model_name=cfg.embedding_model))
+def test_create_node_blocks_paraphrase_until_check_is_disabled(memory_backend):
+    cfg = memory_backend.config
+    db = memory_backend.db
     owner_id = f"pytest_dedup_{uuid.uuid4().hex[:8]}"
     text = "Claim year forecast uses frozen union theta from 1990 to 2020"
 

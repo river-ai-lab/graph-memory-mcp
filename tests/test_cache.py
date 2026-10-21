@@ -151,14 +151,13 @@ def test_lru_cache_eviction(cache_manager):
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_cache_integration(anyio_backend):
+async def test_cache_integration(anyio_backend, memory_backend):
     """Test cache integration with actual server."""
     import anyio
 
-    from graph_memory_mcp.config import load_mcp_server_config
     from graph_memory_mcp.server import GraphMemoryMCP
 
-    cfg = load_mcp_server_config()
+    cfg = memory_backend.config
     owner_id = f"pytest_cache_{uuid.uuid4().hex[:8]}"
     async with anyio.create_task_group() as _tg:
         server = GraphMemoryMCP(cfg)

@@ -46,7 +46,6 @@ from mcp.client.streamable_http import streamable_http_client
 
 from graph_memory_mcp.config import MCPServerConfig, load_mcp_server_config
 from graph_memory_mcp.graph_memory.database import FalkorDBClient
-from graph_memory_mcp.graph_memory.embedding_service import EmbeddingService
 from graph_memory_mcp.graph_memory.mcp_handlers_graph import (
     get_context,
     get_trace,
@@ -82,7 +81,7 @@ def _extract_tool_json(result) -> dict:
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_all_mcp_tools_comprehensive(monkeypatch):
+async def test_all_mcp_tools_comprehensive(monkeypatch, memory_backend):
     """
     Comprehensive test covering all MCP tools from server.py.
 
@@ -91,7 +90,13 @@ async def test_all_mcp_tools_comprehensive(monkeypatch):
     by default they live on /admin/* HTTP routes only.
     """
     monkeypatch.setenv("MCP_EXPOSE_ADMIN_TOOLS", "true")
-    cfg = load_mcp_server_config()
+    # Reload after the env change. Keep the backend the fixture already opened.
+    cfg = load_mcp_server_config().model_copy(
+        update={
+            "graph_backend": memory_backend.config.graph_backend,
+            "arcade_password": memory_backend.config.arcade_password,
+        }
+    )
 
     # Use unique owner_id for isolation
     owner_id = f"pytest_all_tools_{uuid.uuid4().hex[:8]}"
@@ -554,9 +559,9 @@ async def test_all_mcp_tools_comprehensive(monkeypatch):
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_multi_tenant_isolation():
+async def test_multi_tenant_isolation(memory_backend):
     """Test that owner_id properly isolates data between tenants."""
-    cfg = load_mcp_server_config()
+    cfg = memory_backend.config
 
     owner1 = f"pytest_tenant1_{uuid.uuid4().hex[:8]}"
     owner2 = f"pytest_tenant2_{uuid.uuid4().hex[:8]}"
@@ -631,9 +636,9 @@ async def test_multi_tenant_isolation():
 @pytest.mark.integration
 @pytest.mark.asyncio
 @pytest.mark.parametrize("search_type", ["pre_filter", "post_filter"])
-async def test_search_type_finds_fact_within_owner(search_type: str):
+async def test_search_type_finds_fact_within_owner(search_type: str, memory_backend):
     """Both search_type values should return the owner's fact via MCP search."""
-    cfg = load_mcp_server_config()
+    cfg = memory_backend.config
     owner_id = f"pytest_search_type_{uuid.uuid4().hex[:8]}"
     fact_text = f"Unique search type probe {uuid.uuid4().hex}"
 
@@ -681,13 +686,11 @@ async def test_search_type_finds_fact_within_owner(search_type: str):
 
 
 @pytest.mark.integration
-def test_get_context_depth_zero_includes_anchor():
+def test_get_context_depth_zero_includes_anchor(memory_backend):
     """depth=0 should return only the anchor node ([*0..0] includes zero-length path)."""
-    cfg = load_mcp_server_config()
+    cfg = memory_backend.config
+    db = memory_backend.db
     owner_id = f"pytest_ctx_d0_{uuid.uuid4().hex[:8]}"
-    db = FalkorDBClient(cfg)
-    if not db.connect():
-        pytest.fail("FalkorDB connection failed")
 
     created = create_node(
         db,
@@ -716,15 +719,12 @@ def test_get_context_depth_zero_includes_anchor():
 
 
 @pytest.mark.integration
-def test_get_context_default_and_pagination_integration():
-    """Default get_context (offset=0) and paginated pages against real FalkorDB."""
-    cfg = load_mcp_server_config()
+def test_get_context_default_and_pagination_integration(memory_backend):
+    """Default get_context (offset=0) and paginated pages on FalkorDB and ArcadeDB."""
+    cfg = memory_backend.config
+    db = memory_backend.db
 
     owner_id = f"pytest_ctx_page_{uuid.uuid4().hex[:8]}"
-    db = FalkorDBClient(cfg)
-    if not db.connect():
-        pytest.fail("FalkorDB connection failed")
-    db.set_embedding_service(EmbeddingService(model_name=cfg.embedding_model))
 
     center = create_node(
         db,
@@ -1575,13 +1575,11 @@ def test_upsert_node_requires_source_ref():
 
 
 @pytest.mark.integration
-def test_upsert_node_update_applies_inline_links():
+def test_upsert_node_update_applies_inline_links(memory_backend):
     """upsert_node should honor links on the update path, not only on create."""
-    cfg = load_mcp_server_config()
+    cfg = memory_backend.config
+    db = memory_backend.db
     owner_id = f"pytest_upsert_links_{uuid.uuid4().hex[:8]}"
-    db = FalkorDBClient(cfg)
-    if not db.connect():
-        pytest.fail("FalkorDB connection failed")
 
     target = create_node(
         db,
@@ -1637,14 +1635,11 @@ def test_upsert_node_update_applies_inline_links():
 
 
 @pytest.mark.integration
-def test_recall_context_expands_from_semantic_seeds():
+def test_recall_context_expands_from_semantic_seeds(memory_backend):
     """recall_context should return seeds, ranked nodes, and edges in one call."""
-    cfg = load_mcp_server_config()
+    cfg = memory_backend.config
+    db = memory_backend.db
     owner_id = f"pytest_recall_{uuid.uuid4().hex[:8]}"
-    db = FalkorDBClient(cfg)
-    if not db.connect():
-        pytest.fail("FalkorDB connection failed")
-    db.set_embedding_service(EmbeddingService(model_name=cfg.embedding_model))
 
     center = create_node(
         db,
