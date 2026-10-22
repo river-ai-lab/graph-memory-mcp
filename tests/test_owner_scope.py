@@ -9,6 +9,8 @@ from graph_memory_mcp.graph_memory.owner_scope import (
     GraphSizeDenied,
     OwnerHeaderMiddleware,
     OwnerTokenMiddleware,
+    ProjectDenied,
+    bind_api_key,
     bind_mcp_http_request,
     configure_owner_scope,
     graph_size_owner,
@@ -110,11 +112,16 @@ def test_middleware_binds_only_the_mcp_path():
     assert "X-Owner-Id" in seen["error"]
 
 
-def test_token_scope_ignores_the_tool_argument():
+def test_token_scope_uses_the_key_projects(tmp_path):
     configure_owner_scope("token")
-    with bind_mcp_http_request("alice"):
-        assert normalize_owner_id("bob") == "alice"
-        assert normalize_owner_id(None) == "alice"
+    record, _raw = create_key(tmp_path / "keys.json", "alice", ["p1", "p2"])
+    with bind_api_key(record):
+        assert normalize_owner_id("p2") == "p2"
+        assert normalize_owner_id(None) == "p1"
+        assert normalize_owner_id("") == "p1"
+        with pytest.raises(ProjectDenied) as denied:
+            normalize_owner_id("bob")
+        assert denied.value.status == 403
 
 
 def test_token_scope_outside_http_keeps_the_argument():
@@ -125,12 +132,15 @@ def test_token_scope_outside_http_keeps_the_argument():
 def test_token_middleware_requires_a_live_key(tmp_path):
     configure_owner_scope("token")
     path = tmp_path / "keys.json"
-    _record, raw = create_key(path, "alice")
+    _record, raw = create_key(path, "alice", ["p1", "p2"])
     seen = {}
     sent = []
 
     async def app(scope, receive, send):
-        seen["owner"] = normalize_owner_id("bob")
+        try:
+            seen["owner"] = normalize_owner_id("bob")
+        except ProjectDenied as exc:
+            seen["denied"] = exc.status
         await send({"type": "http.response.start", "status": 204, "headers": []})
         await send({"type": "http.response.body", "body": b""})
 
@@ -164,7 +174,8 @@ def test_token_middleware_requires_a_live_key(tmp_path):
     assert sent[0]["status"] == 401
 
     asyncio.run(_call("/mcp", f"Bearer {raw}"))
-    assert seen["owner"] == "alice"
+    assert "owner" not in seen
+    assert seen["denied"] == 403
 
     asyncio.run(_call("/admin/health", None))
     assert seen["owner"] == "bob"
@@ -173,7 +184,7 @@ def test_token_middleware_requires_a_live_key(tmp_path):
 def test_token_middleware_rejects_a_revoked_key(tmp_path):
     configure_owner_scope("token")
     path = tmp_path / "keys.json"
-    record, raw = create_key(path, "alice")
+    record, raw = create_key(path, "alice", ["p1"])
     revoke_key(path, record.id)
     called = {}
 
@@ -211,7 +222,7 @@ def test_token_middleware_rejects_a_revoked_key(tmp_path):
 
 def test_graph_size_is_closed(tmp_path):
     path = tmp_path / "keys.json"
-    _record, raw = create_key(path, "alice")
+    _record, raw = create_key(path, "alice", ["alice"])
 
     with pytest.raises(GraphSizeDenied) as denied:
         graph_size_owner(
@@ -258,12 +269,22 @@ def test_graph_size_is_closed(tmp_path):
         graph_size_owner(
             scope="token",
             authorization=f"Bearer {raw}",
-            owner_header="bob",
+            owner_header=None,
             admin_token="",
             keys_file=str(path),
         )
         == "alice"
     )
+
+    with pytest.raises(GraphSizeDenied) as foreign:
+        graph_size_owner(
+            scope="token",
+            authorization=f"Bearer {raw}",
+            owner_header="bob",
+            admin_token="",
+            keys_file=str(path),
+        )
+    assert foreign.value.status == 403
 
     with pytest.raises(GraphSizeDenied) as token_denied:
         graph_size_owner(

@@ -4,13 +4,14 @@
     deploy.
 `header`: the tool argument is ignored. The owner is `X-Owner-Id`, set by
     an authenticating gateway in front of the server.
-`token`: the tool argument is ignored. The owner is the one stored for the
-    ``Authorization: Bearer`` API key. A missing or revoked key is HTTP 401.
+`token`: a Bearer API key is required. ``owner_id`` must be one of that
+    key's projects; if omitted, the first project is used. ``created_by`` and
+    ``updated_by`` are the key's name.
 
 Jobs and in-process calls are not HTTP requests, so they keep the owner they
-were given. Header and token modes bind that owner on the HTTP request task.
-FastMCP runs the tool in a child task started after that bind; the child
-copies the context.
+were given. Header and token modes bind request state on the HTTP request
+task. FastMCP runs the tool in a child task started after that bind; the
+child copies the context.
 """
 
 from __future__ import annotations
@@ -19,14 +20,27 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Iterator
 
-from graph_memory_mcp.graph_memory.api_keys import bearer_matches, owner_for_bearer
+from graph_memory_mcp.graph_memory.api_keys import (
+    ApiKeyRecord,
+    bearer_matches,
+    key_for_bearer,
+)
 
 _configured_scope = "client"
 _mcp_request: ContextVar[bool] = ContextVar("gm_mcp_request", default=False)
 _header_owner: ContextVar[str | None] = ContextVar("gm_header_owner", default=None)
+_bound_key: ContextVar[ApiKeyRecord | None] = ContextVar("gm_bound_key", default=None)
 
 HEADER_NAME = "x-owner-id"
 _SCOPES = ("client", "header", "token")
+
+
+class ProjectDenied(Exception):
+    """The requested owner_id is not in the API key's projects."""
+
+    def __init__(self, message: str, status: int = 403) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 def configure_owner_scope(scope: str) -> None:
@@ -44,22 +58,53 @@ def owner_scope() -> str:
     return _configured_scope
 
 
+def bound_key() -> ApiKeyRecord | None:
+    """API key bound for this MCP HTTP request, if any."""
+    return _bound_key.get()
+
+
+def bound_key_name() -> str | None:
+    """Author for token-mode writes: the key's name, or None outside token HTTP."""
+    record = _bound_key.get()
+    if record is None:
+        return None
+    name = str(record.name or "").strip()
+    return name or None
+
+
 def pinned_owner_argument() -> str | None:
     """Owner that replaces the tool argument, or None to keep the argument.
 
-    Raises ValueError when header or token mode is serving an MCP HTTP request
-    and no owner was bound. An empty value must not fall back to
-    `DEFAULT_OWNER_ID` or to the tool argument. Token mode rejects the request
-    in middleware before this runs; the error here is the in-process backstop.
+    Raises ValueError when header mode is serving an MCP HTTP request and no
+    owner was bound. An empty value must not fall back to `DEFAULT_OWNER_ID`
+    or to the tool argument. Token mode does not pin: it validates the tool
+    argument against the key's projects. A missing key is rejected in
+    middleware before this runs.
     """
-    if _configured_scope not in ("header", "token") or not _mcp_request.get():
+    if _configured_scope != "header" or not _mcp_request.get():
         return None
     raw = _header_owner.get()
     if raw is None or not str(raw).strip():
-        if _configured_scope == "token":
-            raise ValueError("API key is required")
         raise ValueError("X-Owner-Id header is required")
     return str(raw).strip()
+
+
+def resolve_token_owner(requested: str | None) -> str:
+    """Pick or reject owner_id for a token-mode MCP HTTP request."""
+    record = _bound_key.get()
+    if record is None:
+        raise ValueError("API key is required")
+    if not record.projects:
+        raise ProjectDenied("API key has no projects")
+    raw = str(requested or "").strip()
+    if not raw:
+        return str(record.projects[0])
+    if raw not in record.projects:
+        allowed = ", ".join(record.projects)
+        raise ProjectDenied(
+            f"owner_id {raw!r} is not in this API key's projects ({allowed})"
+        )
+    return raw
 
 
 @contextmanager
@@ -72,6 +117,18 @@ def bind_mcp_http_request(header: str | None) -> Iterator[None]:
     finally:
         _mcp_request.reset(token_request)
         _header_owner.reset(token_header)
+
+
+@contextmanager
+def bind_api_key(record: ApiKeyRecord) -> Iterator[None]:
+    """Bind a live API key for a token-mode MCP HTTP request."""
+    token_request = _mcp_request.set(True)
+    token_key = _bound_key.set(record)
+    try:
+        yield
+    finally:
+        _mcp_request.reset(token_request)
+        _bound_key.reset(token_key)
 
 
 class OwnerHeaderMiddleware:
@@ -94,7 +151,7 @@ class OwnerHeaderMiddleware:
 
 
 class OwnerTokenMiddleware:
-    """Require a Bearer API key on ``/mcp`` and bind that key's owner.
+    """Require a Bearer API key on ``/mcp`` and bind that key.
 
     ``/admin`` is unchanged. ``/internal/graph-size`` checks the key itself.
     """
@@ -112,11 +169,11 @@ class OwnerTokenMiddleware:
             await self.app(scope, receive, send)
             return
         authorization = _header_value(scope, "authorization")
-        owner = owner_for_bearer(self.keys_file, authorization)
-        if not owner:
+        record = key_for_bearer(self.keys_file, authorization)
+        if record is None:
             await _send_unauthorized(send)
             return
-        with bind_mcp_http_request(owner):
+        with bind_api_key(record):
             await self.app(scope, receive, send)
 
 
@@ -138,18 +195,30 @@ def graph_size_owner(
 ) -> str:
     """Owner for ``/internal/graph-size``.
 
-    ``token`` uses the API key and ignores ``X-Owner-Id``. ``client`` requires
-    ``ADMIN_TOKEN`` and then ``X-Owner-Id``. ``header`` keeps the gateway
-    contract: ``X-Owner-Id`` alone, no admin token.
+    ``token`` uses the API key. ``X-Owner-Id`` must be one of the key's
+    projects when sent; if omitted, the first project is used. ``client``
+    requires ``ADMIN_TOKEN`` and then ``X-Owner-Id``. ``header`` keeps the
+    gateway contract: ``X-Owner-Id`` alone, no admin token.
     """
-    from graph_memory_mcp.graph_memory.utils import normalize_owner_id
+    from graph_memory_mcp.graph_memory.utils import (
+        normalize_owner_id,
+        require_owner_id_format,
+    )
 
     mode = str(scope or "client").strip().lower()
     if mode == "token":
-        owner = owner_for_bearer(keys_file, authorization)
-        if not owner:
+        record = key_for_bearer(keys_file, authorization)
+        if record is None:
             raise GraphSizeDenied(401, "Unauthorized")
-        return normalize_owner_id(owner)
+        raw = (owner_header or "").strip()
+        if not raw:
+            return require_owner_id_format(record.projects[0])
+        if raw not in record.projects:
+            raise GraphSizeDenied(
+                403,
+                f"owner_id {raw!r} is not in this API key's projects",
+            )
+        return require_owner_id_format(raw)
     if mode != "header" and not bearer_matches(authorization, admin_token):
         raise GraphSizeDenied(401, "Unauthorized")
     raw = (owner_header or "").strip()

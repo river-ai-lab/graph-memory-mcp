@@ -11,6 +11,7 @@ from graph_memory_mcp.base_server import BaseGraphMemoryMCP
 from graph_memory_mcp.graph_memory.api_keys import create_key
 from graph_memory_mcp.graph_memory.owner_scope import (
     OwnerTokenMiddleware,
+    ProjectDenied,
     configure_owner_scope,
 )
 from graph_memory_mcp.graph_memory.utils import normalize_owner_id
@@ -39,7 +40,13 @@ def _app(tmp_path, *, scope: str, admin_token: str, keys_file: str):
 
     async def mcp(request):
         configure_owner_scope(scope)
-        return JSONResponse({"owner": normalize_owner_id("bob")})
+        try:
+            owner = normalize_owner_id(request.query_params.get("owner") or "")
+        except ProjectDenied as exc:
+            return JSONResponse(
+                {"success": False, "error": str(exc)}, status_code=exc.status
+            )
+        return JSONResponse({"owner": owner})
 
     stub = SimpleNamespace(
         server_config=SimpleNamespace(
@@ -61,7 +68,7 @@ def _app(tmp_path, *, scope: str, admin_token: str, keys_file: str):
 
 def test_token_routes_require_keys_and_admin_token(tmp_path):
     path = tmp_path / "keys.json"
-    _record, raw = create_key(path, "alice")
+    _record, raw = create_key(path, "alice", ["p1", "p2"])
     app, db = _app(tmp_path, scope="token", admin_token="", keys_file=str(path))
     client = TestClient(app)
 
@@ -70,7 +77,14 @@ def test_token_routes_require_keys_and_admin_token(tmp_path):
 
     authed = client.post("/mcp", headers={"Authorization": f"Bearer {raw}"})
     assert authed.status_code == 200
-    assert authed.json()["owner"] == "alice"
+    assert authed.json()["owner"] == "p1"
+
+    picked = client.post("/mcp?owner=p2", headers={"Authorization": f"Bearer {raw}"})
+    assert picked.status_code == 200
+    assert picked.json()["owner"] == "p2"
+
+    foreign = client.post("/mcp?owner=bob", headers={"Authorization": f"Bearer {raw}"})
+    assert foreign.status_code == 403
 
     blocked = client.delete("/admin/owners/bob")
     assert blocked.status_code == 401
@@ -78,15 +92,21 @@ def test_token_routes_require_keys_and_admin_token(tmp_path):
 
     sized = client.get(
         "/internal/graph-size",
-        headers={"Authorization": f"Bearer {raw}", "X-Owner-Id": "bob"},
+        headers={"Authorization": f"Bearer {raw}"},
     )
     assert sized.status_code == 200
-    assert sized.json()["owner_id"] == "alice"
+    assert sized.json()["owner_id"] == "p1"
+
+    foreign_size = client.get(
+        "/internal/graph-size",
+        headers={"Authorization": f"Bearer {raw}", "X-Owner-Id": "bob"},
+    )
+    assert foreign_size.status_code == 403
 
 
 def test_token_admin_accepts_the_admin_token(tmp_path):
     path = tmp_path / "keys.json"
-    create_key(path, "alice")
+    create_key(path, "alice", ["p1"])
     app, db = _app(tmp_path, scope="token", admin_token="secret", keys_file=str(path))
     client = TestClient(app)
 

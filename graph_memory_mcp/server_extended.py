@@ -33,7 +33,7 @@ class GraphMemoryExtendedMCP(GraphMemoryMCP):
         config = self.config
         mcp = self.mcp
         assert mcp is not None
-        default_owner = self.config.default_owner_id
+        default_owner = self._tool_owner_default()
 
         @mcp.tool(
             title="Create node",
@@ -54,7 +54,8 @@ class GraphMemoryExtendedMCP(GraphMemoryMCP):
                 "After expires_at the archive job sets status=archived. "
                 "`check_duplicates` (default true) blocks a near-paraphrase before write. "
                 "Pass false when the nearby fact is similar by distance but is a different fact. "
-                "A very long text is warned in `warnings` and still stored."
+                "A very long text is warned in `warnings` and still stored. "
+                f"{self._owner_tool_help()} {self._attribution_tool_help()}"
             ),
         )
         def create_node(
@@ -104,7 +105,8 @@ class GraphMemoryExtendedMCP(GraphMemoryMCP):
                 "Optional: same fields as create_node, including `description`, "
                 "`shared_with_ids`, and `collection_id`, plus `versioning=true` to store "
                 "a version snapshot and auto-increment `source.version` when it is omitted. "
-                "No `check_duplicates`: this updates the node for that ref."
+                "No `check_duplicates`: this updates the node for that ref. "
+                f"{self._owner_tool_help()} {self._attribution_tool_help()}"
             ),
         )
         def upsert_node(
@@ -151,7 +153,8 @@ class GraphMemoryExtendedMCP(GraphMemoryMCP):
             description=(
                 "Update a node (Fact or Entity). "
                 "You can update text, description, shared_with_ids, metadata, source, status, or ttl_days. "
-                "Set versioning=true to store a previous snapshot and auto-increment source.version when it is omitted."
+                "Set versioning=true to store a previous snapshot and auto-increment source.version when it is omitted. "
+                f"{self._owner_tool_help()} {self._attribution_tool_help()}"
             ),
         )
         def update_node(

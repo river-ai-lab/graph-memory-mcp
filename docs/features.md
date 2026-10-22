@@ -6,7 +6,7 @@ Normative tool signatures. Jobs: [background_jobs.md](./background_jobs.md). Age
 
 ## Data model
 
-**Common:** `node_id`, `owner_id`, `metadata`, `created_at`, `status` (`active`|`outdated`|`archived`), optional `ttl_days`/`expires_at`, `source` `{ref,type,uri,content_hash,updated_at,version}`, `embedding` (not returned via MCP).
+**Common:** `node_id`, `owner_id`, `metadata`, `created_by`, `created_at`, `updated_by`, `updated_at`, `status` (`active`|`outdated`|`archived`), optional `ttl_days`/`expires_at`, `source` `{ref,type,uri,content_hash,updated_at,version}`, `embedding` (not returned via MCP). `created_at` / `updated_at` are set by the server. In `client` and `header`, `created_by` / `updated_by` come from `metadata.created_by` / `metadata.updated_by`. In `token` they are the API key name.
 
 **Fact** — `text`. **Entity** — optional `type`. Practical labels, not ontology.
 

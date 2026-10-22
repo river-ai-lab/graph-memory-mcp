@@ -72,7 +72,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
         db = self.db_client
         mcp = self.mcp
         assert mcp is not None
-        default_owner = self.config.default_owner_id
+        default_owner = self._tool_owner_default()
 
         if self.config.mcp_expose_admin_tools:
 
@@ -180,7 +180,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
         config = self.config
         mcp = self.mcp
         assert mcp is not None
-        default_owner = self.config.default_owner_id
+        default_owner = self._tool_owner_default()
 
         @mcp.tool(
             title="Create node",
@@ -198,7 +198,8 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
                 "After expires_at the archive job sets status=archived. "
                 "`check_duplicates` (default true) blocks a near-paraphrase before write. "
                 "Pass false when the nearby fact is similar by distance but is a different fact. "
-                "A very long text is warned in `warnings` and still stored."
+                "A very long text is warned in `warnings` and still stored. "
+                f"{self._owner_tool_help()} {self._attribution_tool_help()}"
             ),
         )
         def create_node(
@@ -238,7 +239,8 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
                 "Create or update a node using `source.ref` as a stable sync key. "
                 "Required: `text`, `source.ref`. "
                 "Optional: same fields as create_node, plus `versioning=true` to store "
-                "a version snapshot and auto-increment `source.version` when it is omitted."
+                "a version snapshot and auto-increment `source.version` when it is omitted. "
+                f"{self._owner_tool_help()} {self._attribution_tool_help()}"
             ),
         )
         def upsert_node(
@@ -279,7 +281,8 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
             description=(
                 "Update a node (Fact or Entity). "
                 "You can update text, metadata, source, status, or ttl_days. "
-                "Set versioning=true to store a previous snapshot and auto-increment source.version when it is omitted."
+                "Set versioning=true to store a previous snapshot and auto-increment source.version when it is omitted. "
+                f"{self._owner_tool_help()} {self._attribution_tool_help()}"
             ),
         )
         def update_node(
@@ -318,7 +321,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
         config = self.config
         mcp = self.mcp
         assert mcp is not None
-        default_owner = self.config.default_owner_id
+        default_owner = self._tool_owner_default()
 
         @mcp.tool(
             title="Ingest knowledge",
@@ -329,7 +332,8 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
                 "EXTRACTED_FROM links to the source, and optional triplets. "
                 "Prefer facts[].ref for stable ids across edits/reorders; omit ref "
                 "to key by text hash. Idempotent on fact ref. Extract first, then "
-                "call once. Check possible_duplicates in the response."
+                "call once. Check possible_duplicates in the response. "
+                f"{self._owner_tool_help()} {self._attribution_tool_help()}"
             ),
         )
         def ingest_knowledge(
@@ -357,7 +361,8 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
                 "Bulk create up to 200 nodes of one type in a single call with "
                 "batched embeddings. Each item: {text, description?, metadata?, "
                 "status?, ttl_days?}. No auto_link/links/possible_duplicates — "
-                "link explicitly afterwards."
+                "link explicitly afterwards. "
+                f"{self._owner_tool_help()} {self._attribution_tool_help()}"
             ),
         )
         def create_nodes(
@@ -366,7 +371,11 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
             owner_id: str = default_owner,
         ) -> dict:
             return mcp_handlers_nodes.create_nodes(
-                db, config, items=items, node_type=node_type, owner_id=owner_id
+                db,
+                config,
+                items=items,
+                node_type=node_type,
+                owner_id=owner_id,
             )
 
         if self.config.mcp_expose_admin_tools:
@@ -403,7 +412,9 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
                 description=(
                     "Import an export_owner payload into an owner scope. "
                     "Nodes merge by uid (idempotent). Embeddings are taken from the "
-                    "payload or recomputed when missing/regenerate_embeddings=true."
+                    "payload or recomputed when missing/regenerate_embeddings=true. "
+                    "created_*/updated_* in the payload are ignored; "
+                    "/admin/import keeps them."
                 ),
             )
             def import_owner(
@@ -433,7 +444,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
         config = self.config
         mcp = self.mcp
         assert mcp is not None
-        default_owner = self.config.default_owner_id
+        default_owner = self._tool_owner_default()
 
         @mcp.tool(
             title="Search",
@@ -521,14 +532,20 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
                 "Soft-delete a Fact by setting status='outdated'. "
                 "Fact remains in graph but excluded from default searches. "
                 "Optionally stores reason in metadata. "
-                "Note: Only Facts support soft-delete. For Entities, use delete_node."
+                "Note: Only Facts support soft-delete. For Entities, use delete_node. "
+                f"{self._owner_tool_help()} {self._attribution_tool_help(source=None)}"
             ),
         )
         def mark_outdated(
-            fact_id: str, reason: str | None = None, owner_id: str = default_owner
+            fact_id: str,
+            reason: str | None = None,
+            owner_id: str = default_owner,
         ) -> dict:
             return mcp_handlers_nodes.mark_outdated(
-                db, fact_id=fact_id, reason=reason, owner_id=owner_id
+                db,
+                fact_id=fact_id,
+                reason=reason,
+                owner_id=owner_id,
             )
 
         @mcp.tool(
@@ -561,14 +578,15 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
         config = self.config
         mcp = self.mcp
         assert mcp is not None
-        default_owner = self.config.default_owner_id
+        default_owner = self._tool_owner_default()
 
         @mcp.tool(
             title="Create triplet",
             description=(
                 "Create a subject-predicate-object triplet. "
                 "Entities are created if they don't exist. "
-                "Optional: link to a source fact_id."
+                "Optional: link to a source fact_id. "
+                f"{self._owner_tool_help()} {self._attribution_tool_help()}"
             ),
         )
         def create_triplet(
@@ -624,7 +642,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
         config = self.config
         mcp = self.mcp
         assert mcp is not None
-        default_owner = self.config.default_owner_id
+        default_owner = self._tool_owner_default()
 
         @mcp.tool(
             title="Create relation",
@@ -634,7 +652,8 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
                 "Uses MERGE — same from_id, to_id, and relation_type will not create duplicates. "
                 "Default: RELATED_TO for general links, MENTIONS when one node refers to another. "
                 "Use SUMMARIZES, FOLLOWS_FROM, CONTRADICTS only when semantics matter. "
-                "Types must be in server RELATION_ALLOWED_TYPES (see memory policies)."
+                "Types must be in server RELATION_ALLOWED_TYPES (see memory policies). "
+                f"{self._owner_tool_help()} {self._attribution_tool_help(source='properties')}"
             ),
         )
         def create_relation(

@@ -33,15 +33,33 @@ _AGENT_POLICIES_PATH = (
     Path(__file__).resolve().parent.parent / "docs" / "memory_policies_for_LLM.md"
 )
 
-# Shown to MCP clients at connect (see MCP spec: server instructions).
-_MCP_INSTRUCTIONS = (
-    "Graph Memory is a long-term knowledge graph, not a chat log. "
-    "Always pass owner_id explicitly on reads and writes (alphanumeric, _, -, @). "
-    "Search before create; store one durable declarative fact per node. "
-    "Never store chat logs, secrets, or ephemeral execution state. "
-    "For substantive changes: mark_outdated then create_node. "
-    f"Before the first memory write in a session, read MCP resource {_AGENT_POLICIES_URI}."
-)
+
+def _mcp_instructions(scope: str) -> str:
+    """Mode-specific text shown to MCP clients at connect."""
+    common = (
+        "Graph Memory is a long-term knowledge graph, not a chat log. "
+        "Search before create; store one durable declarative fact per node. "
+        "Never store chat logs, secrets, or ephemeral execution state. "
+        "For substantive changes: mark_outdated then create_node. "
+        f"Before the first memory write in a session, read MCP resource {_AGENT_POLICIES_URI}."
+    )
+    mode = str(scope or "client").strip().lower()
+    if mode == "token":
+        return (
+            f"{common} The server sets created_by and updated_by from the API key "
+            "name. Pass owner_id only to choose among the key's projects; omit it "
+            "to use the first project."
+        )
+    if mode == "header":
+        return (
+            f"{common} Pass owner_id for compatibility (the server uses X-Owner-Id). "
+            "Set metadata.created_by and metadata.updated_by for attribution."
+        )
+    return (
+        f"{common} Always pass owner_id explicitly on reads and writes "
+        "(alphanumeric, _, -, @). Set metadata.created_by and "
+        "metadata.updated_by for attribution."
+    )
 
 
 class _UnavailableEmbeddingService:
@@ -98,7 +116,7 @@ class BaseGraphMemoryMCP:
 
         self.mcp = FastMCP(
             name=self.server_config.description or self.server_config.name,
-            instructions=_MCP_INSTRUCTIONS,
+            instructions=_mcp_instructions(server_config.owner_scope),
             stateless_http=True,
             json_response=True,
         )
@@ -180,6 +198,36 @@ class BaseGraphMemoryMCP:
             app.router.lifespan_context = _lifespan  # type: ignore[attr-defined]
         return app
 
+    def _tool_owner_default(self) -> str:
+        """Empty in token mode so an omitted owner_id uses the key's first project."""
+        if self.server_config.owner_scope == "token":
+            return ""
+        return self.config.default_owner_id
+
+    def _attribution_tool_help(self, *, source: str | None = "metadata") -> str:
+        if self.server_config.owner_scope == "token":
+            return (
+                "created_by and updated_by are the API key name. "
+                "created_at and updated_at are set by the server."
+            )
+        if source is None:
+            return "created_at and updated_at are set by the server."
+        return (
+            f"created_by and updated_by come from `{source}.created_by` and "
+            f"`{source}.updated_by` when those keys are set. "
+            "created_at and updated_at are set by the server."
+        )
+
+    def _owner_tool_help(self) -> str:
+        if self.server_config.owner_scope == "token":
+            return (
+                "`owner_id` must be one of the API key's projects; omit it to use "
+                "the first project."
+            )
+        if self.server_config.owner_scope == "header":
+            return "`owner_id` is ignored; the server uses the X-Owner-Id header."
+        return "Pass `owner_id` on every call."
+
     def _register_tools(self) -> None:
         """Register all MCP tools. To be overridden by subclasses."""
         raise NotImplementedError("Subclasses must implement _register_tools()")
@@ -253,6 +301,7 @@ class BaseGraphMemoryMCP:
                     nodes=body.get("nodes") or [],
                     relations=body.get("relations"),
                     regenerate_embeddings=bool(body.get("regenerate_embeddings")),
+                    preserve_audit=True,
                 )
             )
 

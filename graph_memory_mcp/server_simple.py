@@ -61,7 +61,7 @@ class GraphMemorySimpleMCP(GraphMemoryMCP):
         config = self.config
         mcp = self.mcp
         assert mcp is not None
-        default_owner = self.config.default_owner_id
+        default_owner = self._tool_owner_default()
 
         @mcp.tool(
             title="Create node",
@@ -80,7 +80,8 @@ class GraphMemorySimpleMCP(GraphMemoryMCP):
                 "After expires_at the archive job sets status=archived. "
                 "`check_duplicates` (default true) blocks a near-paraphrase before write. "
                 "Pass false when the nearby fact is a different one. "
-                "A very long text is warned in `warnings` and still stored."
+                "A very long text is warned in `warnings` and still stored. "
+                f"{self._owner_tool_help()} {self._attribution_tool_help()}"
             ),
         )
         def create_node(
@@ -134,7 +135,8 @@ class GraphMemorySimpleMCP(GraphMemoryMCP):
                 "Required: `text`, `ref`. "
                 "Optional: same flat provenance fields as create_node (`provenance_type`, `uri`, "
                 "`content_hash`, `updated_at`, `version`), plus `versioning=true` to store "
-                "a version snapshot and auto-increment `version` when it is omitted."
+                "a version snapshot and auto-increment `version` when it is omitted. "
+                f"{self._owner_tool_help()} {self._attribution_tool_help()}"
             ),
         )
         def upsert_node(
@@ -190,7 +192,8 @@ class GraphMemorySimpleMCP(GraphMemoryMCP):
                 "You can update text, metadata, status, or ttl_days. "
                 "Optional provenance updates use the same flat fields as create_node (`ref`, `provenance_type`, `uri`, "
                 "`content_hash`, `updated_at`, `version`). "
-                "Set versioning=true to store a previous snapshot and auto-increment version when it is omitted."
+                "Set versioning=true to store a previous snapshot and auto-increment version when it is omitted. "
+                f"{self._owner_tool_help()} {self._attribution_tool_help()}"
             ),
         )
         def update_node(

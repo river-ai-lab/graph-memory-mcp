@@ -10,6 +10,8 @@ Falkor takes a Redis lock per job and owner. Arcade does not. If the graph backe
 
 Merges near-duplicate Facts and Entities (cosine ≥ `JOB_DEDUPLICATE_SIMILARITY_THRESHOLD`, default 0.95). Cron: `JOB_DEDUPLICATE_CRON` (hourly).
 
+The survivor keeps its own `created_by` and `created_at`. The outdated duplicate keeps its own `created_by`; only its `updated_at` changes. A new edge copied onto the survivor keeps the duplicate edge's `created_by` / `created_at`, with `updated_at` set to the merge time. If that edge already exists on the survivor, its `created_*` stay and only `updated_at` becomes the merge time.
+
 ## Archive
 
 Sets `status=archived` on Facts whose `expires_at` has passed, including Facts that still have relations. Cron: `JOB_ARCHIVE_CRON` (weekly).

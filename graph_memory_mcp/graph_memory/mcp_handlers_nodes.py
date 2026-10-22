@@ -7,6 +7,11 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict
 
+from graph_memory_mcp.graph_memory.authorship import (
+    authors_for_write,
+    in_token_request,
+    metadata_for_store,
+)
 from graph_memory_mcp.graph_memory.database import FalkorDBClient
 from graph_memory_mcp.graph_memory.mcp_handlers_relations import create_relation
 from graph_memory_mcp.graph_memory.relation_policy import (
@@ -68,33 +73,66 @@ def metadata_promoted_props(metadata: Optional[Dict]) -> Dict[str, Any]:
     }
 
 
+def _write_metadata(
+    metadata: Optional[Dict], *, created_by: Optional[str] = None
+) -> tuple[dict[str, Any], dict[str, Any], str]:
+    """Strip protected fields, then promote reserved keys for storage."""
+    stored = metadata_for_store(metadata)
+    promoted = metadata_promoted_props(stored)
+    if created_by is not None:
+        promoted["created_by"] = created_by
+    return stored, promoted, dump_json(stored)
+
+
+# Column order of Falkor ``node_return_fields`` and Arcade ``_node_row``.
+_NODE_ROW_FIELDS = (
+    "node_id",
+    "node_type",
+    "text",
+    "description",
+    "status",
+    "created_at",
+    "updated_at",
+    "metadata_str",
+    "shared_with_ids",
+    "ttl_days",
+    "expires_at",
+    "entity_type",
+    "source_str",
+    "created_by",
+    "updated_by",
+)
+
+
 def _node_from_row(row: List[Any]) -> Dict[str, Any]:
     """Build the public node payload from a projected DB row."""
-    source = load_json(row[12], None)
+    projected = dict(zip(_NODE_ROW_FIELDS, row))
+    source = load_json(projected.get("source_str"), None)
+    description = ensure_text(projected.get("description"))
+    entity_type = ensure_text(projected.get("entity_type"))
+    created_by = ensure_text(projected.get("created_by"))
+    updated_by = ensure_text(projected.get("updated_by"))
     node = {
-        "node_id": str(row[0]),
-        "node_type": row[1],
-        "text": ensure_text(row[2]),
-        "status": ensure_text(row[4]),
-        "created_at": row[5],
-        "metadata": load_json(row[7], {}),
-        "ttl_days": row[9],
-        "expires_at": row[10],
-        "type": ensure_text(row[11]) if row[11] else None,
+        "node_id": str(projected.get("node_id")),
+        "node_type": projected.get("node_type"),
+        "text": ensure_text(projected.get("text")),
+        "status": ensure_text(projected.get("status")),
+        "created_at": projected.get("created_at"),
+        "metadata": load_json(projected.get("metadata_str"), {}),
+        "ttl_days": projected.get("ttl_days"),
+        "expires_at": projected.get("expires_at"),
+        "type": entity_type or None,
     }
-
-    node.update(
-        {
-            k: v
-            for k, v in [
-                ("description", ensure_text(row[3]) if row[3] else None),
-                ("updated_at", row[6]),
-                ("shared_with_ids", row[8]),
-                ("source", source),
-            ]
-            if v is not None and v != []
-        }
-    )
+    shared = projected.get("shared_with_ids")
+    extras = [
+        ("description", description or None),
+        ("updated_at", projected.get("updated_at")),
+        ("shared_with_ids", shared),
+        ("source", source),
+        ("created_by", created_by),
+        ("updated_by", updated_by),
+    ]
+    node.update({k: v for k, v in extras if v is not None and v != []})
     return node
 
 
@@ -237,6 +275,10 @@ def create_node(
         return error_response(error, code="memory_validation_error")
 
     owner_id = normalize_owner_id(owner_id)
+    created_by, updated_by = authors_for_write(metadata)
+    _stored_meta, promoted, metadata_str = _write_metadata(
+        metadata, created_by=created_by
+    )
     embedding = db.get_embedding(text)
 
     possible_duplicates = _find_possible_duplicates(
@@ -261,8 +303,6 @@ def create_node(
     if ttl_days is not None and ttl_days > 0:
         expires_at = int(time.time() * 1000) + int(ttl_days * 24 * 3600 * 1000)
 
-    # Create node
-    metadata_str = dump_json(metadata or {})  # Maps must be JSON strings in FalkorDB
     source_props = _source_properties(source)
 
     params = {
@@ -275,7 +315,8 @@ def create_node(
         "shared_with_ids": shared_with_ids or [],
         "ttl_days": ttl_days,
         "expires_at": expires_at,
-        **metadata_promoted_props(metadata),
+        "updated_by": updated_by,
+        **promoted,
     }
     if embedding:
         params["embedding"] = embedding
@@ -412,19 +453,23 @@ def create_nodes(
     rows = []
     for item, text, embedding in zip(items, texts, embeddings):
         ttl_days = item.get("ttl_days")
-        promoted = metadata_promoted_props(item.get("metadata"))
+        item_created_by, item_updated_by = authors_for_write(item.get("metadata"))
+        _stored, promoted, metadata_str = _write_metadata(
+            item.get("metadata"), created_by=item_created_by
+        )
         rows.append(
             {
                 "uid": new_uid(),
                 "text": text,
                 "description": ensure_text(item.get("description")),
                 "status": item.get("status") or "active",
-                "metadata_str": dump_json(item.get("metadata") or {}),
+                "metadata_str": metadata_str,
                 "tags": promoted["tags"],
                 "meta_type": promoted["meta_type"],
                 "confidence": promoted["confidence"],
                 "project": promoted["project"],
                 "created_by": promoted["created_by"],
+                "updated_by": item_updated_by,
                 "ttl_days": ttl_days,
                 "expires_at": (
                     now_ms + int(ttl_days * 24 * 3600 * 1000)
@@ -721,9 +766,17 @@ def update_node(
     if versioning and node_type == "Fact":
         db.snapshot_fact(node_id=node_id, owner_id=owner_id, version_uid=new_uid())
 
-    # Build SET clauses
+    # Token mode keeps created_by and stamps updated_by from the key.
+    # Client/header copy created_by from merged metadata (pre-existing promotion)
+    # and updated_by only when this call supplies metadata.updated_by.
     set_clauses = [db.updated_at_assignment()]
     params = {"node_id": node_id, "owner_id": owner_id}
+    token_write = in_token_request()
+    if token_write:
+        updated_by = authors_for_write(None)[1]
+        if updated_by is not None:
+            set_clauses.append("n.updated_by = $updated_by")
+            params["updated_by"] = updated_by
 
     if text is not None:
         set_clauses.append("n.text = $text")
@@ -744,8 +797,8 @@ def update_node(
         params["shared_with_ids"] = shared_with_ids
 
     if metadata is not None:
-        base_meta = node.get("metadata", {})
-        merged_metadata = {**base_meta, **metadata}
+        base_meta = metadata_for_store(node.get("metadata") or {})
+        merged_metadata = {**base_meta, **metadata_for_store(metadata)}
         set_clauses.append("n.metadata_str = $metadata_str")
         params["metadata_str"] = dump_json(merged_metadata)
         set_clauses.extend(
@@ -754,10 +807,24 @@ def update_node(
                 "n.meta_type = $meta_type",
                 "n.confidence = $confidence",
                 "n.project = $project",
-                "n.created_by = $created_by",
             ]
         )
-        params.update(metadata_promoted_props(merged_metadata))
+        promoted = metadata_promoted_props(merged_metadata)
+        params.update(
+            {
+                "tags": promoted["tags"],
+                "meta_type": promoted["meta_type"],
+                "confidence": promoted["confidence"],
+                "project": promoted["project"],
+            }
+        )
+        if not token_write:
+            set_clauses.append("n.created_by = $created_by")
+            params["created_by"] = promoted["created_by"]
+            if "updated_by" in metadata:
+                updated_by = authors_for_write(metadata)[1]
+                set_clauses.append("n.updated_by = $updated_by")
+                params["updated_by"] = updated_by
 
     next_source = None
     if source is not None:
@@ -816,7 +883,13 @@ def update_node(
         set_clauses.append("n.type = $entity_type")
         params["entity_type"] = entity_type
 
-    if len(set_clauses) == 1:  # Only updated_at
+    substantive = [
+        clause
+        for clause in set_clauses
+        if clause != db.updated_at_assignment()
+        and not clause.startswith("n.updated_by")
+    ]
+    if not substantive:
         return get_node(db, node_id=node_id, owner_id=owner_id)
 
     rows = db.apply_node_update(set_clauses=set_clauses, params=params)
@@ -858,7 +931,11 @@ def mark_outdated(
     """Mark a fact as outdated."""
     meta = {"status_reason": reason} if reason else None
     return update_node(
-        db, node_id=fact_id, owner_id=owner_id, status="outdated", metadata=meta
+        db,
+        node_id=fact_id,
+        owner_id=owner_id,
+        status="outdated",
+        metadata=meta,
     )
 
 

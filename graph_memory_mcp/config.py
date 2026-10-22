@@ -16,7 +16,8 @@ class MCPServerConfig(BaseSettings):
     )
     # client: tool argument owner_id (trusted local / company).
     # header: ignore the tool argument; owner is the X-Owner-Id request header.
-    # token: ignore the tool argument; owner is the one stored for the Bearer key.
+    # token: Bearer API key. owner_id must be one of the key's projects;
+    # omit it to use the first project. Author is the key's name.
     owner_scope: Literal["client", "header", "token"] = Field(
         default="client", validation_alias="OWNER_SCOPE"
     )
