@@ -1,6 +1,6 @@
 # Admin HTTP
 
-Same process as `/mcp`. Auth: `ADMIN_TOKEN` → `Authorization: Bearer …` (open if unset).
+Same process as `/mcp`. In `client` and `header`, `ADMIN_TOKEN` is `Authorization: Bearer …` and the routes are open when it is unset. In `token`, the server does not start without it.
 
 | Route | Method | Purpose |
 |-------|--------|---------|
@@ -10,8 +10,8 @@ Same process as `/mcp`. Auth: `ADMIN_TOKEN` → `Authorization: Bearer …` (ope
 | `/admin/import` | POST | `{owner_id, nodes, relations?, regenerate_embeddings?}` merge by `uid` (Fact/Entity/FactVersion) |
 | `/admin/owners/{owner_id}` | DELETE | drop owner graph |
 | `/admin/prune-empty-owners` | POST | drop empty owner graphs |
-| `/metrics` | GET | Prometheus (handlers, cache, jobs, node/owner gauges) |
-| `/internal/graph-size` | GET | Owner graph size. Closed: `ADMIN_TOKEN` plus `X-Owner-Id`, or the API key when `OWNER_SCOPE=token`. |
+| `/metrics` | GET | Prometheus. Open in every mode. Totals only: no owner name and no owner records. |
+| `/internal/graph-size` | GET | Owner graph size. `client`: `ADMIN_TOKEN` plus `X-Owner-Id`. `header`: `X-Owner-Id` only. `token`: the API key. |
 
 ```bash
 curl -s localhost:8000/admin/health | jq .healthy
@@ -21,11 +21,13 @@ curl -s -H "Authorization: Bearer $ADMIN_TOKEN" localhost:8000/admin/health
 curl -s -H "Authorization: Bearer $ADMIN_TOKEN" -H "X-Owner-Id: team_a" localhost:8000/internal/graph-size
 ```
 
-`/admin/*` takes `owner_id` from the path or JSON body in every `OWNER_SCOPE` mode. Auth is `ADMIN_TOKEN` when set, and the route is open when it is empty. Do not publish `/admin` or `/internal` on a public edge. In `token` mode set `ADMIN_TOKEN`: the API keys do not cover `/admin`.
+`/admin/*` takes `owner_id` from the path or JSON body in every `OWNER_SCOPE` mode. In `client` and `header`, auth is `ADMIN_TOKEN` when set, and the route is open when it is empty. In `token` mode the server does not start without `ADMIN_TOKEN`, and these routes return 401 without it: the API key does not cover `/admin`. Do not publish `/admin` or `/internal` on a public edge.
+
+`/metrics` is unauthenticated in every mode. Counters cover handlers, cache, and jobs. Node counts are summed by label across owners, and one gauge is the number of owner graphs. The scrape does not include an owner id or that owner's records.
 
 `/internal/graph-size` returns `{owner_id, nodes, node_count, relation_count, bytes}`. `bytes` is Redis `MEMORY USAGE` of that owner's graph key, or `null` if it cannot be read. There is no `owner_id` query parameter. RPM and request counts are not counted here.
 
-In `client` and `header`, the route requires `ADMIN_TOKEN`. The owner is `X-Owner-Id`; a missing header is HTTP 400. In `token`, the route requires the API key and uses that key's owner. A missing credential is HTTP 401. An empty `ADMIN_TOKEN` does not leave this route open.
+In `client`, the route requires `ADMIN_TOKEN` and `X-Owner-Id`. A missing token is HTTP 401. A missing header is HTTP 400. In `header`, `X-Owner-Id` alone is enough, so a gateway does not send `ADMIN_TOKEN`; a missing header is HTTP 400. In `token`, the route requires the API key and uses that key's owner. A missing key is HTTP 401.
 
 `OWNER_SCOPE=header` applies to `/mcp`: the tool argument `owner_id` is dropped and `X-Owner-Id` is required. `OWNER_SCOPE=client` (default) keeps the tool argument. `OWNER_SCOPE=token` drops the argument and uses the Bearer key. See [Owners](../README.md#owners) and [configuration](./configuration.md).
 

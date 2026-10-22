@@ -23,6 +23,12 @@ from graph_memory_mcp.graph_memory.utils import require_owner_id_format
 logger = logging.getLogger(__name__)
 
 _HASH_LEN = 64
+# path -> (mtime_ns, size, key rows). Invalidated on write and on mtime/size change.
+_rows_cache: dict[str, tuple[int, int, list]] = {}
+
+
+class TokenModeConfigError(RuntimeError):
+    """OWNER_SCOPE=token is missing a token or a readable keys file."""
 
 
 @dataclass(frozen=True)
@@ -48,6 +54,40 @@ def bearer_value(authorization: str | None) -> str | None:
     return token or None
 
 
+def bearer_matches(authorization: str | None, secret: str) -> bool:
+    """Constant-time check of an Authorization Bearer value against a secret."""
+    presented = bearer_value(authorization)
+    if not secret or presented is None:
+        return False
+    return hmac.compare_digest(presented.encode(), secret.encode())
+
+
+def validate_token_mode(*, admin_token: str, keys_file: str) -> None:
+    """Refuse to serve token mode when /admin would be open or keys are unusable.
+
+    An empty ADMIN_TOKEN leaves /admin open, and those routes take the owner
+    from the path. A missing or unreadable keys file would otherwise answer
+    every MCP call with 401 and only a log line.
+    """
+    if not str(admin_token or "").strip():
+        raise TokenModeConfigError(
+            "OWNER_SCOPE=token requires ADMIN_TOKEN. "
+            "/admin takes the owner from the URL path and must not stay open."
+        )
+    path = Path(keys_file)
+    if not path.is_file():
+        raise TokenModeConfigError(
+            f"OWNER_SCOPE=token requires an API keys file at {path}. "
+            "Create a key with: graph-memory-mcp keys create --owner <owner>"
+        )
+    try:
+        _read(path)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise TokenModeConfigError(
+            f"API keys file {path} cannot be read: {exc}"
+        ) from exc
+
+
 def owner_for_bearer(path: str | Path, authorization: str | None) -> str | None:
     """Owner of a live key, or None when the key is missing, unknown, or revoked."""
     raw = bearer_value(authorization)
@@ -55,7 +95,7 @@ def owner_for_bearer(path: str | Path, authorization: str | None) -> str | None:
         return None
     digest = hash_key(raw)
     try:
-        rows = _read(Path(path))["keys"]
+        rows = _cached_key_rows(Path(path))
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         logger.warning("API keys file %s cannot be read: %s", path, exc)
         return None
@@ -128,6 +168,33 @@ def _record(row: dict) -> ApiKeyRecord:
     )
 
 
+def _cached_key_rows(path: Path) -> list:
+    if not path.is_file():
+        _invalidate_cache(path)
+        raise FileNotFoundError(path)
+    stamp = _file_stamp(path)
+    key = _cache_key(path)
+    cached = _rows_cache.get(key)
+    if cached is not None and cached[0] == stamp[0] and cached[1] == stamp[1]:
+        return cached[2]
+    rows = _read(path)["keys"]
+    _rows_cache[key] = (*_file_stamp(path), rows)
+    return rows
+
+
+def _cache_key(path: Path) -> str:
+    return str(path.resolve())
+
+
+def _file_stamp(path: Path) -> tuple[int, int]:
+    stat = path.stat()
+    return stat.st_mtime_ns, stat.st_size
+
+
+def _invalidate_cache(path: Path) -> None:
+    _rows_cache.pop(_cache_key(path), None)
+
+
 def _read(path: Path) -> dict:
     if not path.is_file():
         return {"keys": []}
@@ -146,6 +213,7 @@ def _write(path: Path, data: dict) -> None:
     tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     os.chmod(tmp, 0o600)
     os.replace(tmp, path)
+    _invalidate_cache(path)
 
 
 @contextmanager

@@ -73,18 +73,23 @@ def main(argv: list[str] | None = None) -> None:
     if args.backend:
         memory_cfg.graph_backend = args.backend
 
-    if args.simple:
-        from graph_memory_mcp.server_simple import GraphMemorySimpleMCP
+    from graph_memory_mcp.graph_memory.api_keys import TokenModeConfigError
 
-        server = GraphMemorySimpleMCP(memory_cfg)
-    elif args.extended:
-        from graph_memory_mcp.server_extended import GraphMemoryExtendedMCP
+    try:
+        if args.simple:
+            from graph_memory_mcp.server_simple import GraphMemorySimpleMCP
 
-        server = GraphMemoryExtendedMCP(memory_cfg)
-    else:
-        from graph_memory_mcp.server import GraphMemoryMCP
+            server = GraphMemorySimpleMCP(memory_cfg)
+        elif args.extended:
+            from graph_memory_mcp.server_extended import GraphMemoryExtendedMCP
 
-        server = GraphMemoryMCP(memory_cfg)
+            server = GraphMemoryExtendedMCP(memory_cfg)
+        else:
+            from graph_memory_mcp.server import GraphMemoryMCP
+
+            server = GraphMemoryMCP(memory_cfg)
+    except TokenModeConfigError as exc:
+        raise SystemExit(str(exc)) from exc
     app = server.get_mcp_app()
 
     try:

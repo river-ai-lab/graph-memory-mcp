@@ -14,6 +14,7 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
 from graph_memory_mcp.config import MCPServerConfig
+from graph_memory_mcp.graph_memory.api_keys import validate_token_mode
 from graph_memory_mcp.graph_memory.database import open_store
 from graph_memory_mcp.graph_memory.embedding_service import EmbeddingService
 from graph_memory_mcp.graph_memory.owner_scope import (
@@ -63,16 +64,10 @@ class BaseGraphMemoryMCP:
         self.config = server_config
         configure_owner_scope(server_config.owner_scope)
         if server_config.owner_scope == "token":
-            keys_path = Path(server_config.api_keys_file)
-            if not keys_path.is_file():
-                logger.warning(
-                    "OWNER_SCOPE=token but API keys file %s is missing", keys_path
-                )
-            if not server_config.admin_token:
-                logger.warning(
-                    "OWNER_SCOPE=token and ADMIN_TOKEN is empty; "
-                    "/admin stays open on this port"
-                )
+            validate_token_mode(
+                admin_token=server_config.admin_token,
+                keys_file=server_config.api_keys_file,
+            )
         self.db_client = open_store(server_config)
         self._db_connected = self.db_client.connect()
         if not self._db_connected:
@@ -192,21 +187,24 @@ class BaseGraphMemoryMCP:
     def _admin_routes(self) -> list:
         """Operator HTTP endpoints (curl-friendly), separate from agent MCP tools.
 
-        Optional bearer auth via ADMIN_TOKEN; open when unset (trusted env).
+        ``client`` and ``header`` are open when ``ADMIN_TOKEN`` is empty.
+        ``token`` always requires it: these routes take the owner from the path.
         """
         from starlette.responses import JSONResponse
         from starlette.routing import Route
 
         from graph_memory_mcp.graph_memory import mcp_handlers_admin
+        from graph_memory_mcp.graph_memory.api_keys import bearer_matches
 
         db = self.db_client
         embedding_service = self.embedding_service
         admin_token = self.server_config.admin_token
+        require_admin_token = self.server_config.owner_scope == "token"
 
         def _unauthorized(request) -> JSONResponse | None:
-            if not admin_token:
+            if not require_admin_token and not admin_token:
                 return None
-            if request.headers.get("authorization") == f"Bearer {admin_token}":
+            if bearer_matches(request.headers.get("authorization"), admin_token):
                 return None
             return JSONResponse(
                 {"success": False, "error": "Unauthorized"}, status_code=401
@@ -290,8 +288,8 @@ class BaseGraphMemoryMCP:
         """Gateway-only calls. Not MCP tools, not published to agents.
 
         There is no owner query parameter. ``token`` takes the owner from the
-        API key. ``client`` and ``header`` require ``ADMIN_TOKEN`` and then
-        read ``X-Owner-Id``.
+        API key. ``client`` requires ``ADMIN_TOKEN`` and then ``X-Owner-Id``.
+        ``header`` keeps ``X-Owner-Id`` alone so an existing gateway still works.
         """
         from starlette.responses import JSONResponse
         from starlette.routing import Route

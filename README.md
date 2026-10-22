@@ -312,7 +312,9 @@ API_KEYS_FILE=./keys.json
 
 A missing, unknown, or revoked key is HTTP 401. `graph-memory-mcp keys revoke <id>` revokes by id. Jobs keep the owner they were started with.
 
-`/internal/graph-size` is not open. `client` and `header` require `ADMIN_TOKEN` plus `X-Owner-Id`. `token` requires the API key and uses that key's owner. Set `ADMIN_TOKEN` before exposing the port: `/admin` stays open when it is empty.
+Token mode does not start without `ADMIN_TOKEN` and a readable keys file. `/admin` takes the owner from the path, so in this mode it always requires that token. `client` and `header` still leave `/admin` open when `ADMIN_TOKEN` is empty.
+
+`/internal/graph-size` in `client` mode requires `ADMIN_TOKEN` plus `X-Owner-Id`. `header` keeps `X-Owner-Id` alone, so a gateway in front of the server does not need the admin token. `token` requires the API key and uses that key's owner. `/metrics` stays open in every mode: handler, cache, and job counters, plus totals summed across owners. It does not name an owner.
 
 Plans, quotas, billing, and a user account live outside this server. JWT/OIDC is a later addition, not a mode here.
 

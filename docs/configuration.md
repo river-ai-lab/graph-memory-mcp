@@ -42,7 +42,7 @@ uv run graph-memory-mcp keys revoke k_0123abcd
 
 A request with no key, an unknown key, or a revoked key gets HTTP 401 and does not run the tool. The owner id format is the same as everywhere else: letters, digits, `-`, `_`, `@`.
 
-Set `ADMIN_TOKEN` when the port is reachable by more than one party. `/admin` uses that token and is open when the token is empty. That is a separate door from the API keys.
+The server refuses to start in `token` mode when `ADMIN_TOKEN` is empty, or when the keys file is missing or not valid JSON. `/admin` takes the owner from the path or body. In `token` mode those routes always require `ADMIN_TOKEN`. In `client` and `header` they stay open when the token is empty.
 
 ## `/internal/graph-size`
 
@@ -50,7 +50,12 @@ The route has no `owner_id` query parameter.
 
 | `OWNER_SCOPE` | Credential | Owner |
 |---------------|------------|--------|
-| `client`, `header` | `Authorization: Bearer $ADMIN_TOKEN` | `X-Owner-Id` |
+| `client` | `Authorization: Bearer $ADMIN_TOKEN` | `X-Owner-Id` |
+| `header` | none | `X-Owner-Id`. A gateway keeps calling it without `ADMIN_TOKEN`. |
 | `token` | `Authorization: Bearer <api key>` | The key's owner. `X-Owner-Id` is ignored. |
 
-A missing credential is HTTP 401. In `client` and `header`, a missing `X-Owner-Id` is HTTP 400. An empty `ADMIN_TOKEN` does not leave the route open.
+In `client`, a missing admin token is HTTP 401 and a missing `X-Owner-Id` is HTTP 400. In `header`, a missing `X-Owner-Id` is HTTP 400. In `token`, a missing or unknown key is HTTP 401.
+
+## `/metrics`
+
+`/metrics` has no auth in any mode. It publishes handler, cache, and job counters, plus totals summed across owners (node count by label, number of owner graphs). It does not name an owner or return that owner's records.

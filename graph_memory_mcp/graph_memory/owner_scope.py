@@ -15,12 +15,11 @@ copies the context.
 
 from __future__ import annotations
 
-import hmac
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Iterator
 
-from graph_memory_mcp.graph_memory.api_keys import bearer_value, owner_for_bearer
+from graph_memory_mcp.graph_memory.api_keys import bearer_matches, owner_for_bearer
 
 _configured_scope = "client"
 _mcp_request: ContextVar[bool] = ContextVar("gm_mcp_request", default=False)
@@ -139,8 +138,9 @@ def graph_size_owner(
 ) -> str:
     """Owner for ``/internal/graph-size``.
 
-    ``token`` uses the API key and ignores ``X-Owner-Id``. ``client`` and
-    ``header`` require ``ADMIN_TOKEN``; the owner is still ``X-Owner-Id``.
+    ``token`` uses the API key and ignores ``X-Owner-Id``. ``client`` requires
+    ``ADMIN_TOKEN`` and then ``X-Owner-Id``. ``header`` keeps the gateway
+    contract: ``X-Owner-Id`` alone, no admin token.
     """
     from graph_memory_mcp.graph_memory.utils import normalize_owner_id
 
@@ -150,7 +150,7 @@ def graph_size_owner(
         if not owner:
             raise GraphSizeDenied(401, "Unauthorized")
         return normalize_owner_id(owner)
-    if not _admin_bearer(authorization, admin_token):
+    if mode != "header" and not bearer_matches(authorization, admin_token):
         raise GraphSizeDenied(401, "Unauthorized")
     raw = (owner_header or "").strip()
     if not raw:
@@ -168,13 +168,6 @@ def _header_value(scope, name: str) -> str | None:
         if header_name.lower() == wanted:
             return value.decode("utf-8", errors="replace")
     return None
-
-
-def _admin_bearer(authorization: str | None, admin_token: str) -> bool:
-    presented = bearer_value(authorization)
-    if not admin_token or presented is None:
-        return False
-    return hmac.compare_digest(presented.encode(), admin_token.encode())
 
 
 async def _send_unauthorized(send) -> None:

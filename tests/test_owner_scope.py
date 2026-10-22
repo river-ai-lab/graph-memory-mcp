@@ -236,9 +236,9 @@ def test_graph_size_is_closed(tmp_path):
     assert (
         graph_size_owner(
             scope="header",
-            authorization="Bearer secret",
+            authorization=None,
             owner_header="alice",
-            admin_token="secret",
+            admin_token="",
             keys_file=str(path),
         )
         == "alice"

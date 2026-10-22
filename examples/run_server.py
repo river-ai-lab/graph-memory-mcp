@@ -7,8 +7,13 @@ from graph_memory_mcp.server import GraphMemoryMCP
 
 
 def create_app():
+    from graph_memory_mcp.graph_memory.api_keys import TokenModeConfigError
+
     config = load_mcp_server_config()
-    mcp_server = GraphMemoryMCP(config)
+    try:
+        mcp_server = GraphMemoryMCP(config)
+    except TokenModeConfigError as exc:
+        raise SystemExit(str(exc)) from exc
     return mcp_server.get_mcp_app()
 
 

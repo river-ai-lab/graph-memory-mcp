@@ -19,7 +19,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
-- `/internal/graph-size` requires `ADMIN_TOKEN` in `client` and `header` modes. In `token` mode it requires the API key and ignores `X-Owner-Id`.
+- `/internal/graph-size` in `client` mode requires `ADMIN_TOKEN` and `X-Owner-Id`. `header` still uses `X-Owner-Id` alone. `token` uses the API key and ignores `X-Owner-Id`.
+- `OWNER_SCOPE=token` refuses to start without `ADMIN_TOKEN` and a readable keys file. `/admin` in that mode always requires `ADMIN_TOKEN`.
 - `get_brief` returns `stale_count` instead of stale fact texts. `include_stale=true` returns those texts. `limit` still applies only to recent facts.
 
 ## [0.2.0] - 2026-07-20

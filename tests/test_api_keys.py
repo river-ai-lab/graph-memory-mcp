@@ -5,7 +5,13 @@ import json
 import pytest
 
 from graph_memory_mcp.cli import main
-from graph_memory_mcp.graph_memory.api_keys import create_key, owner_for_bearer
+from graph_memory_mcp.graph_memory import api_keys
+from graph_memory_mcp.graph_memory.api_keys import (
+    TokenModeConfigError,
+    create_key,
+    owner_for_bearer,
+    validate_token_mode,
+)
 
 
 def test_create_stores_the_hash_and_not_the_key(tmp_path):
@@ -55,6 +61,44 @@ def test_keys_cli_create_list_revoke(tmp_path, capsys):
     with pytest.raises(SystemExit) as exc:
         main(["keys", "revoke", "k_missing", "--file", str(path)])
     assert exc.value.code == 1
+
+
+def test_owner_lookup_rereads_the_file_when_it_changes(tmp_path, monkeypatch):
+    path = tmp_path / "keys.json"
+    _record, raw = create_key(path, "alice")
+    calls = {"n": 0}
+    original = api_keys._read
+
+    def counting(file_path):
+        calls["n"] += 1
+        return original(file_path)
+
+    monkeypatch.setattr(api_keys, "_read", counting)
+    assert owner_for_bearer(path, f"Bearer {raw}") == "alice"
+    assert owner_for_bearer(path, f"Bearer {raw}") == "alice"
+    assert calls["n"] == 1
+
+    text = path.read_text(encoding="utf-8").replace(
+        '"revoked": false', '"revoked": true'
+    )
+    path.write_text(text, encoding="utf-8")
+    assert owner_for_bearer(path, f"Bearer {raw}") is None
+    assert calls["n"] == 2
+
+
+def test_token_mode_refuses_to_start_without_admin_token_or_keys(tmp_path):
+    path = tmp_path / "keys.json"
+    create_key(path, "alice")
+    with pytest.raises(TokenModeConfigError, match="ADMIN_TOKEN"):
+        validate_token_mode(admin_token="", keys_file=str(path))
+    missing = tmp_path / "missing.json"
+    with pytest.raises(TokenModeConfigError, match="requires an API keys file"):
+        validate_token_mode(admin_token="secret", keys_file=str(missing))
+    broken = tmp_path / "broken.json"
+    broken.write_text("{", encoding="utf-8")
+    with pytest.raises(TokenModeConfigError, match="cannot be read"):
+        validate_token_mode(admin_token="secret", keys_file=str(broken))
+    validate_token_mode(admin_token="secret", keys_file=str(path))
 
 
 def test_keys_cli_rejects_a_bad_owner(tmp_path):
