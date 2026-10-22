@@ -16,9 +16,12 @@ class MCPServerConfig(BaseSettings):
     )
     # client: tool argument owner_id (trusted local / company).
     # header: ignore the tool argument; owner is the X-Owner-Id request header.
-    owner_scope: Literal["client", "header"] = Field(
+    # token: ignore the tool argument; owner is the one stored for the Bearer key.
+    owner_scope: Literal["client", "header", "token"] = Field(
         default="client", validation_alias="OWNER_SCOPE"
     )
+    # Hash file for OWNER_SCOPE=token. Relative paths use the process cwd.
+    api_keys_file: str = Field(default="keys.json", validation_alias="API_KEYS_FILE")
 
     model_config = SettingsConfigDict(
         case_sensitive=False,

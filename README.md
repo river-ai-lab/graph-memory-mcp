@@ -282,10 +282,39 @@ Key settings:
 - `EMBEDDING_MODEL` — default `intfloat/multilingual-e5-base`
 - `RELATION_POLICY_ENFORCE` — `off` | `warn` (default) | `enforce`
 - `RELATION_ALLOWED_TYPES` — comma-separated edge type allowlist
-- `OWNER_SCOPE` — `client` (default, agents pass `owner_id`) or `header` (read from `X-Owner-Id`)
+- `OWNER_SCOPE` — `client` (default), `header`, or `token`. See [Owners](#owners).
 - `JOBS_ENABLED` — `false` by default; enable for archive and dedup background jobs
 
-See `env.example` for all options.
+See `env.example` for all options. Details: [configuration](docs/configuration.md).
+
+## Owners
+
+The same server has three ways to choose `owner_id`. `client` stays the default, so a one-minute install does not change.
+
+| Mode | Who chooses the owner | When to use it |
+|------|------------------------|----------------|
+| `client` | The tool argument `owner_id` | Trusted local or company deploy. Anyone who can call the server can name any owner. |
+| `header` | `X-Owner-Id`, set by your gateway. The tool argument is ignored. | You already authenticate in front of the server, including a hosted service. |
+| `token` | The owner stored for `Authorization: Bearer <key>`. The tool argument is ignored. | A small team on one process. No second service. |
+
+Token mode:
+
+```bash
+uv run graph-memory-mcp keys create --owner alice
+```
+
+The command prints the key once. `keys.json` keeps the sha256 hash and the owner. Then:
+
+```bash
+OWNER_SCOPE=token
+API_KEYS_FILE=./keys.json
+```
+
+A missing, unknown, or revoked key is HTTP 401. `graph-memory-mcp keys revoke <id>` revokes by id. Jobs keep the owner they were started with.
+
+`/internal/graph-size` is not open. `client` and `header` require `ADMIN_TOKEN` plus `X-Owner-Id`. `token` requires the API key and uses that key's owner. Set `ADMIN_TOKEN` before exposing the port: `/admin` stays open when it is empty.
+
+Plans, quotas, billing, and a user account live outside this server. JWT/OIDC is a later addition, not a mode here.
 
 ## Running the databases
 

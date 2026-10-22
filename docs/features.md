@@ -46,7 +46,7 @@ Three independent processes. Tool names match. Pick one client-side and stay on 
 
 Defaults: `owner_id` from `DEFAULT_OWNER_ID` (env, default `"default"`). Pass `owner_id` explicitly in agent rules.
 
-`OWNER_SCOPE=client` (default) uses that argument. `OWNER_SCOPE=header` ignores it and takes `X-Owner-Id`; a missing header is `memory_validation_error` and does not use `DEFAULT_OWNER_ID`. Tool schemas do not change. Jobs are in-process and keep their own owner. See [admin.md](./admin.md).
+`OWNER_SCOPE=client` (default) uses that argument. `OWNER_SCOPE=header` ignores it and takes `X-Owner-Id`; a missing header is `memory_validation_error` and does not use `DEFAULT_OWNER_ID`. `OWNER_SCOPE=token` ignores it and uses the owner stored for the Bearer API key; a missing or revoked key is HTTP 401. Tool schemas do not change. Jobs are in-process and keep their own owner. See [configuration.md](./configuration.md) and [admin.md](./admin.md).
 
 ### Writes
 

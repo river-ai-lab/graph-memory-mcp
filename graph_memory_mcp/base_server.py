@@ -18,6 +18,7 @@ from graph_memory_mcp.graph_memory.database import open_store
 from graph_memory_mcp.graph_memory.embedding_service import EmbeddingService
 from graph_memory_mcp.graph_memory.owner_scope import (
     OwnerHeaderMiddleware,
+    OwnerTokenMiddleware,
     configure_owner_scope,
 )
 from graph_memory_mcp.jobs.scheduler import shutdown_scheduler, start_scheduler
@@ -61,6 +62,17 @@ class BaseGraphMemoryMCP:
         self.server_config = server_config
         self.config = server_config
         configure_owner_scope(server_config.owner_scope)
+        if server_config.owner_scope == "token":
+            keys_path = Path(server_config.api_keys_file)
+            if not keys_path.is_file():
+                logger.warning(
+                    "OWNER_SCOPE=token but API keys file %s is missing", keys_path
+                )
+            if not server_config.admin_token:
+                logger.warning(
+                    "OWNER_SCOPE=token and ADMIN_TOKEN is empty; "
+                    "/admin stays open on this port"
+                )
         self.db_client = open_store(server_config)
         self._db_connected = self.db_client.connect()
         if not self._db_connected:
@@ -122,7 +134,13 @@ class BaseGraphMemoryMCP:
         """Get MCP app with /metrics, /admin/* and optional scheduler support."""
         app = self.mcp.streamable_http_app()
         if not getattr(app.state, "_owner_scope_wrapped", False):
-            app.add_middleware(OwnerHeaderMiddleware)
+            if self.server_config.owner_scope == "token":
+                app.add_middleware(
+                    OwnerTokenMiddleware,
+                    keys_file=self.server_config.api_keys_file,
+                )
+            elif self.server_config.owner_scope == "header":
+                app.add_middleware(OwnerHeaderMiddleware)
             app.state._owner_scope_wrapped = True
 
         from starlette.routing import Route
@@ -271,26 +289,35 @@ class BaseGraphMemoryMCP:
     def _internal_routes(self) -> list:
         """Gateway-only calls. Not MCP tools, not published to agents.
 
-        Owner comes from X-Owner-Id in both scope modes. There is no owner
-        query parameter, so a forwarded tool argument cannot select a graph.
+        There is no owner query parameter. ``token`` takes the owner from the
+        API key. ``client`` and ``header`` require ``ADMIN_TOKEN`` and then
+        read ``X-Owner-Id``.
         """
         from starlette.responses import JSONResponse
         from starlette.routing import Route
 
-        from graph_memory_mcp.graph_memory.owner_scope import graph_size_payload
-        from graph_memory_mcp.graph_memory.utils import normalize_owner_id
+        from graph_memory_mcp.graph_memory.owner_scope import (
+            GraphSizeDenied,
+            graph_size_owner,
+            graph_size_payload,
+        )
 
         db = self.db_client
+        cfg = self.server_config
 
         async def graph_size(request):
-            raw = request.headers.get("x-owner-id")
-            if raw is None or not str(raw).strip():
-                return JSONResponse(
-                    {"success": False, "error": "X-Owner-Id header is required"},
-                    status_code=400,
-                )
             try:
-                owner_id = normalize_owner_id(str(raw).strip())
+                owner_id = graph_size_owner(
+                    scope=cfg.owner_scope,
+                    authorization=request.headers.get("authorization"),
+                    owner_header=request.headers.get("x-owner-id"),
+                    admin_token=cfg.admin_token,
+                    keys_file=cfg.api_keys_file,
+                )
+            except GraphSizeDenied as exc:
+                return JSONResponse(
+                    {"success": False, "error": str(exc)}, status_code=exc.status
+                )
             except ValueError as exc:
                 return JSONResponse(
                     {"success": False, "error": str(exc)}, status_code=400

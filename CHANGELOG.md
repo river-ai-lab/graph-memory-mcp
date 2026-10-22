@@ -6,6 +6,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- `OWNER_SCOPE=token`. A Bearer API key selects the owner; the tool `owner_id` is ignored. `graph-memory-mcp keys create|list|revoke` stores only the key hash in `API_KEYS_FILE`.
 - `OWNER_SCOPE=client` (default) keeps the tool `owner_id`. `OWNER_SCOPE=header` ignores it and requires `X-Owner-Id` on `/mcp`.
 - GROW ritual in agent policies / AGENTS.md (Ground → Record → Orient → Write after meaningful work)
 - Compact recall: `compact` on `search` / `recall_context`; responses always include `suggested_next`, `do_not`, `budget` (snippets under `COMPACT_RECALL_TOKEN_BUDGET`)
@@ -18,6 +19,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
+- `/internal/graph-size` requires `ADMIN_TOKEN` in `client` and `header` modes. In `token` mode it requires the API key and ignores `X-Owner-Id`.
 - `get_brief` returns `stale_count` instead of stale fact texts. `include_stale=true` returns those texts. `limit` still applies only to recent facts.
 
 ## [0.2.0] - 2026-07-20

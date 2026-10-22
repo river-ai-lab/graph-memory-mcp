@@ -17,11 +17,19 @@ def new_uid() -> str:
     return uuid.uuid4().hex
 
 
+def require_owner_id_format(value: str) -> str:
+    """Reject an owner id that is not alphanumeric plus ``-``, ``_``, ``@``."""
+    if not _OWNER_ID_RE.match(value):
+        raise ValueError("Invalid owner_id format (use alphanumeric, -, _, @)")
+    return value
+
+
 def normalize_owner_id(owner_id: Optional[str], *, default: str = "default") -> str:
     """Normalize and validate owner_id; raises ValueError on invalid format.
 
     During an MCP HTTP request with OWNER_SCOPE=header, the tool argument is
-    replaced by X-Owner-Id. Jobs and direct handler calls are unchanged.
+    replaced by X-Owner-Id. With OWNER_SCOPE=token it is replaced by the owner
+    stored for the Bearer key. Jobs and direct handler calls are unchanged.
     """
     from graph_memory_mcp.graph_memory.owner_scope import pinned_owner_argument
 
@@ -37,9 +45,7 @@ def normalize_owner_id(owner_id: Optional[str], *, default: str = "default") -> 
     else:
         value = str(owner_id).strip()
     value = value or default
-    if not _OWNER_ID_RE.match(value):
-        raise ValueError("Invalid owner_id format (use alphanumeric, -, _, @)")
-    return value
+    return require_owner_id_format(value)
 
 
 def require_node_id(value: Any, field: str = "node_id") -> str:

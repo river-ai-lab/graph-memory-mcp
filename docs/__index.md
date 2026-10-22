@@ -1,5 +1,6 @@
 # Docs
 
+- [configuration.md](./configuration.md) — `OWNER_SCOPE` (`client`, `header`, `token`) and API keys
 - [features.md](./features.md) — API contract
 - [admin.md](./admin.md) — `/admin/*`, `/internal/graph-size`, `/metrics`
 - [background_jobs.md](./background_jobs.md) — archive and dedup (`JOBS_ENABLED`)

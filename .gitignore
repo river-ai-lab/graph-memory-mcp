@@ -12,6 +12,8 @@ htmlcov/
 
 .env
 .env.*
+keys.json
+keys.json.lock
 
 .venv/
 venv/
