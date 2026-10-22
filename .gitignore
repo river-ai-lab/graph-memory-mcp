@@ -40,3 +40,6 @@ atlas
 docs/atlas/
 stash/
 data-arcade/
+
+memory_policies_for_LLM.md
+memory_policy_cheatsheet.md

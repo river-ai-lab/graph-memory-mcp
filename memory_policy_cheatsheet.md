@@ -1,1 +1,0 @@
-docs/memory_policy_cheatsheet.md
