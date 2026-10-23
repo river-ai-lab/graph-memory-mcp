@@ -6,7 +6,7 @@ Normative tool signatures. Jobs: [background_jobs.md](./background_jobs.md). Age
 
 ## Data model
 
-**Common:** `node_id`, `owner_id`, `metadata`, `created_at`, `status` (`active`|`outdated`|`archived`), optional `ttl_days`/`expires_at`, `source` `{ref,type,uri,content_hash,updated_at,version}`, `embedding` (not returned via MCP).
+**Common:** `node_id`, `owner_id`, `metadata`, `created_by`, `created_at`, `updated_by`, `updated_at`, `status` (`active`|`outdated`|`archived`), optional `ttl_days`/`expires_at`, `source` `{ref,type,uri,content_hash,source_updated_at,version}`, `embedding` (not returned via MCP). `created_at` / `updated_at` are set by the server. `source_updated_at` is the source document time (Unix ms), stored separately from that clock. Older `source.updated_at` is still accepted and read back as `source_updated_at`. In `client` and `header`, `created_by` / `updated_by` come from `metadata.created_by` / `metadata.updated_by`. In `token` they are the API key name.
 
 **Fact** — `text`. **Entity** — optional `type`. Practical labels, not ontology.
 
@@ -39,14 +39,14 @@ Three independent processes. Tool names match. Pick one client-side and stay on 
 | Profile | Start | What the agent can pass on writes |
 |---------|--------|-------------------------------------|
 | default | `graph-memory-mcp` | Nested `source`. Fact and Entity. |
-| `--simple` | `graph-memory-mcp --simple` | Same tools. Provenance is flat (`ref`, `provenance_type`, …) instead of nested `source`. `upsert_node` requires `ref`. |
+| `--simple` | `graph-memory-mcp --simple` | Same tools. Provenance is flat (`ref`, `provenance_type`, `source_updated_at`, …) instead of nested `source`. `upsert_node` requires `ref`. |
 | `--extended` | `graph-memory-mcp --extended` | Same tools as default, plus `description`, `shared_with_ids`, `collection_id` (`CONTAINS`), and node types `Collection`, `User`, `Project`. |
 
 ## Agent tools
 
 Defaults: `owner_id` from `DEFAULT_OWNER_ID` (env, default `"default"`). Pass `owner_id` explicitly in agent rules.
 
-`OWNER_SCOPE=client` (default) uses that argument. `OWNER_SCOPE=header` ignores it and takes `X-Owner-Id`; a missing header is `memory_validation_error` and does not use `DEFAULT_OWNER_ID`. Tool schemas do not change. Jobs are in-process and keep their own owner. See [admin.md](./admin.md).
+`OWNER_SCOPE=client` (default) uses that argument. `OWNER_SCOPE=header` ignores it and takes `X-Owner-Id`; a missing header is `memory_validation_error` and does not use `DEFAULT_OWNER_ID`. Run header mode on `127.0.0.1` behind a gateway that sends `ADMIN_TOKEN`. A missing or wrong bearer is HTTP 401 when that token is set. `OWNER_SCOPE=token` ignores it and uses the owner stored for the Bearer API key; a missing or revoked key is HTTP 401. Tool schemas do not change. Jobs are in-process and keep their own owner. See [configuration.md](./configuration.md) and [admin.md](./admin.md).
 
 ### Writes
 

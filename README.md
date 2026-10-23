@@ -282,10 +282,45 @@ Key settings:
 - `EMBEDDING_MODEL` — default `intfloat/multilingual-e5-base`
 - `RELATION_POLICY_ENFORCE` — `off` | `warn` (default) | `enforce`
 - `RELATION_ALLOWED_TYPES` — comma-separated edge type allowlist
-- `OWNER_SCOPE` — `client` (default, agents pass `owner_id`) or `header` (read from `X-Owner-Id`)
+- `OWNER_SCOPE` — `client` (default), `header`, or `token`. See [Owners](#owners).
 - `JOBS_ENABLED` — `false` by default; enable for archive and dedup background jobs
 
-See `env.example` for all options.
+See `env.example` for all options. Details: [configuration](docs/configuration.md).
+
+## Owners
+
+The same server has three ways to choose `owner_id`. `client` stays the default, so a one-minute install does not change.
+
+| Mode | Who chooses the owner | When to use it |
+|------|------------------------|----------------|
+| `client` | The tool argument `owner_id` | Trusted local or company deploy. Anyone who can call the server can name any owner. |
+| `header` | `X-Owner-Id`, set by your gateway. The tool argument is ignored. The gateway sends `Authorization: Bearer $ADMIN_TOKEN`. | The server listens on `127.0.0.1`. The gateway is the only client. |
+| `token` | The API key's `projects`. `owner_id` must be one of them; omit it to use the first. | A small team on one process. No second service. |
+
+An API key is a person's `name` plus the owner graphs (`projects`) they may use. Team setup: [docs/team-setup.md](docs/team-setup.md).
+
+Token mode:
+
+```bash
+uv run graph-memory-mcp keys create --name alice --projects p1,p2
+```
+
+The command prints the key once. `keys.json` keeps the sha256 hash, name, and projects. Then:
+
+```bash
+OWNER_SCOPE=token
+API_KEYS_FILE=./keys.json
+```
+
+A missing, unknown, or revoked key is HTTP 401. An `owner_id` that is not in the key's projects is HTTP 403 (or a tool error with `memory_forbidden`). `graph-memory-mcp keys set-projects <id> p1,p3` replaces the list. `keys revoke <id>` revokes by id. In token mode every write stores the key's `name` as `created_by` / `updated_by`. In `client` and `header` those fields come from `metadata.created_by` / `metadata.updated_by`. Jobs keep the owner they were started with.
+
+Token mode does not start without `ADMIN_TOKEN` and a readable keys file. `/admin` takes the owner from the path, so in this mode it always requires that token. `client` and `header` still leave `/admin` open when `ADMIN_TOKEN` is empty.
+
+Header mode belongs on `127.0.0.1`, with the gateway as the only client. The gateway sends `Authorization: Bearer $ADMIN_TOKEN` and `X-Owner-Id`. `/mcp` returns HTTP 401 when that token is set and the bearer is missing or wrong. Without `ADMIN_TOKEN`, the process starts on `127.0.0.1`, `::1`, or `localhost` only. Any other bind address exits. `ALLOW_INSECURE_HEADER=1` logs a warning and starts anyway.
+
+`/internal/graph-size` in `client` and `header` requires `ADMIN_TOKEN` plus `X-Owner-Id`. `token` requires the API key; `X-Owner-Id` must be one of the key's projects, or the first project is used. `/metrics` stays open in every mode: handler, cache, and job counters, plus totals summed across owners. It does not name an owner.
+
+Plans, quotas, billing, and a user account live outside this server. JWT/OIDC is a later addition, not a mode here.
 
 ## Running the databases
 
@@ -337,7 +372,7 @@ Three profiles with the same tools; agents pick one and stay on it:
 | Profile | Start | Provenance |
 |---------|-------|------------|
 | Default | `graph-memory-mcp` | Nested `source` object |
-| Simple | `graph-memory-mcp --simple` | Flat (`ref`, `provenance_type`, etc.); `upsert_node` requires `ref` |
+| Simple | `graph-memory-mcp --simple` | Flat (`ref`, `provenance_type`, `source_updated_at`, …); `upsert_node` requires `ref` |
 | Extended | `graph-memory-mcp --extended` | Same as default, plus `description`, `shared_with_ids`, `collection_id`, and node types `Collection`, `User`, `Project` |
 
 See [docs/features.md](docs/features.md) for details.

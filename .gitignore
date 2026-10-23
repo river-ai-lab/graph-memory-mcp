@@ -12,6 +12,8 @@ htmlcov/
 
 .env
 .env.*
+keys.json
+keys.json.lock
 
 .venv/
 venv/
@@ -29,6 +31,9 @@ data/
 audit.md
 todo.md
 done.md
+AGENTS.md
+final_msg.txt
+msg.txt
 
 reports/
 misc/
@@ -38,3 +43,6 @@ atlas
 docs/atlas/
 stash/
 data-arcade/
+
+memory_policies_for_LLM.md
+memory_policy_cheatsheet.md

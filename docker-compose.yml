@@ -4,6 +4,14 @@
 #   docker compose up -d
 #   docker compose down
 #
+# Token mode (the MCP process, not these DB services):
+#   environment:
+#     OWNER_SCOPE: token
+#     ADMIN_TOKEN: ${ADMIN_TOKEN}
+#     API_KEYS_FILE: /run/keys.json
+#   volumes:
+#     - ./keys.json:/run/keys.json:ro
+#
 services:
   falkordb:
     image: falkordb/falkordb

@@ -474,6 +474,7 @@ def test_export_import_fact_versions_roundtrip(memory_backend):
         owner_id=dst,
         nodes=exported["nodes"],
         relations=exported["relations"],
+        preserve_audit=True,
     )
     assert imported["skipped"] == 0
     assert imported["imported_nodes"] >= 2
