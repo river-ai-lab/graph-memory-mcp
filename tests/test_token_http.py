@@ -10,6 +10,7 @@ from starlette.testclient import TestClient
 from graph_memory_mcp.base_server import BaseGraphMemoryMCP
 from graph_memory_mcp.graph_memory.api_keys import create_key
 from graph_memory_mcp.graph_memory.owner_scope import (
+    OwnerHeaderMiddleware,
     OwnerTokenMiddleware,
     ProjectDenied,
     configure_owner_scope,
@@ -63,6 +64,8 @@ def _app(tmp_path, *, scope: str, admin_token: str, keys_file: str):
     app = Starlette(routes=routes)
     if scope == "token":
         app.add_middleware(OwnerTokenMiddleware, keys_file=keys_file)
+    elif scope == "header":
+        app.add_middleware(OwnerHeaderMiddleware, admin_token=admin_token)
     return app, db
 
 
@@ -123,9 +126,62 @@ def test_token_admin_accepts_the_admin_token(tmp_path):
     assert db.deleted == ["bob"]
 
 
-def test_header_graph_size_stays_open_for_the_gateway(tmp_path):
-    app, _db = _app(tmp_path, scope="header", admin_token="", keys_file="")
+def test_header_mcp_requires_admin_token_when_set(tmp_path):
+    app, _db = _app(tmp_path, scope="header", admin_token="secret", keys_file="")
     client = TestClient(app)
-    response = client.get("/internal/graph-size", headers={"X-Owner-Id": "alice"})
-    assert response.status_code == 200
-    assert response.json()["owner_id"] == "alice"
+
+    missing = client.post("/mcp?owner=victim", headers={"X-Owner-Id": "alice"})
+    assert missing.status_code == 401
+
+    wrong = client.post(
+        "/mcp?owner=victim",
+        headers={"Authorization": "Bearer other", "X-Owner-Id": "alice"},
+    )
+    assert wrong.status_code == 401
+
+    ok = client.post(
+        "/mcp?owner=victim",
+        headers={"Authorization": "Bearer secret", "X-Owner-Id": "alice"},
+    )
+    assert ok.status_code == 200
+    assert ok.json()["owner"] == "alice"
+
+    open_app, _db = _app(tmp_path, scope="header", admin_token="", keys_file="")
+    opened = TestClient(open_app).post(
+        "/mcp?owner=victim", headers={"X-Owner-Id": "alice"}
+    )
+    assert opened.status_code == 200
+    assert opened.json()["owner"] == "alice"
+
+
+def test_header_graph_size_requires_admin_token(tmp_path):
+    app, _db = _app(tmp_path, scope="header", admin_token="secret", keys_file="")
+    client = TestClient(app)
+
+    missing = client.get("/internal/graph-size", headers={"X-Owner-Id": "alice"})
+    assert missing.status_code == 401
+
+    wrong = client.get(
+        "/internal/graph-size",
+        headers={"Authorization": "Bearer other", "X-Owner-Id": "alice"},
+    )
+    assert wrong.status_code == 401
+
+    no_owner = client.get(
+        "/internal/graph-size",
+        headers={"Authorization": "Bearer secret"},
+    )
+    assert no_owner.status_code == 400
+
+    ok = client.get(
+        "/internal/graph-size",
+        headers={"Authorization": "Bearer secret", "X-Owner-Id": "alice"},
+    )
+    assert ok.status_code == 200
+    assert ok.json()["owner_id"] == "alice"
+
+    closed_app, _db = _app(tmp_path, scope="header", admin_token="", keys_file="")
+    closed = TestClient(closed_app).get(
+        "/internal/graph-size", headers={"X-Owner-Id": "alice"}
+    )
+    assert closed.status_code == 401

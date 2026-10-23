@@ -294,7 +294,7 @@ The same server has three ways to choose `owner_id`. `client` stays the default,
 | Mode | Who chooses the owner | When to use it |
 |------|------------------------|----------------|
 | `client` | The tool argument `owner_id` | Trusted local or company deploy. Anyone who can call the server can name any owner. |
-| `header` | `X-Owner-Id`, set by your gateway. The tool argument is ignored. | You already authenticate in front of the server, including a hosted service. |
+| `header` | `X-Owner-Id`, set by your gateway. The tool argument is ignored. The gateway sends `Authorization: Bearer $ADMIN_TOKEN`. | The server listens on `127.0.0.1`. The gateway is the only client. |
 | `token` | The API key's `projects`. `owner_id` must be one of them; omit it to use the first. | A small team on one process. No second service. |
 
 An API key is a person's `name` plus the owner graphs (`projects`) they may use. Team setup: [docs/team-setup.md](docs/team-setup.md).
@@ -316,7 +316,9 @@ A missing, unknown, or revoked key is HTTP 401. An `owner_id` that is not in the
 
 Token mode does not start without `ADMIN_TOKEN` and a readable keys file. `/admin` takes the owner from the path, so in this mode it always requires that token. `client` and `header` still leave `/admin` open when `ADMIN_TOKEN` is empty.
 
-`/internal/graph-size` in `client` mode requires `ADMIN_TOKEN` plus `X-Owner-Id`. `header` keeps `X-Owner-Id` alone, so a gateway in front of the server does not need the admin token. `token` requires the API key; `X-Owner-Id` must be one of the key's projects, or the first project is used. `/metrics` stays open in every mode: handler, cache, and job counters, plus totals summed across owners. It does not name an owner.
+Header mode belongs on `127.0.0.1`, with the gateway as the only client. The gateway sends `Authorization: Bearer $ADMIN_TOKEN` and `X-Owner-Id`. `/mcp` returns HTTP 401 when that token is set and the bearer is missing or wrong. Without `ADMIN_TOKEN`, the process starts on `127.0.0.1`, `::1`, or `localhost` only. Any other bind address exits. `ALLOW_INSECURE_HEADER=1` logs a warning and starts anyway.
+
+`/internal/graph-size` in `client` and `header` requires `ADMIN_TOKEN` plus `X-Owner-Id`. `token` requires the API key; `X-Owner-Id` must be one of the key's projects, or the first project is used. `/metrics` stays open in every mode: handler, cache, and job counters, plus totals summed across owners. It does not name an owner.
 
 Plans, quotas, billing, and a user account live outside this server. JWT/OIDC is a later addition, not a mode here.
 
@@ -370,7 +372,7 @@ Three profiles with the same tools; agents pick one and stay on it:
 | Profile | Start | Provenance |
 |---------|-------|------------|
 | Default | `graph-memory-mcp` | Nested `source` object |
-| Simple | `graph-memory-mcp --simple` | Flat (`ref`, `provenance_type`, etc.); `upsert_node` requires `ref` |
+| Simple | `graph-memory-mcp --simple` | Flat (`ref`, `provenance_type`, `source_updated_at`, …); `upsert_node` requires `ref` |
 | Extended | `graph-memory-mcp --extended` | Same as default, plus `description`, `shared_with_ids`, `collection_id`, and node types `Collection`, `User`, `Project` |
 
 See [docs/features.md](docs/features.md) for details.

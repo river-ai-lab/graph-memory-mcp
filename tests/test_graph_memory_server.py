@@ -1477,6 +1477,195 @@ def test_create_node_returns_source_payload():
     assert create_params["content_hash"] == "sha256:abc"
 
 
+def test_create_node_stores_document_time_as_source_updated_at():
+    """Document time is source.source_updated_at, not the server updated_at."""
+    db = _FakeNodeDB(
+        [
+            _FakeResult([]),
+            _FakeResult(
+                [
+                    _fact_row(
+                        123,
+                        text="created fact",
+                        updated_at=999,
+                        source={"ref": "r", "source_updated_at": 111},
+                    )
+                ]
+            ),
+        ]
+    )
+
+    result = create_node(
+        cast(Any, db),
+        MCPServerConfig(),
+        text="created fact",
+        owner_id="default",
+        source={"ref": "r", "source_updated_at": 111},
+        auto_link=False,
+    )
+
+    assert result["success"] is True
+    assert result["node"]["updated_at"] == 999
+    assert result["node"]["source"] == {"ref": "r", "source_updated_at": 111}
+    _, create_params = db.graph.calls[1]
+    assert json.loads(create_params["source_str"]) == {
+        "ref": "r",
+        "source_updated_at": 111,
+    }
+    assert "updated_at" not in json.loads(create_params["source_str"])
+    assert create_params["source_updated_at"] == 111
+
+
+def test_create_node_accepts_legacy_source_updated_at_key():
+    """Older source.updated_at is stored only as source_updated_at."""
+    db = _FakeNodeDB(
+        [
+            _FakeResult([]),
+            _FakeResult([_fact_row(123, text="created fact")]),
+        ]
+    )
+
+    result = create_node(
+        cast(Any, db),
+        MCPServerConfig(),
+        text="created fact",
+        owner_id="default",
+        source={"ref": "r", "updated_at": 111},
+        auto_link=False,
+    )
+
+    assert result["success"] is True
+    stored = json.loads(db.graph.calls[1][1]["source_str"])
+    assert stored == {"ref": "r", "source_updated_at": 111}
+    assert db.graph.calls[1][1]["source_updated_at"] == 111
+
+
+def test_create_node_prefers_source_updated_at_over_legacy_key():
+    db = _FakeNodeDB(
+        [
+            _FakeResult([]),
+            _FakeResult([_fact_row(123, text="created fact")]),
+        ]
+    )
+
+    create_node(
+        cast(Any, db),
+        MCPServerConfig(),
+        text="created fact",
+        owner_id="default",
+        source={"ref": "r", "source_updated_at": 222, "updated_at": 111},
+        auto_link=False,
+    )
+
+    stored = json.loads(db.graph.calls[1][1]["source_str"])
+    assert stored == {"ref": "r", "source_updated_at": 222}
+
+
+def test_create_node_rejects_invalid_document_time():
+    db = _FakeNodeDB([])
+
+    result = create_node(
+        cast(Any, db),
+        MCPServerConfig(),
+        text="created fact",
+        owner_id="default",
+        source={"ref": "r", "source_updated_at": "yesterday"},
+        auto_link=False,
+    )
+
+    assert result["success"] is False
+    assert result["code"] == "memory_validation_error"
+    assert db.graph.calls == []
+
+
+def test_legacy_source_updated_at_reads_as_source_updated_at():
+    """Old rows stored the document time as source.updated_at."""
+    from graph_memory_mcp.graph_memory.mcp_handlers_nodes import (
+        _node_as_of,
+        _node_from_row,
+        get_node_change_history,
+    )
+
+    node = _node_from_row(
+        _fact_row(
+            123,
+            text="t",
+            updated_at=999,
+            source={"ref": "r", "updated_at": 111},
+        )
+    )
+    assert node["updated_at"] == 999
+    assert node["source"] == {"ref": "r", "source_updated_at": 111}
+
+    both = _node_from_row(
+        _fact_row(
+            123,
+            text="t",
+            updated_at=999,
+            source={"ref": "r", "source_updated_at": 222, "updated_at": 111},
+        )
+    )
+    assert both["source"] == {"ref": "r", "source_updated_at": 222}
+
+    class _HistoryDB:
+        def list_fact_versions(self, node_id, owner_id):
+            return [
+                [
+                    "v",
+                    "t",
+                    "{}",
+                    json.dumps({"ref": "r", "updated_at": 111}),
+                    "active",
+                    None,
+                    5,
+                    4,
+                ]
+            ]
+
+        def fetch_version_after(self, node_id, owner_id, as_of):
+            return [
+                [
+                    "t",
+                    None,
+                    "{}",
+                    json.dumps({"ref": "r", "updated_at": 111}),
+                    "active",
+                    None,
+                    None,
+                    50,
+                ]
+            ]
+
+    history = get_node_change_history(
+        cast(Any, _HistoryDB()), node_id="123", owner_id="default"
+    )
+    assert history["versions"][0]["source"] == {"ref": "r", "source_updated_at": 111}
+    as_of = _node_as_of(
+        cast(Any, _HistoryDB()),
+        node={"node_id": "123", "created_at": 1},
+        owner_id="default",
+        as_of=10,
+    )
+    assert as_of["node"]["source"] == {"ref": "r", "source_updated_at": 111}
+
+
+def test_simple_provenance_argument_is_source_updated_at():
+    import inspect
+
+    from graph_memory_mcp.server_simple import (
+        GraphMemorySimpleMCP,
+        _provenance_source,
+    )
+
+    assert _provenance_source(ref="doc", source_updated_at=123) == {
+        "ref": "doc",
+        "source_updated_at": 123,
+    }
+    source = inspect.getsource(GraphMemorySimpleMCP._register_node_write_tools)
+    assert "source_updated_at:" in source
+    assert "updated_at:" not in source.replace("source_updated_at:", "")
+
+
 def test_update_node_versioning_increments_source_version():
     """update_node should auto-increment source.version when versioning is enabled."""
     db = _FakeNodeDB(

@@ -64,3 +64,5 @@ Allowed types (default): `RELATED_TO` (generic), `MENTIONS`, `SUMMARIZES`, `FOLL
 ## Versioning & time
 
 Updates with `versioning=true` (or server default `VERSIONING_DEFAULT`) snapshot the previous state: `get_node_change_history(node_id)` lists versions, `get_node(node_id, as_of=<unix ms>)` reads the state at a point in time.
+
+The server sets `created_at` and `updated_at`. The source document time is `source.source_updated_at` (Unix milliseconds), or the flat `source_updated_at` argument on `--simple`. Do not send `updated_at` to set either clock. Older `source.updated_at` is still accepted and returned as `source_updated_at`.

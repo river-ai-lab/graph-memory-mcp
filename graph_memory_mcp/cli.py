@@ -29,7 +29,7 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help=(
             "Use graph_memory_mcp.server_simple: like the default server but "
-            "provenance is flat fields (ref, provenance_type, …) instead of a nested "
+            "provenance is flat fields (ref, provenance_type, source_updated_at, …) instead of a nested "
             "`source` object."
         ),
     )
@@ -87,8 +87,18 @@ def main(argv: list[str] | None = None) -> None:
         memory_cfg.graph_backend = args.backend
 
     from graph_memory_mcp.graph_memory.api_keys import TokenModeConfigError
+    from graph_memory_mcp.graph_memory.owner_scope import (
+        HeaderModeConfigError,
+        validate_header_bind,
+    )
 
     try:
+        validate_header_bind(
+            scope=memory_cfg.owner_scope,
+            admin_token=memory_cfg.admin_token,
+            host=args.host,
+            allow_insecure=memory_cfg.allow_insecure_header,
+        )
         if args.simple:
             from graph_memory_mcp.server_simple import GraphMemorySimpleMCP
 
@@ -101,7 +111,7 @@ def main(argv: list[str] | None = None) -> None:
             from graph_memory_mcp.server import GraphMemoryMCP
 
             server = GraphMemoryMCP(memory_cfg)
-    except TokenModeConfigError as exc:
+    except (TokenModeConfigError, HeaderModeConfigError) as exc:
         raise SystemExit(str(exc)) from exc
     app = server.get_mcp_app()
 

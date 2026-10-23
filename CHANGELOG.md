@@ -21,7 +21,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 - In `client` and `header`, `created_by` / `updated_by` come from `metadata.created_by` and `metadata.updated_by`. Those keys stay in the stored JSON, and `update_node` still copies `metadata.created_by` onto `n.created_by`. Missing keys leave the fields empty. Token mode sets both fields from the key name and drops client-supplied audit fields. The server sets `created_at` / `updated_at`.
 - `/admin` import keeps `created_*` / `updated_*` from the dump and fills them only when they are missing. The MCP `import_owner` tool strips them.
-- `/internal/graph-size` in `client` mode requires `ADMIN_TOKEN` and `X-Owner-Id`. `header` still uses `X-Owner-Id` alone. `token` uses the API key; a foreign project is HTTP 403.
+- `/internal/graph-size` requires `ADMIN_TOKEN` and `X-Owner-Id` in `client` and `header`. `token` uses the API key; a foreign project is HTTP 403.
+- `OWNER_SCOPE=header` runs on `127.0.0.1` behind a gateway that sends `Authorization: Bearer $ADMIN_TOKEN`. `/mcp` returns 401 when that token is set and the bearer is missing or wrong. A non-loopback bind without `ADMIN_TOKEN` refuses to start; `ALLOW_INSECURE_HEADER=1` logs a warning and starts.
+- `--simple` provenance argument `updated_at` is now `source_updated_at` (source document time). It is stored as `source.source_updated_at`, separate from the server's `updated_at`. Older `source.updated_at` values are still read.
 - `OWNER_SCOPE=token` refuses to start without `ADMIN_TOKEN` and a readable keys file. `/admin` in that mode always requires `ADMIN_TOKEN`.
 - `get_brief` returns `stale_count` instead of stale fact texts. `include_stale=true` returns those texts. `limit` still applies only to recent facts.
 

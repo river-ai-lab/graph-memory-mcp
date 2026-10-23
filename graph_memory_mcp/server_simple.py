@@ -25,10 +25,14 @@ def _provenance_source(
     provenance_type: str | None = None,
     uri: str | None = None,
     content_hash: str | None = None,
-    updated_at: int | None = None,
+    source_updated_at: int | None = None,
     version: int | None = None,
 ) -> dict[str, Any] | None:
-    """Build handler `source` dict from flat MCP fields (same keys as full server)."""
+    """Build handler `source` dict from flat MCP fields.
+
+    ``source_updated_at`` is the source document's time. The record's
+    ``updated_at`` stays the server clock.
+    """
     parts: dict[str, Any] = {}
     if ref is not None:
         parts["ref"] = ref
@@ -38,8 +42,8 @@ def _provenance_source(
         parts["uri"] = uri
     if content_hash is not None:
         parts["content_hash"] = content_hash
-    if updated_at is not None:
-        parts["updated_at"] = updated_at
+    if source_updated_at is not None:
+        parts["source_updated_at"] = source_updated_at
     if version is not None:
         parts["version"] = version
     return parts if parts else None
@@ -70,8 +74,10 @@ class GraphMemorySimpleMCP(GraphMemoryMCP):
                 "Required: `text`, "
                 "Optional: `node_type` ('Fact' default, or 'Entity'), `owner_id`, "
                 "`metadata`, "
-                "optional provenance: `ref`, `provenance_type`, `uri`, `content_hash`, `updated_at`, `version` "
-                "(same semantics as the full server's `source` object, without nesting), "
+                "optional provenance: `ref`, `provenance_type`, `uri`, `content_hash`, `source_updated_at`, `version` "
+                "(same semantics as the full server's `source` object, without nesting). "
+                "`source_updated_at` is the source document time in Unix milliseconds, "
+                "not the server's `updated_at`. "
                 "`auto_link` (Facts only), `ttl_days` (Facts only), "
                 "`links` (create relations immediately after creation). "
                 "Note: auto_link defaults to false. Pass true on a Fact to add MENTIONS to similar Entity nodes; "
@@ -93,7 +99,7 @@ class GraphMemorySimpleMCP(GraphMemoryMCP):
             provenance_type: str | None = None,
             uri: str | None = None,
             content_hash: str | None = None,
-            updated_at: int | None = None,
+            source_updated_at: int | None = None,
             version: int | None = None,
             status: Literal["active", "outdated", "archived"] | None = None,
             ttl_days: float | None = None,
@@ -108,7 +114,7 @@ class GraphMemorySimpleMCP(GraphMemoryMCP):
                 provenance_type=provenance_type,
                 uri=uri,
                 content_hash=content_hash,
-                updated_at=updated_at,
+                source_updated_at=source_updated_at,
                 version=version,
             )
             return mcp_handlers_nodes.create_node(
@@ -134,7 +140,7 @@ class GraphMemorySimpleMCP(GraphMemoryMCP):
                 "Create or update a node using `ref` as a stable sync key. "
                 "Required: `text`, `ref`. "
                 "Optional: same flat provenance fields as create_node (`provenance_type`, `uri`, "
-                "`content_hash`, `updated_at`, `version`), plus `versioning=true` to store "
+                "`content_hash`, `source_updated_at`, `version`), plus `versioning=true` to store "
                 "a version snapshot and auto-increment `version` when it is omitted. "
                 f"{self._owner_tool_help()} {self._attribution_tool_help()}"
             ),
@@ -148,7 +154,7 @@ class GraphMemorySimpleMCP(GraphMemoryMCP):
             provenance_type: str | None = None,
             uri: str | None = None,
             content_hash: str | None = None,
-            updated_at: int | None = None,
+            source_updated_at: int | None = None,
             version: int | None = None,
             status: Literal["active", "outdated", "archived"] | None = None,
             ttl_days: float | None = None,
@@ -164,7 +170,7 @@ class GraphMemorySimpleMCP(GraphMemoryMCP):
                 provenance_type=provenance_type,
                 uri=uri,
                 content_hash=content_hash,
-                updated_at=updated_at,
+                source_updated_at=source_updated_at,
                 version=version,
             )
             return mcp_handlers_nodes.upsert_node(
@@ -191,7 +197,7 @@ class GraphMemorySimpleMCP(GraphMemoryMCP):
                 "Update a node (Fact or Entity). "
                 "You can update text, metadata, status, or ttl_days. "
                 "Optional provenance updates use the same flat fields as create_node (`ref`, `provenance_type`, `uri`, "
-                "`content_hash`, `updated_at`, `version`). "
+                "`content_hash`, `source_updated_at`, `version`). "
                 "Set versioning=true to store a previous snapshot and auto-increment version when it is omitted. "
                 f"{self._owner_tool_help()} {self._attribution_tool_help()}"
             ),
@@ -205,7 +211,7 @@ class GraphMemorySimpleMCP(GraphMemoryMCP):
             provenance_type: str | None = None,
             uri: str | None = None,
             content_hash: str | None = None,
-            updated_at: int | None = None,
+            source_updated_at: int | None = None,
             version: int | None = None,
             status: Literal["active", "outdated", "archived"] | None = None,
             ttl_days: float | None = None,
@@ -217,7 +223,7 @@ class GraphMemorySimpleMCP(GraphMemoryMCP):
                 provenance_type=provenance_type,
                 uri=uri,
                 content_hash=content_hash,
-                updated_at=updated_at,
+                source_updated_at=source_updated_at,
                 version=version,
             )
             return mcp_handlers_nodes.update_node(

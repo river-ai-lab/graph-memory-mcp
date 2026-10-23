@@ -20,6 +20,7 @@ from graph_memory_mcp.graph_memory.embedding_service import EmbeddingService
 from graph_memory_mcp.graph_memory.owner_scope import (
     OwnerHeaderMiddleware,
     OwnerTokenMiddleware,
+    authenticate,
     configure_owner_scope,
 )
 from graph_memory_mcp.jobs.scheduler import shutdown_scheduler, start_scheduler
@@ -41,6 +42,8 @@ def _mcp_instructions(scope: str) -> str:
         "Search before create; store one durable declarative fact per node. "
         "Never store chat logs, secrets, or ephemeral execution state. "
         "For substantive changes: mark_outdated then create_node. "
+        "source_updated_at is the source document time in Unix milliseconds, "
+        "not the server-managed updated_at. "
         f"Before the first memory write in a session, read MCP resource {_AGENT_POLICIES_URI}."
     )
     mode = str(scope or "client").strip().lower()
@@ -153,7 +156,10 @@ class BaseGraphMemoryMCP:
                     keys_file=self.server_config.api_keys_file,
                 )
             elif self.server_config.owner_scope == "header":
-                app.add_middleware(OwnerHeaderMiddleware)
+                app.add_middleware(
+                    OwnerHeaderMiddleware,
+                    admin_token=self.server_config.admin_token,
+                )
             app.state._owner_scope_wrapped = True
 
         from starlette.routing import Route
@@ -242,17 +248,22 @@ class BaseGraphMemoryMCP:
         from starlette.routing import Route
 
         from graph_memory_mcp.graph_memory import mcp_handlers_admin
-        from graph_memory_mcp.graph_memory.api_keys import bearer_matches
 
         db = self.db_client
         embedding_service = self.embedding_service
         admin_token = self.server_config.admin_token
-        require_admin_token = self.server_config.owner_scope == "token"
+        keys_file = self.server_config.api_keys_file
+        scope = self.server_config.owner_scope
 
         def _unauthorized(request) -> JSONResponse | None:
-            if not require_admin_token and not admin_token:
-                return None
-            if bearer_matches(request.headers.get("authorization"), admin_token):
+            decision = authenticate(
+                scope,
+                "admin",
+                request.headers.get("authorization"),
+                admin_token=admin_token,
+                keys_file=keys_file,
+            )
+            if decision.ok:
                 return None
             return JSONResponse(
                 {"success": False, "error": "Unauthorized"}, status_code=401
@@ -337,8 +348,8 @@ class BaseGraphMemoryMCP:
         """Gateway-only calls. Not MCP tools, not published to agents.
 
         There is no owner query parameter. ``token`` takes the owner from the
-        API key. ``client`` requires ``ADMIN_TOKEN`` and then ``X-Owner-Id``.
-        ``header`` keeps ``X-Owner-Id`` alone so an existing gateway still works.
+        API key. ``client`` and ``header`` require ``ADMIN_TOKEN`` and then
+        ``X-Owner-Id``.
         """
         from starlette.responses import JSONResponse
         from starlette.routing import Route

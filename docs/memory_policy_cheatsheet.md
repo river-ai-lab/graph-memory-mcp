@@ -4,6 +4,8 @@ Constants from your operator (apply, never invent): `<OWNER_ID>` required — pa
 
 `client`/`header`: pass `owner_id`; put attribution in `metadata.created_by` and `metadata.updated_by`. `token`: pass `owner_id` only to pick among the key's projects; the server sets `created_by` / `updated_by` from the key name.
 
+Node `updated_at` is the server clock. The source document time is `source_updated_at` (`source.source_updated_at`, or the flat argument on `--simple`).
+
 ## Rules
 
 1. `search` before `create_node`; one durable fact per node; no chat logs / secrets / scratchpad; no metric tables in `text`.

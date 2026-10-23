@@ -1,12 +1,14 @@
 """OWNER_SCOPE does not need FalkorDB: it only decides which string is the owner."""
 
 import asyncio
+import logging
 
 import pytest
 
 from graph_memory_mcp.graph_memory.api_keys import create_key, revoke_key
 from graph_memory_mcp.graph_memory.owner_scope import (
     GraphSizeDenied,
+    HeaderModeConfigError,
     OwnerHeaderMiddleware,
     OwnerTokenMiddleware,
     ProjectDenied,
@@ -16,6 +18,7 @@ from graph_memory_mcp.graph_memory.owner_scope import (
     graph_size_owner,
     graph_size_payload,
     owner_scope,
+    validate_header_bind,
 )
 from graph_memory_mcp.graph_memory.utils import normalize_owner_id
 
@@ -110,6 +113,55 @@ def test_middleware_binds_only_the_mcp_path():
 
     asyncio.run(_call("/mcp", None))
     assert "X-Owner-Id" in seen["error"]
+
+
+def test_header_middleware_requires_admin_token_when_set():
+    configure_owner_scope("header")
+    seen = {}
+
+    async def app(scope, receive, send):
+        try:
+            seen["owner"] = normalize_owner_id("from-tool")
+        except ValueError as exc:
+            seen["error"] = str(exc)
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    middleware = OwnerHeaderMiddleware(app, admin_token="secret")
+
+    async def _call(path, authorization):
+        seen.clear()
+        sent = []
+        headers = [(b"x-owner-id", b"tenant_a")]
+        if authorization is not None:
+            headers.append((b"authorization", authorization.encode()))
+
+        async def receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(message):
+            sent.append(message)
+
+        await middleware(
+            {"type": "http", "path": path, "headers": headers}, receive, send
+        )
+        return sent
+
+    sent = asyncio.run(_call("/mcp", None))
+    assert "owner" not in seen
+    assert sent[0]["status"] == 401
+
+    sent = asyncio.run(_call("/mcp", "Bearer wrong"))
+    assert "owner" not in seen
+    assert sent[0]["status"] == 401
+
+    sent = asyncio.run(_call("/mcp", "Bearer secret"))
+    assert seen["owner"] == "tenant_a"
+    assert sent[0]["status"] == 200
+
+    sent = asyncio.run(_call("/internal/graph-size", None))
+    assert seen["owner"] == "from-tool"
+    assert sent[0]["status"] == 200
 
 
 def test_token_scope_uses_the_key_projects(tmp_path):
@@ -244,12 +296,32 @@ def test_graph_size_is_closed(tmp_path):
         == "alice"
     )
 
-    assert (
+    with pytest.raises(GraphSizeDenied) as header_closed:
         graph_size_owner(
             scope="header",
             authorization=None,
             owner_header="alice",
             admin_token="",
+            keys_file=str(path),
+        )
+    assert header_closed.value.status == 401
+
+    with pytest.raises(GraphSizeDenied) as header_denied:
+        graph_size_owner(
+            scope="header",
+            authorization=None,
+            owner_header="alice",
+            admin_token="secret",
+            keys_file=str(path),
+        )
+    assert header_denied.value.status == 401
+
+    assert (
+        graph_size_owner(
+            scope="header",
+            authorization="Bearer secret",
+            owner_header="alice",
+            admin_token="secret",
             keys_file=str(path),
         )
         == "alice"
@@ -295,6 +367,110 @@ def test_graph_size_is_closed(tmp_path):
             keys_file=str(path),
         )
     assert token_denied.value.status == 401
+
+
+def test_header_bind_allows_loopback_and_refuses_the_network(caplog):
+    for host in ("127.0.0.1", "::1", "localhost", "LocalHost"):
+        validate_header_bind(scope="header", admin_token="", host=host)
+    validate_header_bind(scope="header", admin_token="secret", host="0.0.0.0")
+    validate_header_bind(scope="client", admin_token="", host="0.0.0.0")
+    validate_header_bind(scope="token", admin_token="", host="0.0.0.0")
+    assert not caplog.records
+
+    with pytest.raises(HeaderModeConfigError, match="X-Owner-Id") as refused:
+        validate_header_bind(scope="header", admin_token="", host="0.0.0.0")
+    message = str(refused.value)
+    assert "ADMIN_TOKEN" in message
+    assert "127.0.0.1" in message
+    assert "impersonate any owner" in message
+
+    with pytest.raises(HeaderModeConfigError):
+        validate_header_bind(scope="header", admin_token="  ", host="::")
+
+    with caplog.at_level(logging.WARNING):
+        validate_header_bind(
+            scope="header",
+            admin_token="",
+            host="0.0.0.0",
+            allow_insecure=True,
+        )
+    assert any("X-Owner-Id" in record.message for record in caplog.records)
+    assert any("starting anyway" in record.message for record in caplog.records)
+
+
+def test_cli_refuses_header_mode_on_a_reachable_host(monkeypatch):
+    from graph_memory_mcp.cli import main
+
+    monkeypatch.setenv("OWNER_SCOPE", "header")
+    monkeypatch.setenv("ADMIN_TOKEN", "")
+    monkeypatch.delenv("ALLOW_INSECURE_HEADER", raising=False)
+    with pytest.raises(SystemExit) as exc:
+        main(["--host", "0.0.0.0"])
+    message = str(exc.value)
+    assert "X-Owner-Id" in message
+    assert "ADMIN_TOKEN" in message
+    assert "127.0.0.1" in message
+
+
+def _patch_server_start(monkeypatch, started):
+    import uvicorn
+
+    class _Server:
+        def __init__(self, config):
+            started["scope"] = config.owner_scope
+
+        def get_mcp_app(self):
+            return "app"
+
+    monkeypatch.setattr("graph_memory_mcp.server.GraphMemoryMCP", _Server)
+
+    def _run(app, **kwargs):
+        started["app"] = app
+        started["host"] = kwargs.get("host")
+
+    monkeypatch.setattr(uvicorn, "run", _run)
+
+
+def test_cli_client_mode_starts_on_any_host_without_a_warning(monkeypatch, caplog):
+    from graph_memory_mcp.cli import main
+
+    monkeypatch.setenv("OWNER_SCOPE", "client")
+    monkeypatch.setenv("ADMIN_TOKEN", "")
+    started = {}
+    _patch_server_start(monkeypatch, started)
+    with caplog.at_level(logging.DEBUG):
+        main(["--host", "0.0.0.0"])
+    assert started == {"scope": "client", "app": "app", "host": "0.0.0.0"}
+    assert not any("X-Owner-Id" in record.message for record in caplog.records)
+
+
+def test_cli_header_loopback_without_token_stays_quiet(monkeypatch, caplog):
+    from graph_memory_mcp.cli import main
+
+    monkeypatch.setenv("OWNER_SCOPE", "header")
+    monkeypatch.setenv("ADMIN_TOKEN", "")
+    monkeypatch.delenv("ALLOW_INSECURE_HEADER", raising=False)
+    started = {}
+    _patch_server_start(monkeypatch, started)
+    with caplog.at_level(logging.DEBUG):
+        main(["--host", "127.0.0.1"])
+    assert started["scope"] == "header"
+    assert started["host"] == "127.0.0.1"
+    assert not any("X-Owner-Id" in record.message for record in caplog.records)
+
+
+def test_cli_allow_insecure_header_warns_and_starts(monkeypatch, caplog):
+    from graph_memory_mcp.cli import main
+
+    monkeypatch.setenv("OWNER_SCOPE", "header")
+    monkeypatch.setenv("ADMIN_TOKEN", "")
+    monkeypatch.setenv("ALLOW_INSECURE_HEADER", "1")
+    started = {}
+    _patch_server_start(monkeypatch, started)
+    with caplog.at_level(logging.WARNING):
+        main(["--host", "0.0.0.0"])
+    assert started["host"] == "0.0.0.0"
+    assert any("impersonate any owner" in record.message for record in caplog.records)
 
 
 def test_graph_size_payload_counts_labels():

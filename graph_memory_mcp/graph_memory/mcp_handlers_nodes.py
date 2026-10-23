@@ -107,7 +107,7 @@ _NODE_ROW_FIELDS = (
 def _node_from_row(row: List[Any]) -> Dict[str, Any]:
     """Build the public node payload from a projected DB row."""
     projected = dict(zip(_NODE_ROW_FIELDS, row))
-    source = load_json(projected.get("source_str"), None)
+    source = _public_source(load_json(projected.get("source_str"), None))
     description = ensure_text(projected.get("description"))
     entity_type = ensure_text(projected.get("entity_type"))
     created_by = ensure_text(projected.get("created_by"))
@@ -136,6 +136,28 @@ def _node_from_row(row: List[Any]) -> Dict[str, Any]:
     return node
 
 
+def _document_time(source: Dict[str, Any]) -> Optional[int]:
+    """Source document time. Prefer source_updated_at; accept legacy updated_at."""
+    for key in ("source_updated_at", "updated_at"):
+        stamp = normalize_unix_ms(source.get(key))
+        if stamp is not None:
+            return stamp
+    return None
+
+
+def _public_source(source: Any) -> Any:
+    """Return source for MCP reads. Old rows stored the document time as updated_at."""
+    if not isinstance(source, dict) or "updated_at" not in source:
+        return source
+    public = dict(source)
+    legacy = public.pop("updated_at")
+    if "source_updated_at" not in public:
+        stamp = normalize_unix_ms(legacy)
+        if stamp is not None:
+            public["source_updated_at"] = stamp
+    return public or None
+
+
 def _normalize_source(source: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """Normalize source payload while keeping the MCP-facing schema compact."""
     if source is None:
@@ -156,11 +178,13 @@ def _normalize_source(source: Optional[Dict[str, Any]]) -> Optional[Dict[str, An
         else:
             normalized.pop(key, None)
 
-    updated_at = normalize_unix_ms(source.get("updated_at"))
-    if updated_at is not None:
-        normalized["updated_at"] = updated_at
-    else:
-        normalized.pop("updated_at", None)
+    # Document time is source_updated_at. source.updated_at is the older key
+    # and must not remain next to the server's updated_at.
+    stamp = _document_time(source)
+    normalized.pop("updated_at", None)
+    normalized.pop("source_updated_at", None)
+    if stamp is not None:
+        normalized["source_updated_at"] = stamp
 
     version = source.get("version")
     if isinstance(version, int) and version >= 1:
@@ -178,7 +202,7 @@ def _source_properties(source: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     source_type = ensure_text((normalized or {}).get("type"))
     source_uri = ensure_text((normalized or {}).get("uri"))
     content_hash = ensure_text((normalized or {}).get("content_hash"))
-    source_updated_at = normalize_unix_ms((normalized or {}).get("updated_at"))
+    source_updated_at = (normalized or {}).get("source_updated_at")
 
     return {
         "source": normalized,
@@ -718,7 +742,7 @@ def _node_as_of(
                 "text": ensure_text(row[0]),
                 "description": ensure_text(row[1]) if row[1] else None,
                 "metadata": load_json(row[2], {}),
-                "source": load_json(row[3], None),
+                "source": _public_source(load_json(row[3], None)),
                 "status": ensure_text(row[4]),
                 "ttl_days": row[5],
                 "expires_at": row[6],
@@ -958,7 +982,7 @@ def get_node_change_history(
                 "version_id": str(row[0]),
                 "text": ensure_text(row[1]),
                 "metadata": load_json(row[2], {}),
-                "source": load_json(row[3], None),
+                "source": _public_source(load_json(row[3], None)),
                 "status": ensure_text(row[4]),
                 "ttl_days": row[5],
                 "version_timestamp": row[6],

@@ -200,9 +200,10 @@ def _validate_source_shape(value: Any) -> Optional[str]:
         if ensure_text(field_value) is None:
             return f"source.{field} must be a string"
 
-    updated_at = value.get("updated_at")
-    if updated_at is not None and normalize_unix_ms(updated_at) is None:
-        return "source.updated_at must be Unix milliseconds"
+    for key in ("source_updated_at", "updated_at"):
+        stamp = value.get(key)
+        if stamp is not None and normalize_unix_ms(stamp) is None:
+            return f"source.{key} must be Unix milliseconds"
 
     version = value.get("version")
     if version is not None:
