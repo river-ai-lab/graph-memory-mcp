@@ -19,7 +19,9 @@ def node_return_fields(alias: str = "n") -> str:
         {alias}.ttl_days as ttl_days,
         {alias}.expires_at as expires_at,
         {alias}.type as entity_type,
-        {alias}.source_str as source_str
+        {alias}.source_str as source_str,
+        {alias}.created_by as created_by,
+        {alias}.updated_by as updated_by
     """
 
 
@@ -79,6 +81,7 @@ class FalkorOps:
         confidence: $confidence,
         project: $project,
         created_by: $created_by,
+        updated_by: $updated_by,
         shared_with_ids: $shared_with_ids,
         ttl_days: $ttl_days,
         expires_at: $expires_at,
@@ -112,6 +115,7 @@ class FalkorOps:
         confidence: row.confidence,
         project: row.project,
         created_by: row.created_by,
+        updated_by: row.updated_by,
         ttl_days: row.ttl_days,
         expires_at: row.expires_at,
         name_norm: row.name_norm,
@@ -293,13 +297,23 @@ class FalkorOps:
         params: dict,
         prop_assignments: str,
     ) -> list:
+        params = {
+            **params,
+            "created_by": params.get("created_by"),
+            "updated_by": params.get("updated_by"),
+        }
         query = f"""
     MATCH (a), (b)
     WHERE a.uid = $from_id AND b.uid = $to_id
         AND a.owner_id = $owner_id AND b.owner_id = $owner_id
     MERGE (a)-[r:{rel_type}]->(b)
-    ON CREATE SET r.created_at = timestamp(){prop_assignments}
-    RETURN id(r) as rel_id
+    ON CREATE SET r.created_at = timestamp(),
+        r.updated_at = timestamp(),
+        r.created_by = $created_by,
+        r.updated_by = $updated_by{prop_assignments}
+    RETURN id(r) as rel_id, r.created_by as created_by,
+        r.created_at as created_at, r.updated_by as updated_by,
+        r.updated_at as updated_at
     """
         return self.rows(query, params)
 
@@ -312,17 +326,20 @@ class FalkorOps:
         s.uid = $subj_uid,
         s.text = $subject,
         s.created_at = timestamp(),
+        s.updated_at = timestamp(),
         s.embedding = {subj_emb_expr},
         s.status = 'active',
         s.metadata_str = $metadata_str,
         s.project = $project,
         s.created_by = $created_by,
+        s.updated_by = $updated_by,
         s.tags = $tags,
         s.meta_type = $meta_type,
         s.confidence = $confidence
     ON MATCH SET
         s.project = CASE WHEN $project IS NULL THEN s.project ELSE $project END,
-        s.created_by = CASE WHEN $created_by IS NULL THEN s.created_by ELSE $created_by END,
+        s.updated_at = timestamp(),
+        s.updated_by = CASE WHEN $updated_by IS NULL THEN s.updated_by ELSE $updated_by END,
         s.tags = CASE WHEN $tags IS NULL THEN s.tags ELSE $tags END,
         s.meta_type = CASE WHEN $meta_type IS NULL THEN s.meta_type ELSE $meta_type END,
         s.confidence = CASE WHEN $confidence IS NULL THEN s.confidence ELSE $confidence END
@@ -331,22 +348,28 @@ class FalkorOps:
         o.uid = $obj_uid,
         o.text = $object,
         o.created_at = timestamp(),
+        o.updated_at = timestamp(),
         o.embedding = {obj_emb_expr},
         o.status = 'active',
         o.metadata_str = $metadata_str,
         o.project = $project,
         o.created_by = $created_by,
+        o.updated_by = $updated_by,
         o.tags = $tags,
         o.meta_type = $meta_type,
         o.confidence = $confidence
     ON MATCH SET
         o.project = CASE WHEN $project IS NULL THEN o.project ELSE $project END,
-        o.created_by = CASE WHEN $created_by IS NULL THEN o.created_by ELSE $created_by END,
+        o.updated_at = timestamp(),
+        o.updated_by = CASE WHEN $updated_by IS NULL THEN o.updated_by ELSE $updated_by END,
         o.tags = CASE WHEN $tags IS NULL THEN o.tags ELSE $tags END,
         o.meta_type = CASE WHEN $meta_type IS NULL THEN o.meta_type ELSE $meta_type END,
         o.confidence = CASE WHEN $confidence IS NULL THEN o.confidence ELSE $confidence END
     MERGE (s)-[r:{rel_type}]->(o)
-    ON CREATE SET r.created_at = timestamp()
+    ON CREATE SET r.created_at = timestamp(),
+        r.updated_at = timestamp(),
+        r.created_by = $created_by,
+        r.updated_by = $updated_by
     RETURN s.uid as subject_id, o.uid as object_id, id(r) as relation_id
     """
         return self.rows(query, params)
@@ -715,11 +738,15 @@ class FalkorOps:
         self, *, label: str, has_emb: bool, rows: list, owner_id: str
     ) -> Any:
         emb_clause = ", n.embedding = vecf32(row.emb)" if has_emb else ""
+        # Full replace from the dump. Timestamps already in row.props stay;
+        # missing ones are filled with the server clock.
         return self.query(
             f"""
                 UNWIND $rows AS row
                 MERGE (n:{label} {{uid: row.uid}})
                 SET n = row.props{emb_clause}
+                SET n.created_at = coalesce(n.created_at, timestamp()),
+                    n.updated_at = coalesce(n.updated_at, timestamp())
                 """,
             params={"rows": rows, "owner_id": owner_id},
         )
@@ -733,6 +760,8 @@ class FalkorOps:
                   AND a.owner_id = $owner_id AND b.owner_id = $owner_id
                 MERGE (a)-[r:{rel_type}]->(b)
                 SET r = row.props
+                SET r.created_at = coalesce(r.created_at, timestamp()),
+                    r.updated_at = coalesce(r.updated_at, timestamp())
                 """,
             params={"rows": rows, "owner_id": owner_id},
         )
@@ -825,7 +854,8 @@ class FalkorOps:
                         MATCH (p:{label}), (t)
                         WHERE p.uid = $primary_id AND t.uid = $target_id
                         MERGE (p)-[new_r:{rel_type}]->(t)
-                        SET new_r = $props
+                        ON CREATE SET new_r = $props
+                        ON MATCH SET new_r.updated_at = $updated_at
                         """,
             params=params,
         )
@@ -853,7 +883,8 @@ class FalkorOps:
                         MATCH (s), (p:{label})
                         WHERE s.uid = $source_id AND p.uid = $primary_id
                         MERGE (s)-[new_r:{rel_type}]->(p)
-                        SET new_r = $props
+                        ON CREATE SET new_r = $props
+                        ON MATCH SET new_r.updated_at = $updated_at
                         """,
             params=params,
         )
@@ -873,6 +904,7 @@ class FalkorOps:
                 WHERE n.uid = $dup_id AND n.owner_id = $owner_id
                 SET n.status = 'outdated',
                     n.merged_into = $primary_id,
+                    n.updated_at = timestamp(),
                     n.metadata_str = coalesce(n.metadata_str, '{{}}')
                 """,
             params={"dup_id": dup_id, "primary_id": primary_id, "owner_id": owner_id},

@@ -1,6 +1,10 @@
 # Graph Memory — Cheat Sheet
 
-Constants from your operator (apply, never invent): `<OWNER_ID>` required — pass on every call; `<PROJECT>` optional — `metadata={"project": ...}` on writes, `metadata_filter={"project": ...}` on reads; `<AGENT_ID>` optional — `metadata={"created_by": ...}` on writes.
+Constants from your operator (apply, never invent): `<OWNER_ID>` required — pass on every call; `<PROJECT>` optional — `metadata={"project": ...}` on writes, `metadata_filter={"project": ...}` on reads; `<AGENT_ID>` optional — `metadata.created_by` (and `metadata.updated_by` when the editor differs).
+
+`client`/`header`: pass `owner_id`; put attribution in `metadata.created_by` and `metadata.updated_by`. `token`: pass `owner_id` only to pick among the key's projects; the server sets `created_by` / `updated_by` from the key name.
+
+Node `updated_at` is the server clock. The source document time is `source_updated_at` (`source.source_updated_at`, or the flat argument on `--simple`).
 
 ## Rules
 

@@ -3,6 +3,7 @@ import time
 from typing import Any, Dict, List
 
 from graph_memory_mcp.config import MCPServerConfig
+from graph_memory_mcp.graph_memory.authorship import strip_protected
 from graph_memory_mcp.graph_memory.database import FalkorDBClient
 from graph_memory_mcp.graph_memory.utils import (
     normalize_owner_id,
@@ -251,6 +252,26 @@ async def _find_duplicate_fact_groups(
     )
 
 
+def _edge_for_copy(props: Any) -> tuple[dict, int]:
+    """Audit fields for an edge moved onto the survivor.
+
+    A new edge keeps the duplicate edge's ``created_by`` / ``created_at``.
+    ``updated_at`` is the merge time. If the survivor already has that edge,
+    the backends keep its ``created_*`` and write only this ``updated_at``.
+    """
+    kept = dict(props or {})
+    created_by = kept.get("created_by")
+    created_at = kept.get("created_at")
+    kept = strip_protected(kept)
+    if created_by is not None:
+        kept["created_by"] = created_by
+    if created_at is not None:
+        kept["created_at"] = created_at
+    updated_at = int(time.time() * 1000)
+    kept["updated_at"] = updated_at
+    return kept, updated_at
+
+
 def _merge_duplicate_nodes(
     db: FalkorDBClient,
     *,
@@ -263,6 +284,11 @@ def _merge_duplicate_nodes(
     Not transactional (FalkorDB executes one query atomically); instead the
     steps are idempotent (MERGE-based) and ordered so a partial failure is
     repaired by the next dedup run. Duplicates get `merged_into` for tracing.
+
+    The survivor keeps its own ``created_by`` and ``created_at``. The outdated
+    duplicate keeps its own ``created_by``; only ``updated_at`` moves. An edge
+    that already exists on the survivor keeps that edge's ``created_*`` and
+    gets ``updated_at`` set to the merge time.
 
     Returns primary node ID.
     """
@@ -277,13 +303,15 @@ def _merge_duplicate_nodes(
         try:
             for row in db.rels_out(label=label, dup_id=dup_id, owner_id=owner_id):
                 rel_type, props, target_id = row
+                kept, updated_at = _edge_for_copy(props)
                 db.copy_rel_out(
                     label=label,
                     rel_type=rel_type,
                     params={
                         "primary_id": primary_id,
                         "target_id": str(target_id),
-                        "props": props,
+                        "props": kept,
+                        "updated_at": updated_at,
                         "owner_id": owner_id,
                     },
                 )
@@ -294,13 +322,15 @@ def _merge_duplicate_nodes(
         try:
             for row in db.rels_in(label=label, dup_id=dup_id, owner_id=owner_id):
                 rel_type, props, source_id = row
+                kept, updated_at = _edge_for_copy(props)
                 db.copy_rel_in(
                     label=label,
                     rel_type=rel_type,
                     params={
                         "source_id": str(source_id),
                         "primary_id": primary_id,
-                        "props": props,
+                        "props": kept,
+                        "updated_at": updated_at,
                         "owner_id": owner_id,
                     },
                 )

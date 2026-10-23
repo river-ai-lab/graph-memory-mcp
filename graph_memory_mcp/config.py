@@ -15,8 +15,10 @@ class MCPServerConfig(BaseSettings):
         default="default", validation_alias="DEFAULT_OWNER_ID"
     )
     # client: tool argument owner_id (trusted local / company).
-    # header: ignore the tool argument; owner is the X-Owner-Id request header.
-    # token: ignore the tool argument; owner is the one stored for the Bearer key.
+    # header: ignore the tool argument; owner is X-Owner-Id from a gateway
+    # in front of 127.0.0.1. The gateway sends ADMIN_TOKEN when it is set.
+    # token: Bearer API key. owner_id must be one of the key's projects;
+    # omit it to use the first project. Author is the key's name.
     owner_scope: Literal["client", "header", "token"] = Field(
         default="client", validation_alias="OWNER_SCOPE"
     )
@@ -42,6 +44,11 @@ class MCPServerConfig(BaseSettings):
         default=False, validation_alias="MCP_EXPOSE_ADMIN_TOOLS"
     )
     admin_token: str = Field(default="", validation_alias="ADMIN_TOKEN")
+    # Header mode only. True logs a warning and allows a non-loopback bind
+    # when ADMIN_TOKEN is empty. client and token ignore it.
+    allow_insecure_header: bool = Field(
+        default=False, validation_alias="ALLOW_INSECURE_HEADER"
+    )
     name: str = Field(default="memory", validation_alias="MCP_SERVER_NAME")
     description: str = Field(
         default="Memory MCP server for knowledge graph (FalkorDB)",

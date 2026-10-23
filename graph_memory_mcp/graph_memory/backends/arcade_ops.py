@@ -67,6 +67,8 @@ def _node_row(record: dict, node_type: str) -> list:
         record.get("expires_at"),
         record.get("type"),
         record.get("source_str"),
+        record.get("created_by"),
+        record.get("updated_by"),
     ]
 
 
@@ -283,6 +285,7 @@ class ArcadeOps:
             "confidence": params.get("confidence"),
             "project": params.get("project"),
             "created_by": params.get("created_by"),
+            "updated_by": params.get("updated_by"),
             "shared_with_ids": params.get("shared_with_ids") or [],
             "ttl_days": params.get("ttl_days"),
             "expires_at": params.get("expires_at"),
@@ -327,6 +330,7 @@ class ArcadeOps:
                     "confidence": row.get("confidence"),
                     "project": row.get("project"),
                     "created_by": row.get("created_by"),
+                    "updated_by": row.get("updated_by"),
                     "ttl_days": row.get("ttl_days"),
                     "expires_at": row.get("expires_at"),
                     "name_norm": row.get("name_norm"),
@@ -539,8 +543,16 @@ class ArcadeOps:
         if from_rec is None or to_rec is None:
             return []
         self.ensure_edge_type(rel_type)
-        props = {"created_at": _now_ms()}
+        now = _now_ms()
+        props = {
+            "created_at": now,
+            "updated_at": now,
+            "created_by": params.get("created_by"),
+            "updated_by": params.get("updated_by"),
+        }
         for prop, param in _EDGE_PROP.findall(prop_assignments or ""):
+            if prop in {"created_by", "created_at", "updated_by", "updated_at"}:
+                continue
             props[prop] = params.get(param)
         from_rid = _rid(from_rec.get("@rid"))
         to_rid = _rid(to_rec.get("@rid"))
@@ -598,11 +610,17 @@ class ArcadeOps:
             if existing:
                 rel_id = existing[0].get("rid")
             else:
+                now = _now_ms()
                 edge = self._insert_edge(
                     rel_type,
                     from_rid,
                     to_rid,
-                    {"created_at": _now_ms()},
+                    {
+                        "created_at": now,
+                        "updated_at": now,
+                        "created_by": params.get("created_by"),
+                        "updated_by": params.get("updated_by"),
+                    },
                     session=session,
                 )
                 rel_id = edge.get("@rid")
@@ -1131,6 +1149,11 @@ class ArcadeOps:
                 props["owner_id"] = owner
                 if has_emb:
                     props["embedding"] = row.get("emb")
+                now = _now_ms()
+                if props.get("created_at") is None:
+                    props["created_at"] = now
+                if props.get("updated_at") is None:
+                    props["updated_at"] = now
                 existing = self.query(
                     f"SELECT @rid AS rid FROM {label} WHERE uid = :uid AND owner_id = '{owner}' LIMIT 1",
                     {"uid": row.get("uid")},
@@ -1159,10 +1182,14 @@ class ArcadeOps:
                 f"WHERE @out = {from_rid} AND @in = {to_rid} LIMIT 1"
             )
             props = dict(row.get("props") or {})
+            now = _now_ms()
+            if props.get("created_at") is None:
+                props["created_at"] = now
+            if props.get("updated_at") is None:
+                props["updated_at"] = now
             if existing:
                 self._set_edge_props(rel_type, _rid(existing[0].get("rid")), props)
             else:
-                props.setdefault("created_at", _now_ms())
                 self._insert_edge(rel_type, from_rid, to_rid, props)
         return True
 
@@ -1293,7 +1320,7 @@ class ArcadeOps:
             label,
             dup_id,
             owner_id,
-            {"status": "outdated", "merged_into": primary_id},
+            {"status": "outdated", "merged_into": primary_id, "updated_at": _now_ms()},
         )
 
     def touch_dedup_primary(self, *, label: str, primary_id: str, owner_id: str) -> Any:
@@ -1351,6 +1378,7 @@ class ArcadeOps:
         promoted = {
             "project": params.get("project"),
             "created_by": params.get("created_by"),
+            "updated_by": params.get("updated_by"),
             "tags": params.get("tags"),
             "meta_type": params.get("meta_type"),
             "confidence": params.get("confidence"),
@@ -1358,8 +1386,13 @@ class ArcadeOps:
         if found:
             record = found[0]
             changes = {
-                key: value for key, value in promoted.items() if value is not None
+                key: value
+                for key, value in promoted.items()
+                if value is not None and key != "created_by"
             }
+            changes["updated_at"] = _now_ms()
+            if params.get("updated_by") is not None:
+                changes["updated_by"] = params.get("updated_by")
             if changes:
                 self._update(
                     "Entity", str(record.get("uid")), owner, changes, session=session
@@ -1555,18 +1588,33 @@ class ArcadeOps:
         del outgoing
         if not owner_id:
             return None
-        return self.merge_relation(
-            rel_type=rel_type,
-            params={
-                "from_id": from_id,
-                "to_id": to_id,
-                "owner_id": owner_id,
-                **dict(props),
-            },
-            prop_assignments=(
-                ", " + ", ".join(f"r.{key} = ${key}" for key in props) if props else ""
-            ),
+        from_label, from_rec = self._find(from_id, owner_id)
+        to_label, to_rec = self._find(to_id, owner_id)
+        if from_rec is None or to_rec is None:
+            return None
+        del from_label, to_label
+        self.ensure_edge_type(rel_type)
+        from_rid = _rid(from_rec.get("@rid"))
+        to_rid = _rid(to_rec.get("@rid"))
+        existing = self.query(
+            f"SELECT @rid AS rid FROM {rel_type} "
+            f"WHERE @out = {from_rid} AND @in = {to_rid} LIMIT 1"
         )
+        copied = dict(props or {})
+        stamp = copied.get("updated_at")
+        if stamp is None:
+            stamp = _now_ms()
+        if existing:
+            # Keep the edge that is already on the survivor, including created_*.
+            self._set_edge_props(
+                rel_type, _rid(existing[0].get("rid")), {"updated_at": stamp}
+            )
+            return [[existing[0].get("rid")]]
+        if copied.get("created_at") is None:
+            copied["created_at"] = stamp
+        copied["updated_at"] = stamp
+        created = self._insert_edge(rel_type, from_rid, to_rid, copied)
+        return [[created.get("@rid")]]
 
     def _owner_of(self, uid: str) -> str | None:
         self.ensure_ready()

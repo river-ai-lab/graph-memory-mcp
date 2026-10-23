@@ -6,6 +6,7 @@ import time
 from typing import Any, Dict, Optional
 
 from graph_memory_mcp.graph_memory import mcp_handlers_nodes
+from graph_memory_mcp.graph_memory.authorship import strip_protected
 from graph_memory_mcp.graph_memory.database import FalkorDBClient
 from graph_memory_mcp.graph_memory.utils import (
     ensure_text,
@@ -273,12 +274,17 @@ def import_owner(
     nodes: list,
     relations: Optional[list] = None,
     regenerate_embeddings: bool = False,
+    preserve_audit: bool = False,
 ) -> Dict:
     """Import a previously exported payload into `owner_id`.
 
     Nodes are merged by `uid` (idempotent) in UNWIND batches grouped by label;
     relations in batches grouped by type. Embeddings come from the payload, or
     are recomputed when regenerate_embeddings=true (or missing).
+
+    ``preserve_audit`` keeps ``created_*`` / ``updated_*`` from the dump.
+    ``/admin/import`` sets it. The MCP tool leaves it false and those fields
+    are dropped so an agent cannot choose them.
     """
     owner_id = normalize_owner_id(owner_id)
 
@@ -289,7 +295,8 @@ def import_owner(
     rows_by_group: Dict[tuple, list] = {}
     for node in nodes or []:
         label = str((node or {}).get("label") or "")
-        props = dict((node or {}).get("properties") or {})
+        raw_props = dict((node or {}).get("properties") or {})
+        props = raw_props if preserve_audit else strip_protected(raw_props)
         uid = ensure_text(props.get("uid"))
         text = ensure_text(props.get("text"))
         if label not in _EXPORT_LABELS or not uid:
@@ -322,11 +329,13 @@ def import_owner(
         if not (from_id and to_id and rel_type):
             skipped += 1
             continue
+        raw_rel_props = dict((rel or {}).get("properties") or {})
+        rel_props = raw_rel_props if preserve_audit else strip_protected(raw_rel_props)
         rels_by_type.setdefault(rel_type, []).append(
             {
                 "from_id": from_id,
                 "to_id": to_id,
-                "props": dict((rel or {}).get("properties") or {}),
+                "props": rel_props,
             }
         )
 

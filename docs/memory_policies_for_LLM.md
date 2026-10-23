@@ -27,9 +27,11 @@ Do not invent noise to satisfy the checklist.
 
 | Constant | Meaning | Usage |
 |----------|---------|-------|
-| `<OWNER_ID>` (required) | Hard isolation boundary — a company, team, or person; everyone inside sees everything | Pass `owner_id` explicitly on **every** call. Format: alphanumeric + `-` `_` `@`. On a trusted server this value selects the graph. When `OWNER_SCOPE=header`, the server uses the `X-Owner-Id` HTTP header instead. When `OWNER_SCOPE=token`, the server uses the owner stored for your API key. Still pass the argument for compatibility. |
+| `<OWNER_ID>` (required) | Hard isolation boundary — a company, team, or person; everyone inside sees everything | Pass `owner_id` explicitly on **every** call. Format: alphanumeric + `-` `_` `@`. On a trusted server this value selects the graph. When `OWNER_SCOPE=header`, the server uses the `X-Owner-Id` HTTP header instead. When `OWNER_SCOPE=token`, `owner_id` must be one of the API key's projects; omit it to use the first project. |
+
+**Owner scope.** `client` (default) and `header`: pass `owner_id` (or rely on `X-Owner-Id`). Put attribution in `metadata.created_by` and, when the editor differs, `metadata.updated_by`. `token`: the server sets `created_by` / `updated_by` from the key name; pass `owner_id` only to pick among the key's projects.
 | `<PROJECT>` (optional) | Soft partition inside the owner | Writes: `metadata={"project": "<PROJECT>"}`. Reads: `metadata_filter={"project": "<PROJECT>"}`; omit the filter for cross-project recall |
-| `<AGENT_ID>` (optional) | Attribution | Writes: `metadata={"created_by": "<AGENT_ID>"}` (e.g. `"agent:codegen"`, `"user:ivan"`) |
+| `<AGENT_ID>` (optional) | Attribution | Writes: `metadata={"created_by": "<AGENT_ID>"}` (e.g. `"agent:codegen"`, `"user:ivan"`). Set `metadata.updated_by` when the editor differs. |
 
 **Reserved metadata keys** (typed, filterable, indexed): `project`, `created_by`, `tags` (list of strings), `type`, `confidence` (float). Wrong types are rejected. All other metadata keys are free-form and always allowed. Put the searchable substance in `text`, not in metadata.
 
@@ -62,3 +64,5 @@ Allowed types (default): `RELATED_TO` (generic), `MENTIONS`, `SUMMARIZES`, `FOLL
 ## Versioning & time
 
 Updates with `versioning=true` (or server default `VERSIONING_DEFAULT`) snapshot the previous state: `get_node_change_history(node_id)` lists versions, `get_node(node_id, as_of=<unix ms>)` reads the state at a point in time.
+
+The server sets `created_at` and `updated_at`. The source document time is `source.source_updated_at` (Unix milliseconds), or the flat `source_updated_at` argument on `--simple`. Do not send `updated_at` to set either clock. Older `source.updated_at` is still accepted and returned as `source_updated_at`.

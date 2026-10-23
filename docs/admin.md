@@ -11,7 +11,7 @@ Same process as `/mcp`. In `client` and `header`, `ADMIN_TOKEN` is `Authorizatio
 | `/admin/owners/{owner_id}` | DELETE | drop owner graph |
 | `/admin/prune-empty-owners` | POST | drop empty owner graphs |
 | `/metrics` | GET | Prometheus. Open in every mode. Totals only: no owner name and no owner records. |
-| `/internal/graph-size` | GET | Owner graph size. `client`: `ADMIN_TOKEN` plus `X-Owner-Id`. `header`: `X-Owner-Id` only. `token`: the API key. |
+| `/internal/graph-size` | GET | Owner graph size. `client` and `header`: `ADMIN_TOKEN` plus `X-Owner-Id`. `token`: the API key. |
 
 ```bash
 curl -s localhost:8000/admin/health | jq .healthy
@@ -27,8 +27,8 @@ curl -s -H "Authorization: Bearer $ADMIN_TOKEN" -H "X-Owner-Id: team_a" localhos
 
 `/internal/graph-size` returns `{owner_id, nodes, node_count, relation_count, bytes}`. `bytes` is Redis `MEMORY USAGE` of that owner's graph key, or `null` if it cannot be read. There is no `owner_id` query parameter. RPM and request counts are not counted here.
 
-In `client`, the route requires `ADMIN_TOKEN` and `X-Owner-Id`. A missing token is HTTP 401. A missing header is HTTP 400. In `header`, `X-Owner-Id` alone is enough, so a gateway does not send `ADMIN_TOKEN`; a missing header is HTTP 400. In `token`, the route requires the API key and uses that key's owner. A missing key is HTTP 401.
+In `client` and `header`, the route requires `ADMIN_TOKEN` and `X-Owner-Id`. A missing token is HTTP 401. A missing header is HTTP 400. In `token`, the route requires the API key; `X-Owner-Id` must be one of the key's projects, or the first project is used. A missing key is HTTP 401. A foreign project is HTTP 403.
 
-`OWNER_SCOPE=header` applies to `/mcp`: the tool argument `owner_id` is dropped and `X-Owner-Id` is required. `OWNER_SCOPE=client` (default) keeps the tool argument. `OWNER_SCOPE=token` drops the argument and uses the Bearer key. See [Owners](../README.md#owners) and [configuration](./configuration.md).
+`OWNER_SCOPE=header` applies to `/mcp`: the tool argument `owner_id` is dropped and `X-Owner-Id` is required. Run it on `127.0.0.1` behind a gateway. The gateway sends `Authorization: Bearer $ADMIN_TOKEN`; a missing or wrong bearer is HTTP 401 when that token is set. A non-loopback bind without `ADMIN_TOKEN` refuses to start (`ALLOW_INSECURE_HEADER=1` warns and starts). `OWNER_SCOPE=client` (default) keeps the tool argument. `OWNER_SCOPE=token` requires a Bearer key; `owner_id` must be one of the key's projects. See [Owners](../README.md#owners), [team-setup](./team-setup.md), and [configuration](./configuration.md).
 
 Backups: [README](../README.md). Re-expose as MCP: `MCP_EXPOSE_ADMIN_TOOLS=true`.

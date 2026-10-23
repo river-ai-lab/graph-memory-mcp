@@ -28,22 +28,29 @@ def normalize_owner_id(owner_id: Optional[str], *, default: str = "default") -> 
     """Normalize and validate owner_id; raises ValueError on invalid format.
 
     During an MCP HTTP request with OWNER_SCOPE=header, the tool argument is
-    replaced by X-Owner-Id. With OWNER_SCOPE=token it is replaced by the owner
-    stored for the Bearer key. Jobs and direct handler calls are unchanged.
+    replaced by X-Owner-Id. With OWNER_SCOPE=token the argument must be one of
+    the key's projects; an empty argument uses the first project. Jobs and
+    direct handler calls are unchanged.
     """
-    from graph_memory_mcp.graph_memory.owner_scope import pinned_owner_argument
+    from graph_memory_mcp.graph_memory.owner_scope import (
+        bound_key,
+        pinned_owner_argument,
+        resolve_token_owner,
+    )
 
     pinned = pinned_owner_argument()
     if pinned is not None:
         owner_id = pinned
     if owner_id is None:
-        return default
-    if isinstance(owner_id, bytes):
+        value = ""
+    elif isinstance(owner_id, bytes):
         value = owner_id.decode("utf-8", errors="replace").strip()
     elif isinstance(owner_id, str):
         value = owner_id.strip()
     else:
         value = str(owner_id).strip()
+    if bound_key() is not None:
+        return require_owner_id_format(resolve_token_owner(value))
     value = value or default
     return require_owner_id_format(value)
 
@@ -193,9 +200,10 @@ def _validate_source_shape(value: Any) -> Optional[str]:
         if ensure_text(field_value) is None:
             return f"source.{field} must be a string"
 
-    updated_at = value.get("updated_at")
-    if updated_at is not None and normalize_unix_ms(updated_at) is None:
-        return "source.updated_at must be Unix milliseconds"
+    for key in ("source_updated_at", "updated_at"):
+        stamp = value.get(key)
+        if stamp is not None and normalize_unix_ms(stamp) is None:
+            return f"source.{key} must be Unix milliseconds"
 
     version = value.get("version")
     if version is not None:
@@ -263,8 +271,13 @@ def mcp_handler(func):
         except ValueError as exc:
             result = error_response(exc, code="memory_validation_error")
         except Exception as exc:
-            logger.error(f"Failed to execute {func.__name__}: {exc}")
-            result = error_response(exc, code="memory_service_error")
+            from graph_memory_mcp.graph_memory.owner_scope import ProjectDenied
+
+            if isinstance(exc, ProjectDenied):
+                result = error_response(exc, code="memory_forbidden")
+            else:
+                logger.error(f"Failed to execute {func.__name__}: {exc}")
+                result = error_response(exc, code="memory_service_error")
         observe_handler(
             func.__name__,
             _time.perf_counter() - started,

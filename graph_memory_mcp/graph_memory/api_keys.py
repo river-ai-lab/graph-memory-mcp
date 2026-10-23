@@ -1,7 +1,9 @@
 """API keys for ``OWNER_SCOPE=token``.
 
-The file stores a sha256 hash and the owner. ``keys create`` prints the raw
-key once and does not write it.
+A key is a person (``name``) plus the owner graphs they may use (``projects``).
+The file stores a sha256 hash; ``keys create`` prints the raw key once.
+The single-owner ``owner`` field from earlier token mode is still read:
+``owner`` becomes ``projects=[owner]`` and ``name=owner``.
 """
 
 from __future__ import annotations
@@ -34,7 +36,8 @@ class TokenModeConfigError(RuntimeError):
 @dataclass(frozen=True)
 class ApiKeyRecord:
     id: str
-    owner: str
+    name: str
+    projects: tuple[str, ...]
     created_at: str
     revoked: bool
 
@@ -78,7 +81,8 @@ def validate_token_mode(*, admin_token: str, keys_file: str) -> None:
     if not path.is_file():
         raise TokenModeConfigError(
             f"OWNER_SCOPE=token requires an API keys file at {path}. "
-            "Create a key with: graph-memory-mcp keys create --owner <owner>"
+            "Create a key with: graph-memory-mcp keys create --name <name> "
+            "--projects <p1,p2>"
         )
     try:
         _read(path)
@@ -88,8 +92,20 @@ def validate_token_mode(*, admin_token: str, keys_file: str) -> None:
         ) from exc
 
 
-def owner_for_bearer(path: str | Path, authorization: str | None) -> str | None:
-    """Owner of a live key, or None when the key is missing, unknown, or revoked."""
+def parse_projects(value: str | list[str] | tuple[str, ...]) -> list[str]:
+    """Split a comma list or validate a sequence of owner ids."""
+    if isinstance(value, str):
+        parts = [part.strip() for part in value.split(",")]
+    else:
+        parts = [str(part).strip() for part in value]
+    projects = [require_owner_id_format(part) for part in parts if part]
+    if not projects:
+        raise ValueError("projects must list at least one owner_id")
+    return projects
+
+
+def key_for_bearer(path: str | Path, authorization: str | None) -> ApiKeyRecord | None:
+    """Live key for a Bearer token, or None when missing, unknown, or revoked."""
     raw = bearer_value(authorization)
     if raw is None:
         return None
@@ -106,19 +122,24 @@ def owner_for_bearer(path: str | Path, authorization: str | None) -> str | None:
         if len(stored) != _HASH_LEN:
             continue
         if hmac.compare_digest(stored, digest):
-            owner = str(row.get("owner") or "").strip()
-            return owner or None
+            record = _record(row)
+            if record.name and record.projects:
+                return record
     return None
 
 
-def create_key(path: str | Path, owner: str) -> tuple[ApiKeyRecord, str]:
+def create_key(
+    path: str | Path, name: str, projects: str | list[str] | tuple[str, ...]
+) -> tuple[ApiKeyRecord, str]:
     """Append a key. Returns the public record and the raw key (shown once)."""
-    owner_id = require_owner_id_format(owner.strip())
+    person = require_owner_id_format(str(name).strip())
+    project_ids = parse_projects(projects)
     raw = "gmk_" + secrets.token_urlsafe(32)
     record = {
         "id": _new_id(),
-        "owner": owner_id,
         "hash": hash_key(raw),
+        "name": person,
+        "projects": project_ids,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "revoked": False,
     }
@@ -136,6 +157,28 @@ def create_key(path: str | Path, owner: str) -> tuple[ApiKeyRecord, str]:
 def list_keys(path: str | Path) -> list[ApiKeyRecord]:
     data = _read(Path(path))
     return [_record(row) for row in data["keys"]]
+
+
+def set_projects(
+    path: str | Path, key_id: str, projects: str | list[str] | tuple[str, ...]
+) -> ApiKeyRecord | None:
+    """Replace the project list for a key. Returns None when the id is missing."""
+    project_ids = parse_projects(projects)
+    file_path = Path(path)
+    with _locked(file_path):
+        data = _read(file_path)
+        found = None
+        for row in data["keys"]:
+            if str(row.get("id")) == key_id:
+                row.pop("owner", None)
+                row["name"] = _normalized_row(row)["name"]
+                row["projects"] = project_ids
+                found = row
+                break
+        if found is None:
+            return None
+        _write(file_path, data)
+    return _record(found)
 
 
 def revoke_key(path: str | Path, key_id: str) -> ApiKeyRecord | None:
@@ -159,12 +202,41 @@ def _new_id() -> str:
     return "k_" + secrets.token_hex(4)
 
 
+def _normalized_row(row: dict) -> dict:
+    """Accept ``{name, projects}`` and the older ``{owner}`` shape."""
+    projects = row.get("projects")
+    owner = str(row.get("owner") or "").strip()
+    if projects is None:
+        project_ids = [owner] if owner else []
+        name = str(row.get("name") or owner).strip()
+    elif isinstance(projects, str):
+        project_ids = [part.strip() for part in projects.split(",") if part.strip()]
+        name = str(
+            row.get("name") or (project_ids[0] if project_ids else owner)
+        ).strip()
+    else:
+        project_ids = [str(part).strip() for part in projects if str(part).strip()]
+        name = str(
+            row.get("name") or (project_ids[0] if project_ids else owner)
+        ).strip()
+    return {
+        "id": str(row.get("id") or ""),
+        "hash": str(row.get("hash") or ""),
+        "name": name,
+        "projects": project_ids,
+        "created_at": str(row.get("created_at") or ""),
+        "revoked": bool(row.get("revoked")),
+    }
+
+
 def _record(row: dict) -> ApiKeyRecord:
+    norm = _normalized_row(row)
     return ApiKeyRecord(
-        id=str(row.get("id") or ""),
-        owner=str(row.get("owner") or ""),
-        created_at=str(row.get("created_at") or ""),
-        revoked=bool(row.get("revoked")),
+        id=norm["id"],
+        name=norm["name"],
+        projects=tuple(norm["projects"]),
+        created_at=norm["created_at"],
+        revoked=norm["revoked"],
     )
 
 
@@ -210,8 +282,20 @@ def _read(path: Path) -> dict:
 def _write(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    os.chmod(tmp, 0o600)
+    try:
+        os.unlink(tmp)
+    except FileNotFoundError:
+        pass
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(data, indent=2) + "\n")
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
     os.replace(tmp, path)
     _invalidate_cache(path)
 

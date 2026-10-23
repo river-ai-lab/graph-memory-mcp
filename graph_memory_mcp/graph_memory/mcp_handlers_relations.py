@@ -4,6 +4,12 @@ import logging
 import re
 from typing import Any, Dict, Optional
 
+from graph_memory_mcp.graph_memory.authorship import (
+    authors_for_write,
+    in_token_request,
+    metadata_for_store,
+    strip_protected,
+)
 from graph_memory_mcp.graph_memory.database import FalkorDBClient
 from graph_memory_mcp.graph_memory.relation_policy import evaluate_relation_policy
 from graph_memory_mcp.graph_memory.utils import (
@@ -50,6 +56,8 @@ def create_relation(
     to_id = require_node_id(to_id, "to_id")
     if error := validate_inputs(locals(), config):
         return error_response(error, code="memory_validation_error")
+    created_by, updated_by = authors_for_write(properties)
+    properties = strip_protected(properties)
     if error := _validate_property_keys(properties):
         return error_response(error, code="memory_validation_error")
 
@@ -57,7 +65,6 @@ def create_relation(
     proceed, warning, policy_error = evaluate_relation_policy(config, rel_type)
     if not proceed:
         return error_response(policy_error, code="memory_relation_policy_error")
-
     props_str = ""
     if properties:
         props_str = ", " + ", ".join(f"r.{k} = ${k}" for k in properties.keys())
@@ -66,6 +73,8 @@ def create_relation(
         "from_id": from_id,
         "to_id": to_id,
         "owner_id": owner_id,
+        "created_by": created_by,
+        "updated_by": updated_by,
     }
     if properties:
         params.update(properties)
@@ -81,6 +90,10 @@ def create_relation(
     response = success_response(relation_type=rel_type)
     if warning:
         response["warning"] = warning
+    if created_by is not None:
+        response["created_by"] = created_by
+    if updated_by is not None:
+        response["updated_by"] = updated_by
     return response
 
 
@@ -98,6 +111,8 @@ def create_triplet(
 ) -> Dict:
     """Create a subject-predicate-object triplet."""
     owner_id = normalize_owner_id(owner_id)
+    created_by, updated_by = authors_for_write(metadata)
+    metadata = metadata_for_store(metadata)
 
     rel_type = normalize_predicate_type(predicate)
     proceed, warning, policy_error = evaluate_relation_policy(config, rel_type)
@@ -117,6 +132,8 @@ def create_triplet(
         promoted = metadata_promoted_props(metadata)
     except ValueError as exc:
         return error_response(str(exc), code="memory_validation_error")
+    if in_token_request():
+        promoted["created_by"] = created_by
     metadata_str = dump_json(metadata or {})
     params = {
         "subject": subject,
@@ -127,6 +144,7 @@ def create_triplet(
         "subj_uid": new_uid(),
         "obj_uid": new_uid(),
         "metadata_str": metadata_str,
+        "updated_by": updated_by,
         **promoted,
     }
     if subj_emb:
