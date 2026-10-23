@@ -1,6 +1,6 @@
 # Docs
 
-- [configuration.md](./configuration.md) — `OWNER_SCOPE` (`client`, `header`, `token`) and API keys
+- [configuration.md](./configuration.md) — `OWNER_SCOPE` (`client`, `header`, `token`), API keys, embeddings
 - [team-setup.md](./team-setup.md) — Admin: how to connect a team
 - [features.md](./features.md) — API contract
 - [admin.md](./admin.md) — `/admin/*`, `/internal/graph-size`, `/metrics`

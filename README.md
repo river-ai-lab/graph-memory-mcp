@@ -174,7 +174,7 @@ See [docs/comparison.md](docs/comparison.md) for detailed comparisons with Mem0,
 - **No fact extraction on the server**: The agent decides what to write; raw chat logs are not auto-summarized (by design).
 - **`search` has no `as_of` parameter yet**: Only `get_node` supports temporal queries; `search(as_of)` is planned in the roadmap.
 - **Requires a running graph database**: ArcadeDB (default) or FalkorDB via Docker.
-- **Local embeddings pull PyTorch**: `sentence-transformers` requires PyTorch (large install, first model download); ONNX option is on the roadmap.
+- **First model download is large**: the default fp32 ONNX weights for `intfloat/multilingual-e5-base` are about 1.1 GB. Quantized weights are not used. `EMBEDDING_BACKEND=torch` needs `uv sync --extra torch`.
 - **Deduplication is similarity-based**: Near-duplicates are refused at insert using embeddings (threshold 0.92); may miss paraphrases below threshold or block distinct-but-similar facts.
 - **Contradictions are not auto-detected**: The agent must create `CONTRADICTS` edges explicitly; they are surfaced in search results but not inferred semantically by the server.
 - **No built-in authentication or multi-tenant UI**: Deploy behind a reverse proxy if needed; isolation is per `owner_id` only.
@@ -204,6 +204,8 @@ This starts ArcadeDB (port 2480, default backend). To use FalkorDB instead, set 
 uv sync
 uv run graph-memory-mcp --host 127.0.0.1 --port 8000
 ```
+
+The default install embeds with ONNX Runtime (`EMBEDDING_BACKEND=onnx`). To use the previous sentence-transformers path: `uv sync --extra torch` and set `EMBEDDING_BACKEND=torch`.
 
 The server is now at `http://127.0.0.1:8000/mcp` (Streamable HTTP MCP).
 
@@ -279,6 +281,7 @@ Settings are loaded from `.env` and environment variables. Defaults are in `grap
 Key settings:
 
 - `GRAPH_BACKEND` — `arcadedb` (default) or `falkordb`
+- `EMBEDDING_BACKEND` — `onnx` (default) or `torch` (optional extra)
 - `EMBEDDING_MODEL` — default `intfloat/multilingual-e5-base`
 - `RELATION_POLICY_ENFORCE` — `off` | `warn` (default) | `enforce`
 - `RELATION_ALLOWED_TYPES` — comma-separated edge type allowlist

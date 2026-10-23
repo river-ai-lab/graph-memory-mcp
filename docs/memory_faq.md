@@ -41,7 +41,7 @@ Searchable substance lives in `text`. Reserved keys (typed, filterable via `meta
 
 ## Indexes
 
-Fact + Entity vector indexes: auto on first `search` / `find_similar` / Fact `auto_link`, or `AUTO_CREATE_INDEXES=true`, or `POST /admin/ensure-indexes`. Recreate definitions only if embedding **dimension** changes; model/prefix change → re-embed corpus.
+Fact + Entity vector indexes: auto on first `search` / `find_similar` / Fact `auto_link`, or `AUTO_CREATE_INDEXES=true`, or `POST /admin/ensure-indexes`. Recreate definitions only if embedding **dimension** changes; model or prefix change → re-embed corpus. `EMBEDDING_BACKEND=onnx` and `torch` share vectors for the same model and prefixes.
 
 ## Isolation
 

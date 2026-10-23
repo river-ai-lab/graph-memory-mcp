@@ -19,6 +19,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
+- Local embeddings default to ONNX Runtime and the fp32 `onnx/model.onnx` weights (`EMBEDDING_BACKEND=onnx`). `sentence-transformers` and torch moved to the optional `torch` extra (`uv sync --extra torch`, `EMBEDDING_BACKEND=torch`). Quantized ONNX files are not used. Pooling, L2 normalization, and `query:` / `passage:` prefixes are unchanged.
 - In `client` and `header`, `created_by` / `updated_by` come from `metadata.created_by` and `metadata.updated_by`. Those keys stay in the stored JSON, and `update_node` still copies `metadata.created_by` onto `n.created_by`. Missing keys leave the fields empty. Token mode sets both fields from the key name and drops client-supplied audit fields. The server sets `created_at` / `updated_at`.
 - `/admin` import keeps `created_*` / `updated_*` from the dump and fills them only when they are missing. The MCP `import_owner` tool strips them.
 - `/internal/graph-size` requires `ADMIN_TOKEN` and `X-Owner-Id` in `client` and `header`. `token` uses the API key; a foreign project is HTTP 403.

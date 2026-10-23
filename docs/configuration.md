@@ -73,3 +73,9 @@ In `client` and `header`, a missing admin token is HTTP 401 and a missing `X-Own
 ## `/metrics`
 
 `/metrics` has no auth in any mode. It publishes handler, cache, and job counters, plus totals summed across owners (node count by label, number of owner graphs). It does not name an owner or return that owner's records.
+
+## Embeddings
+
+`EMBEDDING_BACKEND=onnx` (default) downloads fp32 `onnx/model.onnx` and `tokenizer.json` from `EMBEDDING_MODEL` (default `intfloat/multilingual-e5-base`) and runs them with ONNX Runtime. Mean / CLS pooling follows `1_Pooling/config.json`. Vectors are L2-normalized. `EMBEDDING_QUERY_PREFIX` and `EMBEDDING_PASSAGE_PREFIX` are unchanged.
+
+Quantized ONNX files are not loaded. `EMBEDDING_BACKEND=torch` uses sentence-transformers and requires `uv sync --extra torch`. Changing the model or the prefixes still requires re-embedding the corpus. Switching `onnx` and `torch` for the same model and prefixes does not.

@@ -110,6 +110,7 @@ class BaseGraphMemoryMCP:
                 model_name=server_config.embedding_model,
                 query_prefix=server_config.embedding_query_prefix,
                 passage_prefix=server_config.embedding_passage_prefix,
+                backend=server_config.embedding_backend,
             )
         except Exception as exc:  # noqa: BLE001
             logger.error("Failed to load embeddings model: %s", exc)
