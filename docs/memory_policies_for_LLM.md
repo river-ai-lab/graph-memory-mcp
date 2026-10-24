@@ -25,6 +25,8 @@ Do not invent noise to satisfy the checklist.
 
 ## Scoping (operator sets these constants in your rules — apply, never invent)
 
+Example AGENTS.md block with these constants: [`AGENTS_example.md`](./AGENTS_example.md). Put these operator constants in your own AGENTS.md.
+
 | Constant | Meaning | Usage |
 |----------|---------|-------|
 | `<OWNER_ID>` (required) | Hard isolation boundary — a company, team, or person; everyone inside sees everything | Pass `owner_id` explicitly on **every** call. Format: alphanumeric + `-` `_` `@`. On a trusted server this value selects the graph. When `OWNER_SCOPE=header`, the server uses the `X-Owner-Id` HTTP header instead. When `OWNER_SCOPE=token`, `owner_id` must be one of the API key's projects; omit it to use the first project. |
@@ -59,7 +61,7 @@ Do not invent noise to satisfy the checklist.
 
 ## Relations
 
-Allowed types (default): `RELATED_TO` (generic), `MENTIONS`, `SUMMARIZES`, `FOLLOWS_FROM`, `CONTRADICTS`, plus team allowlist (`RUNS_ON`, `USES`, …). Do not invent types — the server may warn or reject. `create_relation` is idempotent per type. `auto_link` defaults to false. Pass `auto_link=true` only when a Fact should gain `MENTIONS` to similar Entities. Prefer `create_relation` or `links` for an edge you mean. `get_context` fills its node budget with `CONTRADICTS` and `FOLLOWS_FROM` before `MENTIONS`.
+Allowed types (default): `RELATED_TO` (generic), `MENTIONS`, `SUMMARIZES`, `FOLLOWS_FROM`, `CONTRADICTS`, `EXTRACTED_FROM`, `SIMILAR_TO`, `NEXT_STEP`, `EXPOSES`, `CROSS_REF`, `RUNS_ON`, `USES`, `SERVED_BY`. Do not invent types — the server may warn or reject. `create_relation` is idempotent per type. `auto_link` defaults to false. Pass `auto_link=true` only when a Fact should gain `MENTIONS` to similar Entities. Prefer `create_relation` or `links` for an edge you mean. `get_context` fills its node budget with `CONTRADICTS` and `FOLLOWS_FROM` before `MENTIONS`.
 
 ## Versioning & time
 

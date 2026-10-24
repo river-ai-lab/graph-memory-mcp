@@ -71,7 +71,13 @@ class MCPServerConfig(BaseSettings):
     arcade_password: str = Field(default="", validation_alias="ARCADE_PASSWORD")
     arcade_database: str = Field(default="memory", validation_alias="ARCADE_DATABASE")
 
-    # Embeddings
+    # Embeddings. onnx is ONNX Runtime with the repo's fp32 onnx/model.onnx.
+    # torch is sentence-transformers and needs the optional torch extra.
+    embedding_backend: Literal["onnx", "torch"] = Field(
+        default="onnx",
+        validation_alias="EMBEDDING_BACKEND",
+        description="onnx (default) or torch (sentence-transformers extra)",
+    )
     embedding_model: str = "intfloat/multilingual-e5-base"
     # Model prompt prefixes (e5-family: "query: " / "passage: "). Empty = none.
     # Changing prefixes (like changing the model) requires re-embedding the corpus.

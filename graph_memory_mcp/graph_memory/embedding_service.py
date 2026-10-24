@@ -1,12 +1,18 @@
 """
 Embedding service for generating text vector representations.
+
+The default backend is ONNX Runtime (fp32 weights). ``backend="torch"`` uses
+sentence-transformers when the optional ``torch`` extra is installed.
 """
+
+from __future__ import annotations
 
 import logging
 from typing import List
 
 import numpy as np
-from sentence_transformers import SentenceTransformer
+
+from graph_memory_mcp.graph_memory.embedding_backend import load_embedding_backend
 
 logger = logging.getLogger(__name__)
 
@@ -19,22 +25,29 @@ class EmbeddingService:
         model_name: str,
         query_prefix: str = "",
         passage_prefix: str = "",
+        backend: str = "onnx",
     ):
         """
         Initialize embedding service.
 
         Args:
-            model_name: SentenceTransformers model name.
+            model_name: Hugging Face model id (default ``intfloat/multilingual-e5-base``).
             query_prefix: prepended to search queries (e5-family: "query: ").
             passage_prefix: prepended to stored texts (e5-family: "passage: ").
+            backend: ``onnx`` (default) or ``torch``.
         """
         self.model_name = model_name
+        self.backend = (backend or "onnx").strip().lower()
         self.query_prefix = query_prefix or ""
         self.passage_prefix = passage_prefix or ""
-        logger.info("Loading embedding model: %s", self.model_name)
-        self.model = SentenceTransformer(self.model_name)
-        test_embedding = self.model.encode("test")
-        self.dimension = len(test_embedding)
+        logger.info(
+            "Loading embedding model: %s (backend=%s)",
+            self.model_name,
+            self.backend,
+        )
+        self._backend = load_embedding_backend(self.backend, self.model_name)
+        probe = self._backend.encode(["test"])
+        self.dimension = int(probe.shape[-1])
         logger.info("Model loaded successfully. Dimension: %s", self.dimension)
 
     def _prefix(self, text: str, kind: str) -> str:
@@ -43,7 +56,17 @@ class EmbeddingService:
 
     def ping(self) -> bool:
         """Check if the embedding service is operational."""
-        return self.model is not None and self.dimension > 0
+        return self._backend is not None and self.dimension > 0
+
+    def _normalize(self, embeddings: np.ndarray) -> np.ndarray:
+        vecs = np.asarray(embeddings, dtype=np.float32)
+        if vecs.ndim == 1:
+            vecs = vecs.reshape(1, -1)
+        if vecs.size == 0:
+            return vecs
+        norms = np.linalg.norm(vecs, axis=1, keepdims=True)
+        norms = np.where(norms > 0, norms, 1.0)
+        return vecs / norms
 
     def get_embedding(self, text: str, kind: str = "passage") -> List[float]:
         """
@@ -58,21 +81,7 @@ class EmbeddingService:
         Returns:
             Embedding vector as a list of floats.
         """
-        embedding = self.model.encode(self._prefix(text, kind))
-
-        # Normalize in numpy space (SentenceTransformers may return torch.Tensor).
-        if hasattr(embedding, "detach"):
-            embedding = embedding.detach()
-        if hasattr(embedding, "cpu"):
-            embedding = embedding.cpu()
-        if hasattr(embedding, "numpy"):
-            embedding = embedding.numpy()
-
-        vec = np.asarray(embedding, dtype=np.float32)
-        norm = float(np.linalg.norm(vec))
-        if norm > 0.0:
-            vec = vec / norm
-
+        vec = self._normalize(self._backend.encode([self._prefix(text, kind)]))[0]
         return [float(v) for v in vec.tolist()]
 
     def get_embeddings_batch(
@@ -88,11 +97,9 @@ class EmbeddingService:
         Returns:
             List of embedding vectors.
         """
-        embeddings = self.model.encode([self._prefix(t, kind) for t in texts])
-
-        norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
-        norms = np.where(norms > 0, norms, 1)  # Avoid division by zero
-        embeddings = embeddings / norms
-
-        # Convert to a list of Python lists
-        return [emb.tolist() for emb in embeddings]
+        if not texts:
+            return []
+        rows = self._normalize(
+            self._backend.encode([self._prefix(text, kind) for text in texts])
+        )
+        return [row.tolist() for row in rows]

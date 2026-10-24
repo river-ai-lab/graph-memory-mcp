@@ -8,7 +8,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 - Token-mode API keys are a person (`name`) plus owner graphs (`projects`); writes record server-set `created_by` / `created_at` / `updated_by` / `updated_at`.
 - `OWNER_SCOPE=client` (default) keeps the tool `owner_id`. `OWNER_SCOPE=header` ignores it and requires `X-Owner-Id` on `/mcp`.
-- GROW ritual in agent policies / AGENTS.md (Ground → Record → Orient → Write after meaningful work)
+- GROW ritual in the agent policies (Ground → Record → Orient → Write after meaningful work)
 - Compact recall: `compact` on `search` / `recall_context`; responses always include `suggested_next`, `do_not`, `budget` (snippets under `COMPACT_RECALL_TOKEN_BUDGET`)
 - `get_brief` returns an optional `about` anchor (`source.ref=about`) and recent facts without TTL, not a degree ranking
 - Search rank is hybrid (`score` = cosine + identifier match + recency). Hits joined by an existing `CONTRADICTS` edge are returned in `contradiction_pairs`
@@ -19,6 +19,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
+- Local embeddings default to ONNX Runtime and the fp32 `onnx/model.onnx` weights (`EMBEDDING_BACKEND=onnx`). `sentence-transformers` and torch moved to the optional `torch` extra (`uv sync --extra torch`, `EMBEDDING_BACKEND=torch`). Quantized ONNX files are not used. Pooling, L2 normalization, and `query:` / `passage:` prefixes are unchanged.
 - In `client` and `header`, `created_by` / `updated_by` come from `metadata.created_by` and `metadata.updated_by`. Those keys stay in the stored JSON, and `update_node` still copies `metadata.created_by` onto `n.created_by`. Missing keys leave the fields empty. Token mode sets both fields from the key name and drops client-supplied audit fields. The server sets `created_at` / `updated_at`.
 - `/admin` import keeps `created_*` / `updated_*` from the dump and fills them only when they are missing. The MCP `import_owner` tool strips them.
 - `/internal/graph-size` requires `ADMIN_TOKEN` and `X-Owner-Id` in `client` and `header`. `token` uses the API key; a foreign project is HTTP 403.

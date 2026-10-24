@@ -30,7 +30,7 @@ Details and sources for each cell are in the sections below.
 - **Physical per-owner isolation**: each `owner_id` is its own ArcadeDB database or FalkorDB graph, no query-time filtering risks. Mem0 uses logical filtering with `user_id`, `agent_id`, `run_id`, `app_id` in one store. Graphiti uses `group_id`. File-based memories (tigerless, basic-memory) use directories per owner.
 - **Token-budgeted compact search**: `search(..., compact=true)` returns snippets under a configurable budget (default 800 tokens). We are unaware of another system in this comparison offering token-budgeted compaction, but this is not comprehensively verified.
 - **Server-side over HTTP MCP**: multiple clients (Claude Desktop, Cursor, custom tools) share one memory store without embedding the database. File-based memories require the client to run locally. Managed platforms (Mem0 Platform, Zep) are server-side but proprietary.
-- **Self-hosted by design**: runs entirely on your infrastructure (Docker + FalkorDB/ArcadeDB), data never leaves it, embeddings computed locally (sentence-transformers), no external API keys or third-party calls required. Contrast: Mem0 graph features only in Platform; Zep is a managed service (with a BYOC option); self-hosting means running Graphiti plus your own graph database.
+- **Self-hosted by design**: runs entirely on your infrastructure (Docker + FalkorDB/ArcadeDB), data never leaves it, embeddings computed locally (ONNX Runtime by default), no external API keys or third-party calls required. Contrast: Mem0 graph features only in Platform; Zep is a managed service (with a BYOC option); self-hosting means running Graphiti plus your own graph database.
 
 **Design principle**: The agent using the memory already knows what to write and how to structure it. The server does not run its own LLM to extract or rewrite facts; it enforces memory hygiene (dedup on write, outdated facts, contradictions, versions, isolation, token budget). Benefits: predictable, cheap, no hidden model calls, no double extraction. Tradeoff: if you want automatic extraction from raw chat transcripts, LLM-extraction systems (Mem0, Graphiti, Cognee) fit better.
 
@@ -180,7 +180,7 @@ MCP server backed by Neo4j. Entity, relation, observation, and search tools. Req
 
 2. **Bi-temporal history**: Graphiti tracks `valid_at` / `invalid_at` and supports "what was true at time T" queries. Graph Memory MCP uses `mark_outdated` and `CONTRADICTS`, which are simpler; point-in-time reads exist only for `get_node(as_of)`, not for `search`.
 
-3. **Install size and dependencies**: Graph Memory MCP requires Python 3.11+, PyTorch (CPU-only by default), sentence-transformers, and FalkorDB or ArcadeDB. Mem0 OSS has similar dependencies. Letta and Cognee have heavier installs due to their broader feature sets. @modelcontextprotocol/server-memory is a Node.js package with minimal dependencies.
+3. **Install size and dependencies**: Graph Memory MCP requires Python 3.11+, ONNX Runtime, and FalkorDB or ArcadeDB. PyTorch is optional (`uv sync --extra torch`). Mem0 OSS has similar dependencies. Letta and Cognee have heavier installs due to their broader feature sets. @modelcontextprotocol/server-memory is a Node.js package with minimal dependencies.
 
 4. **Managed platform**: Mem0 Platform and Zep offer fully managed services with dashboards, APIs, and enterprise features (SLAs, support, SOC 2, HIPAA, BYOC). Graph Memory MCP is self-hosted only.
 
@@ -190,7 +190,7 @@ MCP server backed by Neo4j. Entity, relation, observation, and search tools. Req
 
 ## What Graph Memory MCP does not do
 
-- **No built-in authentication or authorization** — deploy behind a reverse proxy if needed
+- **Owner access follows `OWNER_SCOPE`** — `client` uses the tool argument; `header` uses `X-Owner-Id` and checks `ADMIN_TOKEN` when it is set; `token` requires a Bearer API key limited to that key's projects
 - **No automatic transcript ingestion** — agents write facts explicitly
 - **No bi-temporal edges** — use `mark_outdated` and `CONTRADICTS`, not `valid_at` / `invalid_at` time windows
 - **No managed service** — self-hosted only

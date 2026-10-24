@@ -7,6 +7,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     UV_LINK_MODE=copy \
     PATH="/app/.venv/bin:${PATH}" \
+    EMBEDDING_BACKEND=onnx \
     EMBEDDING_MODEL=intfloat/multilingual-e5-small \
     HF_HOME=/tmp/huggingface \
     TOKENIZERS_PARALLELISM=false \
@@ -20,6 +21,7 @@ COPY pyproject.toml uv.lock README.md ./
 COPY graph_memory_mcp ./graph_memory_mcp
 COPY docs ./docs
 
+# Default image is ONNX Runtime only. The torch extra is not installed.
 # Keep the project editable so the MCP policy resource resolves to /app/docs.
 RUN uv sync --frozen --no-dev
 

@@ -106,7 +106,7 @@ create_relation(
 
 **Result**: `search("API gateway", owner_id="team_backend")` now returns Component Y decision. Old decision excluded by default; `include_outdated=true` retrieves history. The FOLLOWS_FROM edge preserves the replacement context.
 
-**Note**: Custom relation types (e.g., `DEPENDS_ON`, `IMPLEMENTS`) can be added via `RELATION_ALLOWED_TYPES` in `.env`. Recommended types (13 in default allowlist, see [`relation_policy.py`](graph_memory_mcp/graph_memory/relation_policy.py)): `RELATED_TO`, `MENTIONS`, `FOLLOWS_FROM`, `CONTRADICTS`, `USES`, `SUMMARIZES`, `PART_OF`, `IMPLEMENTS`, `CAUSED_BY`, `RESULTED_IN`, `DISCOVERED_IN`, `SUPERSEDES`, `AUTO_LINK`. Default mode: warn on unlisted types.
+**Note**: Custom relation types (e.g., `DEPENDS_ON`, `IMPLEMENTS`) can be added via `RELATION_ALLOWED_TYPES` in `.env`. Default allowlist (13, see [`relation_policy.py`](graph_memory_mcp/graph_memory/relation_policy.py)): `RELATED_TO`, `MENTIONS`, `SUMMARIZES`, `FOLLOWS_FROM`, `CONTRADICTS`, `EXTRACTED_FROM`, `SIMILAR_TO`, `NEXT_STEP`, `EXPOSES`, `CROSS_REF`, `RUNS_ON`, `USES`, `SERVED_BY`. Default mode: warn on unlisted types. `auto_link` writes `MENTIONS` (`AUTO_LINK_RELATION`), not a type named `AUTO_LINK`.
 
 ### Contradictions surfaced
 
@@ -135,9 +135,9 @@ search(query="API rate limit", owner_id="team_backend")
 - **Fact became wrong** → `mark_outdated(fact_id, reason, owner_id="team_backend")` + `create_node(new_text)`, not `update_node`
 - **After meaningful work** (GROW): Ground what changed → Record it → Orient (if recurring, add tags/relations) → Write with `metadata.project` and `created_by`
 - **Temporary notes** get `ttl_days` (14-30); durable decisions have no TTL
-- **Link facts** with `create_relation` using recommended types (13 in default allowlist): `RELATED_TO`, `MENTIONS`, `FOLLOWS_FROM`, `CONTRADICTS`, `USES`, `SUMMARIZES`, `PART_OF`, `IMPLEMENTS`, `CAUSED_BY`, `RESULTED_IN`, `DISCOVERED_IN`, `SUPERSEDES`, `AUTO_LINK` (see [`relation_policy.py`](graph_memory_mcp/graph_memory/relation_policy.py); default mode: warn)
+- **Link facts** with `create_relation` using the default allowlist: `RELATED_TO`, `MENTIONS`, `SUMMARIZES`, `FOLLOWS_FROM`, `CONTRADICTS`, `EXTRACTED_FROM`, `SIMILAR_TO`, `NEXT_STEP`, `EXPOSES`, `CROSS_REF`, `RUNS_ON`, `USES`, `SERVED_BY` (see [`relation_policy.py`](graph_memory_mcp/graph_memory/relation_policy.py); default mode: warn). `auto_link` writes `MENTIONS`
 
-**Full policies**: Load [`docs/memory_policies_for_LLM.md`](docs/memory_policies_for_LLM.md) or [`docs/memory_policy_cheatsheet.md`](docs/memory_policy_cheatsheet.md) in your agent's rules or context at session start. See also: [`AGENTS.md`](AGENTS.md).
+**Full policies**: Load [`docs/memory_policies_for_LLM.md`](docs/memory_policies_for_LLM.md) or [`docs/memory_policy_cheatsheet.md`](docs/memory_policy_cheatsheet.md) in your agent's rules or context at session start. Put these operator constants in your own AGENTS.md ([`docs/AGENTS_example.md`](docs/AGENTS_example.md)).
 
 ## Use cases
 
@@ -174,10 +174,10 @@ See [docs/comparison.md](docs/comparison.md) for detailed comparisons with Mem0,
 - **No fact extraction on the server**: The agent decides what to write; raw chat logs are not auto-summarized (by design).
 - **`search` has no `as_of` parameter yet**: Only `get_node` supports temporal queries; `search(as_of)` is planned in the roadmap.
 - **Requires a running graph database**: ArcadeDB (default) or FalkorDB via Docker.
-- **Local embeddings pull PyTorch**: `sentence-transformers` requires PyTorch (large install, first model download); ONNX option is on the roadmap.
+- **First model download is large**: the default fp32 ONNX weights for `intfloat/multilingual-e5-base` are about 1.1 GB. Quantized weights are not used. `EMBEDDING_BACKEND=torch` needs `uv sync --extra torch`.
 - **Deduplication is similarity-based**: Near-duplicates are refused at insert using embeddings (threshold 0.92); may miss paraphrases below threshold or block distinct-but-similar facts.
 - **Contradictions are not auto-detected**: The agent must create `CONTRADICTS` edges explicitly; they are surfaced in search results but not inferred semantically by the server.
-- **No built-in authentication or multi-tenant UI**: Deploy behind a reverse proxy if needed; isolation is per `owner_id` only.
+- **Owner access is `OWNER_SCOPE`**: `client` (default) uses the tool argument `owner_id`. `header` ignores it and reads `X-Owner-Id` (loopback bind; the gateway sends `Authorization: Bearer $ADMIN_TOKEN` when that token is set). `token` requires a Bearer API key; `owner_id` must be one of the key's projects, and an empty value uses the first project. There is no multi-tenant admin UI.
 
 
 ## Setup
@@ -204,6 +204,8 @@ This starts ArcadeDB (port 2480, default backend). To use FalkorDB instead, set 
 uv sync
 uv run graph-memory-mcp --host 127.0.0.1 --port 8000
 ```
+
+The default install embeds with ONNX Runtime (`EMBEDDING_BACKEND=onnx`). To use the previous sentence-transformers path: `uv sync --extra torch` and set `EMBEDDING_BACKEND=torch`.
 
 The server is now at `http://127.0.0.1:8000/mcp` (Streamable HTTP MCP).
 
@@ -279,6 +281,7 @@ Settings are loaded from `.env` and environment variables. Defaults are in `grap
 Key settings:
 
 - `GRAPH_BACKEND` — `arcadedb` (default) or `falkordb`
+- `EMBEDDING_BACKEND` — `onnx` (default) or `torch` (optional extra)
 - `EMBEDDING_MODEL` — default `intfloat/multilingual-e5-base`
 - `RELATION_POLICY_ENFORCE` — `off` | `warn` (default) | `enforce`
 - `RELATION_ALLOWED_TYPES` — comma-separated edge type allowlist
@@ -294,7 +297,7 @@ The same server has three ways to choose `owner_id`. `client` stays the default,
 | Mode | Who chooses the owner | When to use it |
 |------|------------------------|----------------|
 | `client` | The tool argument `owner_id` | Trusted local or company deploy. Anyone who can call the server can name any owner. |
-| `header` | `X-Owner-Id`, set by your gateway. The tool argument is ignored. The gateway sends `Authorization: Bearer $ADMIN_TOKEN`. | The server listens on `127.0.0.1`. The gateway is the only client. |
+| `header` | `X-Owner-Id`, set by your gateway. The tool argument is ignored. The gateway sends `Authorization: Bearer $ADMIN_TOKEN` when that token is set. | The server listens on `127.0.0.1`. The gateway is the only client. |
 | `token` | The API key's `projects`. `owner_id` must be one of them; omit it to use the first. | A small team on one process. No second service. |
 
 An API key is a person's `name` plus the owner graphs (`projects`) they may use. Team setup: [docs/team-setup.md](docs/team-setup.md).
@@ -319,8 +322,6 @@ Token mode does not start without `ADMIN_TOKEN` and a readable keys file. `/admi
 Header mode belongs on `127.0.0.1`, with the gateway as the only client. The gateway sends `Authorization: Bearer $ADMIN_TOKEN` and `X-Owner-Id`. `/mcp` returns HTTP 401 when that token is set and the bearer is missing or wrong. Without `ADMIN_TOKEN`, the process starts on `127.0.0.1`, `::1`, or `localhost` only. Any other bind address exits. `ALLOW_INSECURE_HEADER=1` logs a warning and starts anyway.
 
 `/internal/graph-size` in `client` and `header` requires `ADMIN_TOKEN` plus `X-Owner-Id`. `token` requires the API key; `X-Owner-Id` must be one of the key's projects, or the first project is used. `/metrics` stays open in every mode: handler, cache, and job counters, plus totals summed across owners. It does not name an owner.
-
-Plans, quotas, billing, and a user account live outside this server. JWT/OIDC is a later addition, not a mode here.
 
 ## Running the databases
 
@@ -361,9 +362,9 @@ GRAPH_BACKEND=arcadedb uv run pytest -m arcade -q
 
 ### Vector indexes
 
-The server uses two vector indexes (Fact and Entity). They are created automatically on first search or when `AUTO_CREATE_INDEXES=true` is set.
+The server uses two vector indexes (Fact and Entity). They are created automatically on first `search`, `find_similar`, or Fact `auto_link`, or when `AUTO_CREATE_INDEXES=true` is set.
 
-**Changing the embedding model invalidates the stored corpus.** You must re-embed every node after changing `EMBEDDING_MODEL` or its dimension. See the [docs](docs/features.md) for the full procedure.
+**Changing the embedding model invalidates the stored corpus.** You must re-embed every node after changing `EMBEDDING_MODEL`, its dimension, or `EMBEDDING_QUERY_PREFIX` / `EMBEDDING_PASSAGE_PREFIX`. See the [docs](docs/features.md) for the full procedure.
 
 ## Server profiles
 
@@ -400,7 +401,7 @@ Use `owner_id` to isolate or share memory:
 
 Each `owner_id` lives in its own graph (FalkorDB) or database (ArcadeDB). Queries do not see other owners.
 
-**Owner ID charset**: FalkorDB allows `[A-Za-z0-9_@-]+`. ArcadeDB requires `^[A-Za-z][A-Za-z0-9_]*$` (starts with letter, then letters/digits/underscore only). Use conservative format `^[A-Za-z][A-Za-z0-9_-]*$` for compatibility with both backends.
+**Owner ID charset**: both backends accept `[A-Za-z0-9_@-]+`. `ARCADE_DATABASE` must match `^[A-Za-z][A-Za-z0-9_]*$`. Each ArcadeDB owner is an unquoted database `{ARCADE_DATABASE}_{owner_id}`.
 
 See [docs/memory_policies_for_LLM.md](docs/memory_policies_for_LLM.md) for agent-facing guidance.
 
@@ -408,7 +409,7 @@ See [docs/memory_policies_for_LLM.md](docs/memory_policies_for_LLM.md) for agent
 
 ### ArcadeDB
 
-Data in `./data-arcade` persists across Docker restarts. ArcadeDB admin endpoints support export/import:
+Data is the Docker volume `arcade-data` (the image user cannot write a root-owned `./data-arcade` bind). `docker compose down` keeps it; `docker compose down -v` deletes it. ArcadeDB admin endpoints support export/import:
 
 ```bash
 # Export a database (requires authentication)
@@ -440,7 +441,7 @@ curl http://127.0.0.1:8000/admin/export/{owner_id}
 
 Supports `?limit=&offset=&section=nodes|relations` for large graphs. Restore with `POST /admin/import`.
 
-**ArcadeDB backups**: Data persists in `./data-arcade/` (volume mount). For point-in-time backups, stop ArcadeDB and copy the directory. Logical export/import via admin API works across backends.
+**ArcadeDB backups**: Data persists in the `arcade-data` volume. For a point-in-time copy, stop ArcadeDB and archive that volume. Logical export/import via the admin API works across backends.
 
 ## Development
 
