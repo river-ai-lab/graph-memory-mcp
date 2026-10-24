@@ -315,7 +315,9 @@ OWNER_SCOPE=token
 API_KEYS_FILE=./keys.json
 ```
 
-A missing, unknown, or revoked key is HTTP 401. An `owner_id` that is not in the key's projects is HTTP 403 (or a tool error with `memory_forbidden`). `graph-memory-mcp keys set-projects <id> p1,p3` replaces the list. `keys revoke <id>` revokes by id. In token mode every write stores the key's `name` as `created_by` / `updated_by`. In `client` and `header` those fields come from `metadata.created_by` / `metadata.updated_by`. Jobs keep the owner they were started with.
+A missing, unknown, or revoked key is HTTP 401. An `owner_id` that is not in the key's projects is HTTP 403 (or a tool error with `memory_forbidden`). `graph-memory-mcp keys set-projects <id> p1,p3` replaces the list. `keys list` prints id, name, projects, and created time, never the key. `keys revoke <id>` revokes by id. In token mode every write stores the key's `name` as `created_by` / `updated_by`. In `client` and `header` those fields come from `metadata.created_by` / `metadata.updated_by`. Jobs keep the owner they were started with.
+
+`graph-memory-mcp --auth` is the token entry point (`server_auth.py`). It forces `OWNER_SCOPE=token`. Tool schemas omit `owner_id`; the server uses the key's first project. Issue keys with `keys create`, inspect them with `keys list`, and revoke with `keys revoke`. The default server is unchanged: set `OWNER_SCOPE=token` there when the agent must pass `owner_id` to choose among a key's projects.
 
 Token mode does not start without `ADMIN_TOKEN` and a readable keys file. `/admin` takes the owner from the path, so in this mode it always requires that token. `client` and `header` still leave `/admin` open when `ADMIN_TOKEN` is empty.
 
@@ -368,13 +370,14 @@ The server uses two vector indexes (Fact and Entity). They are created automatic
 
 ## Server profiles
 
-Three profiles with the same tools; agents pick one and stay on it:
+Profiles with the same tools; agents pick one and stay on it:
 
 | Profile | Start | Provenance |
 |---------|-------|------------|
 | Default | `graph-memory-mcp` | Nested `source` object |
 | Simple | `graph-memory-mcp --simple` | Flat (`ref`, `provenance_type`, `source_updated_at`, …); `upsert_node` requires `ref` |
 | Extended | `graph-memory-mcp --extended` | Same as default, plus `description`, `shared_with_ids`, `collection_id`, and node types `Collection`, `User`, `Project` |
+| Auth | `graph-memory-mcp --auth` | Same as default. `OWNER_SCOPE=token`. Schemas omit `owner_id`; the server uses the key's first project. |
 
 See [docs/features.md](docs/features.md) for details.
 
@@ -479,7 +482,7 @@ These features are tested and in active use:
 - Physical per-owner isolation (ArcadeDB databases, FalkorDB graphs)
 - Write-time deduplication (embeddings, threshold 0.92)
 - Vector search with hybrid ranking (cosine + identifier match + recency)
-- Three server profiles (default, `--simple`, `--extended`)
+- Server profiles (default, `--simple`, `--extended`, `--auth`)
 - TTL facts excluded from default search
 - MCP over Streamable HTTP
 - Compact recall with token budget

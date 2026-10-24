@@ -33,7 +33,7 @@ uv run graph-memory-mcp keys set-projects k_0123abcd p1,p3
 uv run graph-memory-mcp keys revoke k_0123abcd
 ```
 
-`create` prints the raw key once. `list` shows name, projects, and created time, never the key. The file (`API_KEYS_FILE`, default `keys.json`, relative to the process working directory) stores:
+`create` prints the raw key once. `list` shows name, projects, and created time, never the key. `revoke` marks a key revoked by id. The file (`API_KEYS_FILE`, default `keys.json`, relative to the process working directory) stores:
 
 ```json
 {
@@ -51,6 +51,8 @@ uv run graph-memory-mcp keys revoke k_0123abcd
 ```
 
 A file that still has `"owner": "alice"` (no `projects`) is read as `name=alice`, `projects=["alice"]`.
+
+`graph-memory-mcp --auth` starts that token entry (`server_auth.py`) even when `OWNER_SCOPE` is unset. Tool schemas omit `owner_id`. The server uses the key's first project. `created_by` is not a tool argument; token mode sets it from the key name. The default, `--simple`, and `--extended` processes keep `owner_id` in the schema.
 
 A request with no key, an unknown key, or a revoked key gets HTTP 401 and does not run the tool. An `owner_id` that is not in the key's projects is HTTP 403 or a tool error (`memory_forbidden`). `name` and each project use the same format as `owner_id`: letters, digits, `-`, `_`, `@`.
 

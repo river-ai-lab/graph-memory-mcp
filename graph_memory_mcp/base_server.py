@@ -35,8 +35,11 @@ _AGENT_POLICIES_PATH = (
 )
 
 
-def _mcp_instructions(scope: str) -> str:
-    """Mode-specific text shown to MCP clients at connect."""
+def _mcp_instructions(scope: str, *, hide_owner: bool = False) -> str:
+    """Mode-specific text shown to MCP clients at connect.
+
+    ``hide_owner`` is the ``--auth`` entry: the schema has no ``owner_id``.
+    """
     common = (
         "Graph Memory is a long-term knowledge graph, not a chat log. "
         "Search before create; store one durable declarative fact per node. "
@@ -47,6 +50,11 @@ def _mcp_instructions(scope: str) -> str:
         f"Before the first memory write in a session, read MCP resource {_AGENT_POLICIES_URI}."
     )
     mode = str(scope or "client").strip().lower()
+    if hide_owner:
+        return (
+            f"{common} The server sets owner_id from the API key. Do not pass it. "
+            "The server sets created_by and updated_by from the API key name."
+        )
     if mode == "token":
         return (
             f"{common} The server sets created_by and updated_by from the API key "
@@ -120,7 +128,7 @@ class BaseGraphMemoryMCP:
 
         self.mcp = FastMCP(
             name=self.server_config.description or self.server_config.name,
-            instructions=_mcp_instructions(server_config.owner_scope),
+            instructions=self._instructions(),
             stateless_http=True,
             json_response=True,
         )
@@ -204,6 +212,10 @@ class BaseGraphMemoryMCP:
 
             app.router.lifespan_context = _lifespan  # type: ignore[attr-defined]
         return app
+
+    def _instructions(self) -> str:
+        """MCP connect text. The auth entry overrides this."""
+        return _mcp_instructions(self.server_config.owner_scope)
 
     def _tool_owner_default(self) -> str:
         """Empty in token mode so an omitted owner_id uses the key's first project."""

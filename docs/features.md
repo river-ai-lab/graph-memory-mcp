@@ -34,19 +34,20 @@ LRU embeddings + TTL search (defaults in `env.example`). Search cache cleared on
 
 ## Server profiles
 
-Three independent processes. Tool names match. Pick one client-side and stay on it. Handlers are the same; write tools expose more or less.
+Independent processes. Tool names match. Pick one client-side and stay on it. Handlers are the same; write tools expose more or less.
 
 | Profile | Start | What the agent can pass on writes |
 |---------|--------|-------------------------------------|
 | default | `graph-memory-mcp` | Nested `source`. Fact and Entity. |
 | `--simple` | `graph-memory-mcp --simple` | Same tools. Provenance is flat (`ref`, `provenance_type`, `source_updated_at`, …) instead of nested `source`. `upsert_node` requires `ref`. |
 | `--extended` | `graph-memory-mcp --extended` | Same tools as default, plus `description`, `shared_with_ids`, `collection_id` (`CONTAINS`), and node types `Collection`, `User`, `Project`. |
+| `--auth` | `graph-memory-mcp --auth` | Same tools as default, without `owner_id`. `OWNER_SCOPE=token`. The server uses the key's first project. |
 
 ## Agent tools
 
 Defaults: `owner_id` from `DEFAULT_OWNER_ID` (env, default `"default"`). Pass `owner_id` explicitly in agent rules.
 
-`OWNER_SCOPE=client` (default) uses that argument. `OWNER_SCOPE=header` ignores it and takes `X-Owner-Id`; a missing header is `memory_validation_error` and does not use `DEFAULT_OWNER_ID`. Run header mode on `127.0.0.1` behind a gateway that sends `ADMIN_TOKEN`. A missing or wrong bearer is HTTP 401 when that token is set. `OWNER_SCOPE=token` requires a Bearer API key. `owner_id` must be one of that key's projects; omit it to use the first project. A project outside the key is `memory_forbidden`. A missing or revoked key is HTTP 401. Tool schemas do not change. Jobs are in-process and keep their own owner. See [configuration.md](./configuration.md) and [admin.md](./admin.md).
+`OWNER_SCOPE=client` (default) uses that argument. `OWNER_SCOPE=header` ignores it and takes `X-Owner-Id`; a missing header is `memory_validation_error` and does not use `DEFAULT_OWNER_ID`. Run header mode on `127.0.0.1` behind a gateway that sends `ADMIN_TOKEN`. A missing or wrong bearer is HTTP 401 when that token is set. `OWNER_SCOPE=token` requires a Bearer API key. `owner_id` must be one of that key's projects; omit it to use the first project. A project outside the key is `memory_forbidden`. A missing or revoked key is HTTP 401. Tool schemas do not change. `graph-memory-mcp --auth` is the exception: schemas omit `owner_id`, and the server uses the key's first project. Keys: `graph-memory-mcp keys create --name <name> --projects <p1,p2>` (prints the raw key once), `keys list`, `keys revoke <id>`. The file stores the sha256 hash. Jobs are in-process and keep their own owner. See [configuration.md](./configuration.md) and [admin.md](./admin.md).
 
 ### Writes
 
