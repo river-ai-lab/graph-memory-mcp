@@ -297,7 +297,7 @@ The same server has three ways to choose `owner_id`. `client` stays the default,
 | Mode | Who chooses the owner | When to use it |
 |------|------------------------|----------------|
 | `client` | The tool argument `owner_id` | Trusted local or company deploy. Anyone who can call the server can name any owner. |
-| `header` | `X-Owner-Id`, set by your gateway. The tool argument is ignored. The gateway sends `Authorization: Bearer $ADMIN_TOKEN`. | The server listens on `127.0.0.1`. The gateway is the only client. |
+| `header` | `X-Owner-Id`, set by your gateway. The tool argument is ignored. The gateway sends `Authorization: Bearer $ADMIN_TOKEN` when that token is set. | The server listens on `127.0.0.1`. The gateway is the only client. |
 | `token` | The API key's `projects`. `owner_id` must be one of them; omit it to use the first. | A small team on one process. No second service. |
 
 An API key is a person's `name` plus the owner graphs (`projects`) they may use. Team setup: [docs/team-setup.md](docs/team-setup.md).
@@ -322,8 +322,6 @@ Token mode does not start without `ADMIN_TOKEN` and a readable keys file. `/admi
 Header mode belongs on `127.0.0.1`, with the gateway as the only client. The gateway sends `Authorization: Bearer $ADMIN_TOKEN` and `X-Owner-Id`. `/mcp` returns HTTP 401 when that token is set and the bearer is missing or wrong. Without `ADMIN_TOKEN`, the process starts on `127.0.0.1`, `::1`, or `localhost` only. Any other bind address exits. `ALLOW_INSECURE_HEADER=1` logs a warning and starts anyway.
 
 `/internal/graph-size` in `client` and `header` requires `ADMIN_TOKEN` plus `X-Owner-Id`. `token` requires the API key; `X-Owner-Id` must be one of the key's projects, or the first project is used. `/metrics` stays open in every mode: handler, cache, and job counters, plus totals summed across owners. It does not name an owner.
-
-Plans, quotas, billing, and a user account live outside this server. JWT/OIDC is a later addition, not a mode here.
 
 ## Running the databases
 
@@ -364,9 +362,9 @@ GRAPH_BACKEND=arcadedb uv run pytest -m arcade -q
 
 ### Vector indexes
 
-The server uses two vector indexes (Fact and Entity). They are created automatically on first search or when `AUTO_CREATE_INDEXES=true` is set.
+The server uses two vector indexes (Fact and Entity). They are created automatically on first `search`, `find_similar`, or Fact `auto_link`, or when `AUTO_CREATE_INDEXES=true` is set.
 
-**Changing the embedding model invalidates the stored corpus.** You must re-embed every node after changing `EMBEDDING_MODEL` or its dimension. See the [docs](docs/features.md) for the full procedure.
+**Changing the embedding model invalidates the stored corpus.** You must re-embed every node after changing `EMBEDDING_MODEL`, its dimension, or `EMBEDDING_QUERY_PREFIX` / `EMBEDDING_PASSAGE_PREFIX`. See the [docs](docs/features.md) for the full procedure.
 
 ## Server profiles
 
@@ -403,7 +401,7 @@ Use `owner_id` to isolate or share memory:
 
 Each `owner_id` lives in its own graph (FalkorDB) or database (ArcadeDB). Queries do not see other owners.
 
-**Owner ID charset**: FalkorDB allows `[A-Za-z0-9_@-]+`. ArcadeDB requires `^[A-Za-z][A-Za-z0-9_]*$` (starts with letter, then letters/digits/underscore only). Use conservative format `^[A-Za-z][A-Za-z0-9_-]*$` for compatibility with both backends.
+**Owner ID charset**: both backends accept `[A-Za-z0-9_@-]+`. `ARCADE_DATABASE` must match `^[A-Za-z][A-Za-z0-9_]*$`. Each ArcadeDB owner is an unquoted database `{ARCADE_DATABASE}_{owner_id}`.
 
 See [docs/memory_policies_for_LLM.md](docs/memory_policies_for_LLM.md) for agent-facing guidance.
 

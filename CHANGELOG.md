@@ -8,7 +8,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 - Token-mode API keys are a person (`name`) plus owner graphs (`projects`); writes record server-set `created_by` / `created_at` / `updated_by` / `updated_at`.
 - `OWNER_SCOPE=client` (default) keeps the tool `owner_id`. `OWNER_SCOPE=header` ignores it and requires `X-Owner-Id` on `/mcp`.
-- GROW ritual in agent policies / AGENTS.md (Ground → Record → Orient → Write after meaningful work)
+- GROW ritual in the agent policies (Ground → Record → Orient → Write after meaningful work)
 - Compact recall: `compact` on `search` / `recall_context`; responses always include `suggested_next`, `do_not`, `budget` (snippets under `COMPACT_RECALL_TOKEN_BUDGET`)
 - `get_brief` returns an optional `about` anchor (`source.ref=about`) and recent facts without TTL, not a degree ranking
 - Search rank is hybrid (`score` = cosine + identifier match + recency). Hits joined by an existing `CONTRADICTS` edge are returned in `contradiction_pairs`
