@@ -25,6 +25,8 @@ Do not invent noise to satisfy the checklist.
 
 ## Scoping (operator sets these constants in your rules — apply, never invent)
 
+Example AGENTS.md block with these constants: [`AGENTS_example.md`](./AGENTS_example.md). Put these operator constants in your own AGENTS.md.
+
 | Constant | Meaning | Usage |
 |----------|---------|-------|
 | `<OWNER_ID>` (required) | Hard isolation boundary — a company, team, or person; everyone inside sees everything | Pass `owner_id` explicitly on **every** call. Format: alphanumeric + `-` `_` `@`. On a trusted server this value selects the graph. When `OWNER_SCOPE=header`, the server uses the `X-Owner-Id` HTTP header instead. When `OWNER_SCOPE=token`, `owner_id` must be one of the API key's projects; omit it to use the first project. |

@@ -39,7 +39,7 @@ Output: `demo.gif` (to be embedded in README.md)
 
 **Relation types**: Uses allowed types from `RELATION_ALLOWED_TYPES` config (RELATED_TO, FOLLOWS_FROM, CONTRADICTS). Custom types can be added via env config.
 
-**Data persistence**: Demo data persists in `./data-arcade` (ArcadeDB volume). To fully clean: `docker compose down && rm -rf ./data-arcade`
+**Data persistence**: Demo data persists in the Docker volume `arcade-data`. To fully clean: `docker compose down -v`
 
 ## Files
 

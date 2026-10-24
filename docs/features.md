@@ -46,7 +46,7 @@ Three independent processes. Tool names match. Pick one client-side and stay on 
 
 Defaults: `owner_id` from `DEFAULT_OWNER_ID` (env, default `"default"`). Pass `owner_id` explicitly in agent rules.
 
-`OWNER_SCOPE=client` (default) uses that argument. `OWNER_SCOPE=header` ignores it and takes `X-Owner-Id`; a missing header is `memory_validation_error` and does not use `DEFAULT_OWNER_ID`. Run header mode on `127.0.0.1` behind a gateway that sends `ADMIN_TOKEN`. A missing or wrong bearer is HTTP 401 when that token is set. `OWNER_SCOPE=token` ignores it and uses the owner stored for the Bearer API key; a missing or revoked key is HTTP 401. Tool schemas do not change. Jobs are in-process and keep their own owner. See [configuration.md](./configuration.md) and [admin.md](./admin.md).
+`OWNER_SCOPE=client` (default) uses that argument. `OWNER_SCOPE=header` ignores it and takes `X-Owner-Id`; a missing header is `memory_validation_error` and does not use `DEFAULT_OWNER_ID`. Run header mode on `127.0.0.1` behind a gateway that sends `ADMIN_TOKEN`. A missing or wrong bearer is HTTP 401 when that token is set. `OWNER_SCOPE=token` requires a Bearer API key. `owner_id` must be one of that key's projects; omit it to use the first project. A project outside the key is `memory_forbidden`. A missing or revoked key is HTTP 401. Tool schemas do not change. Jobs are in-process and keep their own owner. See [configuration.md](./configuration.md) and [admin.md](./admin.md).
 
 ### Writes
 
@@ -63,18 +63,18 @@ Defaults: `owner_id` from `DEFAULT_OWNER_ID` (env, default `"default"`). Pass `o
 **`delete_node`** — hard delete (+ FactVersion cascade).
 **`mark_outdated`** — `fact_id`, opt `reason`.
 
-**`create_relation`** / **`delete_relation`** — `from_id`, `to_id`, `relation_type` (delete: type optional).
-**`create_triplet`** / **`search_triplets`** — entities merge by `name_norm`; opt `metadata` on create (reserved keys coalesce on match).
-**`create_summary_fact`** — `fact_ids`, `summary_text`.
+**`create_relation`** / **`delete_relation`** — `from_id`, `to_id`, `relation_type`; opt `properties` (`created_by` / `updated_by` in `client` and `header`). Delete: `relation_type` optional.
+**`create_triplet`** / **`search_triplets`** — entities merge by `name_norm`; opt `metadata` on create (reserved keys coalesce on match) and `fact_id` (source fact).
+**`create_summary_fact`** — `fact_ids`, `summary_text`; opt `metadata`.
 
 ### Reads
 
 **`get_node`** — `node_id`; opt `as_of` (unix ms, needs versioning snapshots).
 **`get_node_change_history`** — `node_id`.
 **`search`** — `query`; opt `limit` (cap `MAX_SEARCH_LIMIT`), `node_types`, `status`, `similarity_threshold`, `include_outdated`, `include_ttl` (default false: hide facts that have `ttl_days`; true: also still-living temporary facts), `search_type` (`pre_filter`|`post_filter`), `metadata_filter` (`project`/`created_by`/`type`/`tags`/`confidence_min`), `compact` (snippets + token budget). Rank is hybrid (`score`): cosine + identifier match + recency. `contradiction_pairs` lists hits that already have a `CONTRADICTS` edge. Always returns `suggested_next`, `do_not`, `budget`. Bumps access counters.
-**`find_similar`** — `fact_id`.
+**`find_similar`** — `fact_id`; opt `limit` (default 5), `similarity_threshold`.
 **`get_context`** — `node_id`; opt `depth`, `max_nodes`, `offset`, `include_outdated`, `include_ttl`, `relation_priority`, `exclude_relation_types`. Budgeted walk (`offset=0`) fills with `CONTRADICTS`, then `FOLLOWS_FROM`, then other allowlist edges; `MENTIONS` last. Default cap 20 (hard 50). Neighbors with `ttl_days` are omitted unless `include_ttl=true`.
-**`recall_context`** — shortcut search+expand (small graphs). Opt `depth`, `limit`, `max_nodes`, `include_outdated`, `include_ttl`, `include_paths`, `metadata_filter`, `compact`, `relation_priority`, `exclude_relation_types`, time-aware ranking weights. Same neighbor order and TTL filter as `get_context`. Always returns `suggested_next` / `do_not` / `budget`.
+**`recall_context`** — shortcut search+expand (small graphs). Opt `depth`, `limit`, `max_nodes`, `similarity_threshold`, `include_outdated`, `include_ttl`, `search_type`, `include_paths`, `metadata_filter`, `compact`, `relation_priority`, `exclude_relation_types`, time-aware ranking weights. Same neighbor order and TTL filter as `get_context`. Always returns `suggested_next` / `do_not` / `budget`.
 **`get_trace`** — `from_id`, `to_id`; opt `max_depth`, `directed` (default true).
 **`get_brief`** — warm-up, not search and not a degree ranking: `about` if a fact with `source.ref` = `ABOUT_SOURCE_REF` (default `about`) exists, else null. Recent active facts with no TTL, by time (`limit` cuts only these). Open `CONTRADICTS` between those durable facts. `stale_count` is active facts not accessed for `STALE_FACTS_DAYS`. `include_stale=true` returns their texts; leave it false at task start. Stats. Facts with `ttl_days` are omitted.
 **`get_stats`** / **`health_check`** — Fact/Entity counts; component flags + `healthy`.

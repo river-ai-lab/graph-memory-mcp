@@ -190,7 +190,7 @@ MCP server backed by Neo4j. Entity, relation, observation, and search tools. Req
 
 ## What Graph Memory MCP does not do
 
-- **No built-in authentication or authorization** — deploy behind a reverse proxy if needed
+- **Owner access follows `OWNER_SCOPE`** — `client` uses the tool argument; `header` uses `X-Owner-Id` and checks `ADMIN_TOKEN` when it is set; `token` requires a Bearer API key limited to that key's projects
 - **No automatic transcript ingestion** — agents write facts explicitly
 - **No bi-temporal edges** — use `mark_outdated` and `CONTRADICTS`, not `valid_at` / `invalid_at` time windows
 - **No managed service** — self-hosted only

@@ -1,6 +1,6 @@
 # Graph Memory — Cheat Sheet
 
-Constants from your operator (apply, never invent): `<OWNER_ID>` required — pass on every call; `<PROJECT>` optional — `metadata={"project": ...}` on writes, `metadata_filter={"project": ...}` on reads; `<AGENT_ID>` optional — `metadata.created_by` (and `metadata.updated_by` when the editor differs).
+Constants from your operator (apply, never invent): `<OWNER_ID>` required — pass on every call; `<PROJECT>` optional — `metadata={"project": ...}` on writes, `metadata_filter={"project": ...}` on reads; `<AGENT_ID>` optional — `metadata.created_by` (and `metadata.updated_by` when the editor differs). Example: [`AGENTS_example.md`](./AGENTS_example.md).
 
 `client`/`header`: pass `owner_id`; put attribution in `metadata.created_by` and `metadata.updated_by`. `token`: pass `owner_id` only to pick among the key's projects; the server sets `created_by` / `updated_by` from the key name.
 
@@ -33,4 +33,4 @@ Node `updated_at` is the server clock. The source document time is `source_updat
 | Document/conversation → knowledge | extract → `ingest_knowledge(document={"ref": ...}, facts=[{text, ref?, ...}, ...], triplets=[...])` — prefer `facts[].ref`; re-ingest updates in place |
 | Link nodes | `create_relation(from_id, to_id, RELATED_TO \| MENTIONS \| SUMMARIZES \| FOLLOWS_FROM \| CONTRADICTS)` |
 
-Full policy: [`memory_policies_for_LLM.md`](./memory_policies_for_LLM.md). Prefer client rules / AGENTS.md over MCP `resources/read`.
+Full policy: [`memory_policies_for_LLM.md`](./memory_policies_for_LLM.md). Put these operator constants in your own AGENTS.md ([`AGENTS_example.md`](./AGENTS_example.md)); prefer that over MCP `resources/read`.

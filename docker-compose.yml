@@ -41,10 +41,17 @@ services:
       # First start asks for a password unless this property is set.
       JAVA_OPTS: "-Darcadedb.server.rootPassword=playwithdata"
     volumes:
-      - ./data-arcade:/home/arcadedb/databases
+      # Named volume. The image runs as user arcadedb and owns
+      # /home/arcadedb/databases. A fresh ./data-arcade bind is root-owned,
+      # so the server cannot create databases. FalkorDB above runs as root
+      # and writes its ./data bind mount.
+      - arcade-data:/home/arcadedb/databases
     healthcheck:
       test: ["CMD-SHELL", "wget -q --spider http://localhost:2480/api/v1/ready || curl -f http://localhost:2480/api/v1/ready"]
       interval: 5s
       timeout: 3s
       retries: 10
       start_period: 10s
+
+volumes:
+  arcade-data:

@@ -47,7 +47,7 @@ Fact + Entity vector indexes: auto on first `search` / `find_similar` / Fact `au
 
 Each `owner_id` is its own ArcadeDB database, or its own FalkorDB graph when `GRAPH_BACKEND=falkordb`. Same `owner_id` is shared memory. Soft split inside owner: `metadata.project`. Always pass `owner_id` explicitly (server default: `DEFAULT_OWNER_ID`, usually `"default"`).
 
-`OWNER_SCOPE=client` (default, trusted network) uses that argument. `OWNER_SCOPE=header` runs on `127.0.0.1` behind a reverse proxy: the proxy sets `X-Owner-Id` and sends `ADMIN_TOKEN`, and the tool argument is ignored. `OWNER_SCOPE=token` ignores it and uses the owner stored for the Bearer API key. Passing the argument is still correct: the tool schema is the same, and `client` mode needs the value. See [configuration.md](./configuration.md).
+`OWNER_SCOPE=client` (default, trusted network) uses that argument. `OWNER_SCOPE=header` runs on `127.0.0.1` behind a reverse proxy: the proxy sets `X-Owner-Id` and sends `ADMIN_TOKEN`, and the tool argument is ignored. `OWNER_SCOPE=token` requires a Bearer API key. `owner_id` must be one of the key's projects; an empty argument uses the first project. The tool schema is the same, and `client` mode needs the value. See [configuration.md](./configuration.md).
 
 ## Lifecycle
 

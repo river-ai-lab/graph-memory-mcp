@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 _AGENT_POLICIES_URI = "graph-memory://agent-policies"
 # Canonical copy lives in repo docs/ (clone + uv). MCP resource is optional;
-# agents should get policy via AGENTS.md / client rules.
+# put these operator constants in your own AGENTS.md (docs/AGENTS_example.md).
 _AGENT_POLICIES_PATH = (
     Path(__file__).resolve().parent.parent / "docs" / "memory_policies_for_LLM.md"
 )

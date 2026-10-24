@@ -106,7 +106,7 @@ create_relation(
 
 **Result**: `search("API gateway", owner_id="team_backend")` now returns Component Y decision. Old decision excluded by default; `include_outdated=true` retrieves history. The FOLLOWS_FROM edge preserves the replacement context.
 
-**Note**: Custom relation types (e.g., `DEPENDS_ON`, `IMPLEMENTS`) can be added via `RELATION_ALLOWED_TYPES` in `.env`. Recommended types (13 in default allowlist, see [`relation_policy.py`](graph_memory_mcp/graph_memory/relation_policy.py)): `RELATED_TO`, `MENTIONS`, `FOLLOWS_FROM`, `CONTRADICTS`, `USES`, `SUMMARIZES`, `PART_OF`, `IMPLEMENTS`, `CAUSED_BY`, `RESULTED_IN`, `DISCOVERED_IN`, `SUPERSEDES`, `AUTO_LINK`. Default mode: warn on unlisted types.
+**Note**: Custom relation types (e.g., `DEPENDS_ON`, `IMPLEMENTS`) can be added via `RELATION_ALLOWED_TYPES` in `.env`. Default allowlist (13, see [`relation_policy.py`](graph_memory_mcp/graph_memory/relation_policy.py)): `RELATED_TO`, `MENTIONS`, `SUMMARIZES`, `FOLLOWS_FROM`, `CONTRADICTS`, `EXTRACTED_FROM`, `SIMILAR_TO`, `NEXT_STEP`, `EXPOSES`, `CROSS_REF`, `RUNS_ON`, `USES`, `SERVED_BY`. Default mode: warn on unlisted types. `auto_link` writes `MENTIONS` (`AUTO_LINK_RELATION`), not a type named `AUTO_LINK`.
 
 ### Contradictions surfaced
 
@@ -135,9 +135,9 @@ search(query="API rate limit", owner_id="team_backend")
 - **Fact became wrong** → `mark_outdated(fact_id, reason, owner_id="team_backend")` + `create_node(new_text)`, not `update_node`
 - **After meaningful work** (GROW): Ground what changed → Record it → Orient (if recurring, add tags/relations) → Write with `metadata.project` and `created_by`
 - **Temporary notes** get `ttl_days` (14-30); durable decisions have no TTL
-- **Link facts** with `create_relation` using recommended types (13 in default allowlist): `RELATED_TO`, `MENTIONS`, `FOLLOWS_FROM`, `CONTRADICTS`, `USES`, `SUMMARIZES`, `PART_OF`, `IMPLEMENTS`, `CAUSED_BY`, `RESULTED_IN`, `DISCOVERED_IN`, `SUPERSEDES`, `AUTO_LINK` (see [`relation_policy.py`](graph_memory_mcp/graph_memory/relation_policy.py); default mode: warn)
+- **Link facts** with `create_relation` using the default allowlist: `RELATED_TO`, `MENTIONS`, `SUMMARIZES`, `FOLLOWS_FROM`, `CONTRADICTS`, `EXTRACTED_FROM`, `SIMILAR_TO`, `NEXT_STEP`, `EXPOSES`, `CROSS_REF`, `RUNS_ON`, `USES`, `SERVED_BY` (see [`relation_policy.py`](graph_memory_mcp/graph_memory/relation_policy.py); default mode: warn). `auto_link` writes `MENTIONS`
 
-**Full policies**: Load [`docs/memory_policies_for_LLM.md`](docs/memory_policies_for_LLM.md) or [`docs/memory_policy_cheatsheet.md`](docs/memory_policy_cheatsheet.md) in your agent's rules or context at session start. See also: [`AGENTS.md`](AGENTS.md).
+**Full policies**: Load [`docs/memory_policies_for_LLM.md`](docs/memory_policies_for_LLM.md) or [`docs/memory_policy_cheatsheet.md`](docs/memory_policy_cheatsheet.md) in your agent's rules or context at session start. Put these operator constants in your own AGENTS.md ([`docs/AGENTS_example.md`](docs/AGENTS_example.md)).
 
 ## Use cases
 
@@ -177,7 +177,7 @@ See [docs/comparison.md](docs/comparison.md) for detailed comparisons with Mem0,
 - **First model download is large**: the default fp32 ONNX weights for `intfloat/multilingual-e5-base` are about 1.1 GB. Quantized weights are not used. `EMBEDDING_BACKEND=torch` needs `uv sync --extra torch`.
 - **Deduplication is similarity-based**: Near-duplicates are refused at insert using embeddings (threshold 0.92); may miss paraphrases below threshold or block distinct-but-similar facts.
 - **Contradictions are not auto-detected**: The agent must create `CONTRADICTS` edges explicitly; they are surfaced in search results but not inferred semantically by the server.
-- **No built-in authentication or multi-tenant UI**: Deploy behind a reverse proxy if needed; isolation is per `owner_id` only.
+- **Owner access is `OWNER_SCOPE`**: `client` (default) uses the tool argument `owner_id`. `header` ignores it and reads `X-Owner-Id` (loopback bind; the gateway sends `Authorization: Bearer $ADMIN_TOKEN` when that token is set). `token` requires a Bearer API key; `owner_id` must be one of the key's projects, and an empty value uses the first project. There is no multi-tenant admin UI.
 
 
 ## Setup
@@ -411,7 +411,7 @@ See [docs/memory_policies_for_LLM.md](docs/memory_policies_for_LLM.md) for agent
 
 ### ArcadeDB
 
-Data in `./data-arcade` persists across Docker restarts. ArcadeDB admin endpoints support export/import:
+Data is the Docker volume `arcade-data` (the image user cannot write a root-owned `./data-arcade` bind). `docker compose down` keeps it; `docker compose down -v` deletes it. ArcadeDB admin endpoints support export/import:
 
 ```bash
 # Export a database (requires authentication)
@@ -443,7 +443,7 @@ curl http://127.0.0.1:8000/admin/export/{owner_id}
 
 Supports `?limit=&offset=&section=nodes|relations` for large graphs. Restore with `POST /admin/import`.
 
-**ArcadeDB backups**: Data persists in `./data-arcade/` (volume mount). For point-in-time backups, stop ArcadeDB and copy the directory. Logical export/import via admin API works across backends.
+**ArcadeDB backups**: Data persists in the `arcade-data` volume. For a point-in-time copy, stop ArcadeDB and archive that volume. Logical export/import via the admin API works across backends.
 
 ## Development
 
