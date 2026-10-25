@@ -376,7 +376,7 @@ GRAPH_BACKEND=arcadedb uv run pytest -m arcade -q
 
 The server uses two vector indexes (Fact and Entity). The first write for an owner creates both, and later writes reuse that per-owner cache. They are also created on `search`, `find_similar`, or Fact `auto_link` when missing, or when `AUTO_CREATE_INDEXES=true` is set.
 
-**Changing the embedding model invalidates the stored corpus.** You must re-embed every node after changing `EMBEDDING_MODEL`, its dimension, or `EMBEDDING_QUERY_PREFIX` / `EMBEDDING_PASSAGE_PREFIX`. See the [docs](docs/features.md) for the full procedure.
+**Changing the embedding model invalidates the stored corpus.** You must re-embed every node after changing `EMBEDDING_MODEL`, its dimension, or `EMBEDDING_QUERY_PREFIX` / `EMBEDDING_PASSAGE_PREFIX`. See [Embeddings](docs/configuration.md#embeddings).
 
 ## Server profiles
 
