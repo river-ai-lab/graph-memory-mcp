@@ -124,13 +124,22 @@ class BaseGraphMemoryMCP:
         self.db_client = open_store(server_config)
         self._db_connected = self.db_client.connect()
         if not self._db_connected:
-            logger.warning(
-                "Failed to connect to FalkorDB (host=%s, port=%s, graph=%s). "
-                "Memory tools will operate in degraded mode.",
-                server_config.falkordb_host,
-                server_config.falkordb_port,
-                server_config.falkordb_graph,
-            )
+            if str(server_config.graph_backend or "") == "arcadedb":
+                logger.warning(
+                    "Failed to connect to ArcadeDB (host=%s, port=%s, database=%s). "
+                    "Memory tools will operate in degraded mode.",
+                    server_config.arcade_host,
+                    server_config.arcade_port,
+                    server_config.arcade_database,
+                )
+            else:
+                logger.warning(
+                    "Failed to connect to FalkorDB (host=%s, port=%s, graph=%s). "
+                    "Memory tools will operate in degraded mode.",
+                    server_config.falkordb_host,
+                    server_config.falkordb_port,
+                    server_config.falkordb_graph,
+                )
         else:
             # Legacy backfills (uid, Entity name_norm) across all owner graphs.
             try:

@@ -141,15 +141,13 @@ class ArcadeOps:
     def updated_at_assignment(self) -> str:
         return "n.updated_at = timestamp()"
 
-    def similarity_rows(self, **kwargs: Any) -> list:
-        from graph_memory_mcp.graph_memory.backends.arcade_search import neighbor_rows
-
-        return neighbor_rows(self, **kwargs)
-
     def ann_rows(self, **kwargs: Any) -> list:
         from graph_memory_mcp.graph_memory.backends.arcade_search import neighbor_rows
 
         return neighbor_rows(self, **kwargs)
+
+    def similarity_rows(self, **kwargs: Any) -> list:
+        return self.ann_rows(**kwargs)
 
     def fact_embedding(self, fact_id: str, owner_id: str) -> tuple[bool, Any]:
         _label, record = self._find(fact_id, owner_id, types=("Fact",))

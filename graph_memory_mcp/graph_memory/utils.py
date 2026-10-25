@@ -4,7 +4,7 @@ import json
 import logging
 import re
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -294,16 +294,6 @@ def mcp_handler(func):
         return result
 
     return wrapper
-
-
-def execute_query(db: Any, query: str, params: Optional[Dict] = None) -> Any:
-    """Execute query (routed to the owner graph via params) and validate result."""
-    result = db.query(query, params=params)
-
-    if not result or not hasattr(result, "result_set") or not result.result_set:
-        return None
-
-    return result
 
 
 def touch_nodes(db: Any, node_ids: List[str], owner_id: str) -> None:
