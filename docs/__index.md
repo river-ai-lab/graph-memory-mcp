@@ -11,5 +11,6 @@
 - [roadmap.md](./roadmap.md) — unfinished work
 - [comparison.md](./comparison.md) — vs other stacks
 - [releasing.md](./releasing.md) — PyPI trusted publisher and version tags
+- [demos.md](./demos.md) — demo recordings besides the README GIF
 
 Explorer: [README](../README.md).

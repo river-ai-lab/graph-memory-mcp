@@ -21,6 +21,8 @@ Install from PyPI: `pip install graph-memory-mcp` or `uvx graph-memory-mcp`.
 
 The GIF is a recording of the demo script running against a real server. Run it yourself with `uv run graph-memory-mcp --host 127.0.0.1 --port 8000`, then `uv run python assets/demo/seed.py` and `uv run python assets/demo/generate_demo.py --scenario readme`, and read [assets/demo/seed.py](assets/demo/seed.py) and [assets/demo/generate_demo.py](assets/demo/generate_demo.py) to see exactly what happens.
 
+Other recordings: [docs/demos.md](docs/demos.md).
+
 ## Why Graph Memory MCP
 
 - **Traversable graph**: Agents read edges (`get_context`, `get_trace`) to walk connections between facts—decisions link to affected services, new facts `FOLLOWS_FROM` old ones
