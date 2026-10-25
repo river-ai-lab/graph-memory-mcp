@@ -31,7 +31,8 @@ async def main():
             tools = await session.list_tools()
             print("Tools:", [t.name for t in tools.tools])
 
-            # Indexes are created automatically on first search/write if missing.
+            # The first write for an owner creates Fact and Entity indexes.
+            # Search creates them if they are still missing.
             # Admin ensure-indexes lives on HTTP /admin/ensure-indexes (or MCP when
             # MCP_EXPOSE_ADMIN_TOOLS=true).
             res = await session.call_tool("health_check", arguments={})

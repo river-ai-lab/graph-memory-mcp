@@ -50,6 +50,7 @@ class ArcadeDBClient(ArcadeOps):
         self.start_time = time.time()
         self._lock = threading.Lock()
         self._ready: set[str] = set()
+        self._vector_indexes_ready: set[str] = set()
         self._vector_dim: Dict[str, int] = {}
         self._model_dim: int | None = None
         self._edge_types: Dict[str, set[str]] = {}
@@ -196,6 +197,7 @@ class ArcadeDBClient(ArcadeOps):
         self._ready.clear()
         self._edge_types.clear()
         self._vector_dim.clear()
+        self._vector_indexes_ready.clear()
 
     def list_database_names(self) -> List[str]:
         body = self._request("GET", "/api/v1/databases")
@@ -266,6 +268,13 @@ class ArcadeDBClient(ArcadeOps):
         dim = int(dimension)
         if dim <= 0:
             raise ValueError("Embedding dimension must be positive")
+        active = _ACTIVE_DB.get()
+        if active and active in self._vector_indexes_ready:
+            if self._model_dim is not None and dim != self._model_dim:
+                raise ValueError(
+                    f"Embedding dimension {dim} does not match index dimension {self._model_dim}"
+                )
+            return
         self.ensure_ready()
         if self._model_dim is not None and self._model_dim != dim:
             raise ValueError(
@@ -274,6 +283,8 @@ class ArcadeDBClient(ArcadeOps):
         for vector_label in VECTOR_TYPES:
             self._ensure_one_vector_index(vector_label, dim)
         self._model_dim = dim
+        if active:
+            self._vector_indexes_ready.add(active)
 
     def _ensure_one_vector_index(self, label: str, dimension: int) -> None:
         key = f"{self._require_db()}:{label}"
@@ -316,7 +327,11 @@ class ArcadeDBClient(ArcadeOps):
         dimension: int | None = None,
         similarity_function: str = "cosine",
     ) -> Dict[str, bool]:
+        """Create Fact/Entity vector indexes when absent (idempotent, cached per owner)."""
         del similarity_function
+        name = self.database_name(owner_id)
+        if name in self._vector_indexes_ready:
+            return {"Fact": True, "Entity": True}
         with self.owner_scope(owner_id):
             dim = int(
                 dimension or getattr(self._embedding_service, "dimension", 0) or 0
@@ -327,7 +342,10 @@ class ArcadeDBClient(ArcadeOps):
             for label in VECTOR_TYPES:
                 if not status.get(label):
                     self.ensure_vector_index(label, dim)
-            return self._vector_status_here()
+            status = self._vector_status_here()
+            if all(status.values()):
+                self._vector_indexes_ready.add(name)
+            return status
 
     def ensure_search_indexes_if_missing(
         self,

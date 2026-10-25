@@ -169,6 +169,7 @@ class ArcadeOps:
         """Drop the owner's database, including its vertices and HNSW indexes."""
         name = self.database_name(owner_id)
         self._ready.discard(name)
+        self._vector_indexes_ready.discard(name)
         self._edge_types.pop(name, None)
         try:
             self._server(f"drop database {name}")
@@ -264,6 +265,7 @@ class ArcadeOps:
         has_embedding: bool,
         entity_type: str | None,
     ) -> list[list[Any]]:
+        self.ensure_vector_indexes_if_missing(owner_id=str(params["owner_id"]))
         self._check_label(node_type)
         owner = self.owner_literal(str(params["owner_id"]))
         self.ensure_ready()
@@ -306,6 +308,7 @@ class ArcadeOps:
         return [_node_row(record, node_type)]
 
     def create_nodes_bulk(self, *, node_type: str, rows: list, owner_id: str) -> list:
+        self.ensure_vector_indexes_if_missing(owner_id=owner_id)
         self._check_label(node_type)
         owner = self.owner_literal(owner_id)
         self.ensure_ready()
@@ -398,6 +401,7 @@ class ArcadeOps:
         return version_uid
 
     def apply_node_update(self, *, set_clauses: list[str], params: dict) -> list:
+        self.ensure_vector_indexes_if_missing(owner_id=str(params["owner_id"]))
         owner_id = str(params["owner_id"])
         node_id = str(params["node_id"])
         label, record = self._find(node_id, owner_id)
@@ -537,6 +541,7 @@ class ArcadeOps:
         params: dict,
         prop_assignments: str,
     ) -> list:
+        self.ensure_vector_indexes_if_missing(owner_id=str(params["owner_id"]))
         owner_id = str(params["owner_id"])
         from_label, from_rec = self._find(str(params["from_id"]), owner_id)
         to_label, to_rec = self._find(str(params["to_id"]), owner_id)
@@ -574,6 +579,7 @@ class ArcadeOps:
         obj_emb_expr: str,
     ) -> list:
         del subj_emb_expr, obj_emb_expr
+        self.ensure_vector_indexes_if_missing(owner_id=str(params["owner_id"]))
         owner_id = str(params["owner_id"])
         owner = self.owner_literal(owner_id)
         self.ensure_ready()
@@ -1136,6 +1142,7 @@ class ArcadeOps:
     def import_node_batch(
         self, *, label: str, has_emb: bool, rows: list, owner_id: str
     ) -> Any:
+        self.ensure_vector_indexes_if_missing(owner_id=owner_id)
         self._check_label(label)
         owner = self.owner_literal(owner_id)
         self.ensure_ready()
@@ -1168,6 +1175,7 @@ class ArcadeOps:
         return True
 
     def import_relation_batch(self, *, rel_type: str, rows: list, owner_id: str) -> Any:
+        self.ensure_vector_indexes_if_missing(owner_id=owner_id)
         self.ensure_edge_type(rel_type)
         for row in rows:
             from_label, from_rec = self._find(str(row.get("from_id")), owner_id)

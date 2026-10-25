@@ -35,8 +35,9 @@ _INDEX_SAMPLE = 20
 def health_check(db: FalkorDBClient, embedding_service: Any) -> Dict:
     """Report backend, embeddings, and which sampled owners still lack a vector index.
 
-    Search creates a missing index on first use. An owner that already has facts
-    but no index does not clear ``healthy``.
+    The first write for an owner creates Fact and Entity indexes. Search still
+    creates a missing index. An owner that already has facts but no index does
+    not clear ``healthy``.
     """
     falkordb_ok = False
     arcade_ok = False

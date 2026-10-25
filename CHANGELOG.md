@@ -32,6 +32,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 - `--auth` and token mode resolve `owner_id` from the API key before validation. A call that omits it uses the key's first project. `--auth` still ignores a caller-supplied `owner_id`.
 - `health_check` stays healthy when a sampled owner has data but no vector index. `vector_index_missing` lists those owners (up to 20). Search still creates the index.
+- The first write for an owner (`create_node`, `create_nodes`, `upsert_node`, `create_relation`, entity creation, `import_owner`) creates Fact and Entity vector indexes. Later writes reuse a per-owner cache. Search still creates a missing index.
 
 ## [0.2.0] - 2026-07-20
 

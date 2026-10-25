@@ -14,7 +14,7 @@ Normative tool signatures. Jobs: [background_jobs.md](./background_jobs.md). Age
 
 **Edges:** default allowlist `RELATED_TO`, `MENTIONS`, `SUMMARIZES`, `FOLLOWS_FROM`, `CONTRADICTS`, `EXTRACTED_FROM`, `SIMILAR_TO`, `NEXT_STEP`, `EXPOSES`, `CROSS_REF`, `RUNS_ON`, `USES`, `SERVED_BY`. Policy: `RELATION_POLICY_ENFORCE` (`off`|`warn`|`enforce`), `RELATION_ALLOWED_TYPES`. Fact `auto_link` (default false) → `MENTIONS` to similar Entities when passed true.
 
-**Indexes:** Fact + Entity vectors — auto on first `search`, `find_similar`, or Fact `auto_link`, `AUTO_CREATE_INDEXES=true`, or `POST /admin/ensure-indexes`.
+**Indexes:** Fact + Entity vectors — created on the first write for an owner (`create_node`, `create_nodes`, `upsert_node`, `create_relation`, entity creation, `import_owner`), cached per owner. Also on `search`, `find_similar`, or Fact `auto_link` when still missing, `AUTO_CREATE_INDEXES=true`, or `POST /admin/ensure-indexes`.
 
 ## Validation
 
@@ -78,7 +78,7 @@ Defaults: `owner_id` from `DEFAULT_OWNER_ID` (env, default `"default"`). Pass `o
 **`recall_context`** — shortcut search+expand (small graphs). Opt `depth` (default `RECALL_CONTEXT_DEFAULT_DEPTH`, 2), `limit` (default `RECALL_CONTEXT_SEED_LIMIT`, 5), `max_nodes` (default 20, hard 50), `similarity_threshold` (default 0.55), `include_outdated`, `include_ttl`, `search_type`, `include_paths`, `metadata_filter`, `compact`, `relation_priority`, `exclude_relation_types`, time-aware ranking weights. Same neighbor order and TTL filter as `get_context`. Always returns `suggested_next` / `do_not` / `budget`.
 **`get_trace`** — `from_id`, `to_id`; opt `max_depth`, `directed` (default true).
 **`get_brief`** — warm-up, not search and not a degree ranking: `about` if a fact with `source.ref` = `ABOUT_SOURCE_REF` (default `about`) exists, else null. Recent active facts with no TTL, by time (`limit` cuts only these). Open `CONTRADICTS` between those durable facts. `stale_count` is active facts not accessed for `STALE_FACTS_DAYS`. `include_stale=true` returns their texts; leave it false at task start. Stats. Facts with `ttl_days` are omitted.
-**`get_stats`** — Fact/Entity counts. **`health_check`** — backend, embeddings, and `healthy`. `vector_index_missing` lists up to 20 owners that have no vector index yet; that list does not clear `healthy`. Search creates the index.
+**`get_stats`** — Fact/Entity counts. **`health_check`** — backend, embeddings, and `healthy`. `vector_index_missing` lists up to 20 owners that have no vector index yet; that list does not clear `healthy`. The first write creates both indexes. Search creates them if they are still missing.
 
 ## Admin (HTTP; not MCP by default)
 

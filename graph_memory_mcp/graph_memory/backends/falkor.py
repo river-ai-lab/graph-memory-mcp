@@ -37,6 +37,8 @@ class FalkorDBClient(FalkorOps):
         self.graph = self.db.select_graph(config.falkordb_graph)
         self._graphs: Dict[str, Any] = {}
         self._search_indexes_ready: set[str] = set()
+        # Owners whose Fact and Entity vector indexes were created in this process.
+        self._vector_indexes_ready: set[str] = set()
         self._embedding_service: Any | None = None
         self.start_time = time.time()  # Retain start_time for health check
         self.cache = CacheManager(config)
@@ -123,6 +125,7 @@ class FalkorDBClient(FalkorOps):
                 return False
         self._graphs.pop(name, None)
         self._search_indexes_ready.discard(name)
+        self._vector_indexes_ready.discard(name)
         logger.info("Deleted owner graph %s", name)
         return True
 
@@ -331,7 +334,10 @@ class FalkorDBClient(FalkorOps):
         dimension: int | None = None,
         similarity_function: str = "cosine",
     ) -> Dict[str, bool]:
-        """Create Fact/Entity vector indexes when absent (idempotent)."""
+        """Create Fact/Entity vector indexes when absent (idempotent, cached per owner)."""
+        key = self.graph_name(owner_id)
+        if key in self._vector_indexes_ready:
+            return {"Fact": True, "Entity": True}
         dim = int(dimension or getattr(self._embedding_service, "dimension", 0) or 0)
         if dim <= 0:
             logger.warning(
@@ -352,7 +358,10 @@ class FalkorDBClient(FalkorOps):
                 similarity_function=similarity_function,
                 owner_id=owner_id,
             )
-        return self.get_vector_index_status(owner_id=owner_id)
+        status = self.get_vector_index_status(owner_id=owner_id)
+        if all(status.values()):
+            self._vector_indexes_ready.add(key)
+        return status
 
     def _indexed_props_by_label(
         self, owner_id: str, wanted_type: str
