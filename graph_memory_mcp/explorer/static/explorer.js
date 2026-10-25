@@ -249,7 +249,7 @@ function mergeToolResult(data, meta = {}, syncOpts = {}) {
   mergeEdges(L.contradictionEdges(data.contradiction_pairs));
   for (const p of data.paths || []) {
     mergeNodes(p.nodes, { fresh: true });
-    mergeEdges(edgesFromTrace(p.nodes || [], p.relations || []), { path: true });
+    mergeEdges(L.edgesFromTrace(p.nodes || [], p.relations || []), { path: true });
   }
   syncGraph(syncOpts);
   updateStats();
