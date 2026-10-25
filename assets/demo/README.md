@@ -82,6 +82,19 @@ Search for the gateway component, then `get_context` on that decision shows the 
 
 **Data persistence**: Demo data persists in the Docker volume `arcade-data`. To fully clean: `docker compose down -v`
 
+## Inspector CLI — `demo_cli.gif`
+
+A separate clip. It does not replace the README GIF. The terminal types the MCP Inspector CLI (package `@modelcontextprotocol/inspector@2.12.0`) and runs it. Flags checked for that version: `--cli <url>`, `--transport http`, `--format json`, `-q`, `--method tools/call`, `--tool-name`, `--tool-arg key=value`. The URL ends in `/mcp`, which is streamable HTTP. Output is one JSON object. This server puts the tool payload in `result.content[0].text` (no `structuredContent`), so `jq` runs `fromjson` and prints `{id, text}` or `{text, similarity}`.
+
+The server uses the default owner scope (`OWNER_SCOPE=client`, owner `default`). The commands omit `owner_id`. Reset that owner before a clean run. That delete is not in the GIF:
+
+```bash
+curl -s -X DELETE http://127.0.0.1:8000/admin/owners/default
+./assets/demo/cli_demo.sh
+```
+
+Three commands: set `URL`, `create_node` with text `API gateway uses Component Y`, then `search` for `which gateway component?`. The search `jq` filter exits non-zero unless that saved fact is in the results. Re-record with `./assets/demo/cli_demo.sh --record` (server already up, asciinema, agg, monokai, JetBrains Mono). About 12–20 s.
+
 ## Files
 
 - `record.sh`: Records every GIF (or one scenario name)
@@ -90,6 +103,8 @@ Search for the gateway component, then `get_context` on that decision shows the 
 - `demo.gif`: Sparse README recording
 - `demo_dense.gif`: 13-step recording
 - `demo_contradictions.gif`, `demo_lifecycle.gif`, `demo_retrieval.gif`: Landing-page clips
+- `cli_demo.sh`: MCP Inspector commands (paste the block, or run the file). `--record` rebuilds `demo_cli.gif`
+- `demo_cli.gif`: Inspector CLI recording
 
 ## Prerequisites
 
@@ -98,3 +113,4 @@ Search for the gateway component, then `get_context` on that decision shows the 
 - **asciinema**: `brew install asciinema` (macOS) or `pip install asciinema` (Linux)
 - **agg**: `brew install agg` (macOS) or `cargo install --git https://github.com/asciinema/agg` (Linux)
 - **gifsicle** (optional, keeps the GIF small): `brew install gifsicle` or `apt install gifsicle`
+- **Node.js and jq** (Inspector clip only): `npx` and `jq`
