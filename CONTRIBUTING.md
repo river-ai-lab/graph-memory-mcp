@@ -56,6 +56,12 @@ GRAPH_BACKEND=falkordb uv run pytest -m "not arcade"
 
 Tests not marked `arcade` still need FalkorDB. No marker skips the database.
 
+**Explorer browser smoke** (FalkorDB only). `./scripts/test.sh` and `uv run pytest -q` skip it unless `EXPLORER_BROWSER=1`. Needs a running Explorer at `EXPLORER_URL` (default `http://127.0.0.1:8088`). The auth check uses `EXPLORER_AUTH_URL` (default `http://127.0.0.1:8091`) for an Explorer started with `--auth`. Playwright loads from `PLAYWRIGHT_MODULE` or `/tmp/node_modules/playwright/index.mjs`. CI excludes the marker (`not arcade and not browser`, and `arcade and not browser`).
+
+```bash
+EXPLORER_BROWSER=1 uv run pytest -q -m browser
+```
+
 ## Code style
 
 - **Formatting**: `uv run ruff format .`

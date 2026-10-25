@@ -21,9 +21,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
-- `get_context` `page` is optional and defaults to false. Existing graphs need no migration. A call that omits `page` and uses `offset=0` is unchanged. `offset>0` (and `page=true`) also returns edges from that page to the rest of the context, so a later page is larger than before.
+- Compatible behavior change: `get_context` with `offset>0` keeps the same nodes and also returns edges from that page back to the rest of the context, so the response is larger. `page` is optional and defaults to false. Omitting `page` with `offset=0` is unchanged and does not return `offset` or `has_more`. Existing graphs need no migration. `page=true` reads stable id-ordered pages; a full page includes those extra edges. `has_more` is true when the page is full, including a last full page. The next empty page has `has_more` false and echoes `offset`.
 - Clearing the Explorer memory name and clicking Load asks for a name. It no longer opens the memory called `default`.
-- Explorer opens with a memory name and **Load**. Fit, arrange, zoom, text preview, link names, and details share one toolbar. The map legend shows fact, entity, outdated, contradicts, and follows-from. Details lead with the text, status, and validity; timestamps, the id, and raw fields are under More.
+- Explorer opens with **Open a memory** and **Load**, then **Ask a question**. **More tools** covers open by ID, a path, similar wording, and how far to look. Fit, Arrange, Physics, zoom, text preview, link names, and details share one toolbar. The map legend shows fact, entity, outdated, contradicts, follows-from, and related. Details lead with the text, status, and validity; timestamps, the id, and raw fields are under **More about this item**.
 - The server uses MCP 2 (`MCPServer`, `mcp>=2.3,<3`). FastMCP and mcp 1 are gone.
 - PyPI packaging adds `README_pypi.md`, project metadata, and `.github/workflows/publish.yml` (OIDC, tags `v*`, environments `pypi` and `testpypi`).
 - An `import_owner` call on `/mcp` is rejected when the body is larger than 4 MiB. `/admin/import` is not.

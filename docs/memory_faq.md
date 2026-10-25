@@ -9,7 +9,7 @@ A task starts with two reads. You decide what to call after that:
 
 `search` / `get_context` / `recall_context` hide facts that have `ttl_days` until `include_ttl=true` (still living) or `include_outdated=true` (also outdated, archived, expired). If two hits already have a `CONTRADICTS` edge, they come back in `contradiction_pairs` and `suggested_next` leads with `get_trace` / `mark_outdated`.
 
-`get_context` fills its node budget (default 20, hard cap 50) with `CONTRADICTS`, then `FOLLOWS_FROM`, then other allowlist edges; `MENTIONS` last. `relation_priority` overrides that order. `exclude_relation_types` drops those edges.
+`get_context` fills its node budget (default 20, hard cap 50) with `CONTRADICTS`, then `FOLLOWS_FROM`, then other allowlist edges; `MENTIONS` last. `relation_priority` overrides that order. `exclude_relation_types` drops those edges. `page` is optional and defaults to false. Omit it with `offset=0` for that walk (no `offset` or `has_more` in the response). Compatible behavior change: `offset>0` keeps the same nodes and also returns edges from that page back to the rest of the context. `page=true` reads stable id-ordered pages; a full page includes those extra edges. `has_more` is true when the page is full, including a last full page. The next empty page has `has_more` false and echoes `offset`.
 
 `recall_context` is a shortcut on small graphs, not the default path.
 
@@ -55,6 +55,6 @@ Each `owner_id` is its own ArcadeDB database, or its own FalkorDB graph when `GR
 
 ## Agent vs Explorer
 
-Agents → MCP tools. Explorer → human read-only GUI over MCP. The page starts with a memory name and **Load**. Against `graph-memory-mcp --auth`, start Explorer with `--auth` and `GRAPH_MEMORY_API_KEY` (or `--token`). The memory name shows the key's first project. Map labels default to **On hover**; **Always** is one short line and hides when the map is zoomed out.
+Agents → MCP tools. Explorer → human read-only GUI over MCP. The page starts with **Open a memory** (a memory name and **Load**), then **Ask a question**. **More tools** covers open by ID, a path, similar wording, and how far to look. The toolbar is Fit, Arrange, Physics, zoom, text preview, Names, and Details. The legend shows facts, entities, outdated items, contradicts, follows-from, and related. Details lead with the text, status, and validity; timestamps, the id, and raw fields are under **More about this item**. An empty name shows "Enter a memory name, then click Load." and does not open `default`. Against `graph-memory-mcp --auth`, start Explorer with `--auth` and `GRAPH_MEMORY_API_KEY` (or `--token`). The memory name shows the key's first project and cannot be edited. Map labels default to **On hover**; **Always** is one short line and hides when the map is zoomed out. The choice is `localStorage` key `gm_node_preview`.
 
 Policy: [memory_policies_for_LLM.md](./memory_policies_for_LLM.md).

@@ -393,7 +393,7 @@ See [docs/features.md](docs/features.md) for details.
 
 ## Graph Explorer
 
-Local read-only web UI. Enter a memory name and click **Load**, then search or open an item from the summary. The map legend shows facts, entities, outdated items, contradicts, and follows-from. Details lead with the text, status, and validity. Node text on the map is **On hover** by default, or **Always** (one short line). Always-mode labels hide when the map is zoomed out. The choice is stored in `localStorage`. The summary counts outdated facts. With `--auth`, the memory name shows the key's project and cannot be edited.
+Local read-only web UI. **Open a memory**: enter a memory name and click **Load**, then search under **Ask a question** or open an item from the summary. An empty name shows "Enter a memory name, then click Load." and does not open `default`. **More tools** covers open by ID, find a path, similar wording, and how far to look. The toolbar is Fit, Arrange, Physics, zoom, text preview, **Names**, and **Details**. The map legend shows facts, entities, outdated items, contradicts, follows-from, and related. Details lead with the text, status, and validity. Timestamps, the id, and raw fields are under **More about this item**. Node text on the map is **On hover** by default, or **Always** (one short line). Always-mode labels hide when the map is zoomed out. The choice is stored in `localStorage` as `gm_node_preview`. The summary counts outdated facts. With `--auth`, the memory name shows the key's project and cannot be edited.
 
 ```bash
 # Terminal 1 — MCP server
@@ -477,6 +477,12 @@ ArcadeDB tests:
 
 ```bash
 uv run pytest -m arcade
+```
+
+Headless Explorer smoke (FalkorDB only). Skipped unless `EXPLORER_BROWSER=1`. Needs Explorer at `EXPLORER_URL` (default `http://127.0.0.1:8088`). The auth check uses `EXPLORER_AUTH_URL` (default `http://127.0.0.1:8091`) for an Explorer started with `--auth`. Playwright loads from `PLAYWRIGHT_MODULE` or `/tmp/node_modules/playwright/index.mjs`. CI excludes the marker (`not arcade and not browser`, and `arcade and not browser`).
+
+```bash
+EXPLORER_BROWSER=1 uv run pytest -q -m browser
 ```
 
 ### Pre-commit hooks
