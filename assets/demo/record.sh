@@ -9,6 +9,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DEMO_GIF="$SCRIPT_DIR/demo.gif"
 DEMO_CAST="$SCRIPT_DIR/demo.cast"
+SERVER_PORT="${GRAPH_MEMORY_PORT:-8000}"
+STARTED_SERVER=0
+SERVER_LOG="${TMPDIR:-/tmp}/graph-memory-demo-server.log"
+SERVER_PID_FILE="${TMPDIR:-/tmp}/graph-memory-demo-server.pid"
 
 echo "=== Graph Memory Demo Recorder ==="
 echo ""
@@ -68,8 +72,8 @@ echo "✓ agg found"
 
 echo ""
 
-# 2. Start ArcadeDB
-echo "[2/7] Starting ArcadeDB..."
+# 2. Start ArcadeDB and the MCP server
+echo "[2/7] Starting ArcadeDB and the MCP server..."
 cd "$PROJECT_ROOT"
 
 # Ensure .env exists
@@ -111,26 +115,66 @@ sleep 2
 
 echo ""
 
-# 3. Install dependencies
+# 3. Install dependencies (before the server process, so uv run can start it)
 echo "[3/7] Installing Python dependencies..."
 cd "$PROJECT_ROOT"
 uv sync --quiet
 echo "✓ Dependencies installed"
 echo ""
 
+start_server() {
+    if curl -sf "http://127.0.0.1:${SERVER_PORT}/admin/health" >/dev/null 2>&1; then
+        echo "✓ MCP server already listening on :${SERVER_PORT}"
+        return
+    fi
+    echo "Starting MCP server on 127.0.0.1:${SERVER_PORT}..."
+    # Model load is outside the recording. First start downloads the ONNX weights.
+    uv run graph-memory-mcp --host 127.0.0.1 --port "$SERVER_PORT" --log-level WARNING \
+        >"$SERVER_LOG" 2>&1 &
+    echo $! >"$SERVER_PID_FILE"
+    STARTED_SERVER=1
+    local timeout=240
+    local elapsed=0
+    while [ "$elapsed" -lt "$timeout" ]; do
+        if curl -sf "http://127.0.0.1:${SERVER_PORT}/admin/health" >/dev/null 2>&1; then
+            echo "✓ MCP server is ready"
+            return
+        fi
+        if ! kill -0 "$(cat "$SERVER_PID_FILE")" 2>/dev/null; then
+            echo "❌ MCP server exited"
+            cat "$SERVER_LOG"
+            exit 1
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    echo "❌ MCP server did not become ready in ${timeout}s"
+    cat "$SERVER_LOG"
+    exit 1
+}
+
+start_server
+
+echo "Warming embeddings and resetting demo owner..."
+uv run python "$SCRIPT_DIR/generate_demo.py" --prepare
+curl -sf -X DELETE "http://127.0.0.1:${SERVER_PORT}/admin/owners/demo_warm" >/dev/null || true
+curl -sf -X DELETE "http://127.0.0.1:${SERVER_PORT}/admin/owners/demo_team" >/dev/null || true
+echo "✓ Server ready, demo owner reset"
+echo ""
+
 # 4. Record demo
 echo "[4/7] Recording demo (this takes ~20s)..."
 cd "$PROJECT_ROOT"
 
-# Fixed terminal size (100 columns x 28 rows, no mid-word wrapping)
-export COLUMNS=100
-export LINES=28
+# Fixed terminal size. Short lines stay on one row at a large font.
+export COLUMNS=88
+export LINES=26
 
 # Record with asciinema (run from project root so .env is found)
 asciinema rec "$DEMO_CAST" \
     --overwrite \
-    --cols 100 \
-    --rows 28 \
+    --cols 88 \
+    --rows 26 \
     --command "uv run python assets/demo/generate_demo.py" \
     --quiet
 
@@ -141,10 +185,18 @@ echo ""
 echo "[5/7] Converting to GIF..."
 agg "$DEMO_CAST" "$DEMO_GIF" \
     --theme monokai \
-    --font-size 18 \
-    --line-height 1.4 \
-    --speed 1.2 \
-    --fps 10
+    --font-family "JetBrains Mono" \
+    --font-size 22 \
+    --line-height 1.32 \
+    --speed 1.0 \
+    --fps-cap 10 \
+    --last-frame-duration 2.5
+
+if command -v gifsicle >/dev/null 2>&1; then
+    # Lossless optimize. Lossy quantization blurs the monospace text.
+    gifsicle -O3 -o "${DEMO_GIF}.opt" "$DEMO_GIF"
+    mv "${DEMO_GIF}.opt" "$DEMO_GIF"
+fi
 
 echo "✓ GIF created"
 echo ""
@@ -152,10 +204,10 @@ echo ""
 # 6. Cleanup
 echo "[6/7] Cleaning up demo data..."
 
-# The demo creates owner_id="demo_team". Data persists in ./data-arcade (ArcadeDB volume).
-# To fully clean: docker compose down && rm -rf ./data-arcade
-echo "Note: Demo data in ./data-arcade persists across runs"
-echo "      To clean: docker compose down && rm -rf ./data-arcade"
+# The demo creates owner_id="demo_team" and deletes that owner before each take.
+# ArcadeDB data lives in the named volume arcade-data.
+echo "Note: ArcadeDB data persists in the docker volume arcade-data"
+echo "      To clean: docker compose down -v"
 
 # Clean up cast file
 rm -f "$DEMO_CAST"
@@ -178,7 +230,7 @@ fi
 if [ "$SIZE" -lt 1048576 ]; then
     SIZE_HUMAN="$((SIZE / 1024)) KB"
 else
-    SIZE_HUMAN="$((SIZE / 1048576)) MB"
+    SIZE_HUMAN="$(awk -v bytes="$SIZE" 'BEGIN { printf "%.1f MB", bytes / 1048576 }')"
 fi
 
 echo "📊 Size: $SIZE_HUMAN"
@@ -186,5 +238,8 @@ echo ""
 echo "Embed in README.md:"
 echo '![Demo](assets/demo/demo.gif)'
 echo ""
-echo "To stop database: docker compose down"
-echo "To clean data: docker compose down && rm -rf ./data-arcade"
+if [ "$STARTED_SERVER" = 1 ]; then
+    echo "To stop the server started by this script, kill the pid in $SERVER_PID_FILE"
+fi
+echo "To stop the database: docker compose down"
+echo "To clean data: docker compose down -v"
