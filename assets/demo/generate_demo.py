@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Demo scenarios against a running Graph Memory MCP server.
 
+The GIF types this client at a shell prompt. It connects to the live server,
+prints ``initialize`` (server name and version) and the ``list_tools`` count,
+then each tool call with the arguments that were sent and a trimmed excerpt of
+the JSON response.
+
 Requires ArcadeDB (``docker compose up -d arcadedb``) and the MCP server::
 
     uv run graph-memory-mcp --host 127.0.0.1 --port 8000
@@ -32,6 +37,7 @@ import argparse
 import asyncio
 import json
 import os
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -39,6 +45,7 @@ from pathlib import Path
 import httpx
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
+from mcp.types import PaginatedRequestParams
 
 SERVER_URL = os.environ.get("GRAPH_MEMORY_URL", "http://127.0.0.1:8000/mcp")
 OWNER = "demo_team"
@@ -77,6 +84,27 @@ SCENARIOS = (
     "retrieval",
 )
 
+_ARG_ORDER = (
+    "text",
+    "query",
+    "metadata",
+    "node_type",
+    "entity_type",
+    "from_id",
+    "to_id",
+    "relation_type",
+    "fact_id",
+    "reason",
+    "node_id",
+    "depth",
+    "limit",
+    "node_types",
+    "similarity_threshold",
+    "include_outdated",
+    "check_duplicates",
+    "source",
+)
+
 
 def configure_pace(step: float, beat: float, end: float) -> None:
     global PAUSE_STEP, PAUSE_BEAT, PAUSE_END
@@ -85,10 +113,20 @@ def configure_pace(step: float, beat: float, end: float) -> None:
     PAUSE_END = float(os.environ.get("DEMO_PAUSE_END", end))
 
 
+def header_pause() -> float:
+    return float(os.environ.get("DEMO_PAUSE_HEADER", "0.45"))
+
+
 def say(text: str = "", pause: float = 0.0) -> None:
     print(text, flush=True)
     if pause:
         time.sleep(pause)
+
+
+def hold(scale: float) -> None:
+    delay = PAUSE_BEAT * scale
+    if delay > 0:
+        time.sleep(delay)
 
 
 def set_status(ok: bool, detail: str = "") -> None:
@@ -119,6 +157,143 @@ def clip(text: str, limit: int = 62) -> str:
     return text[: limit - 1] + "…"
 
 
+def rounded(value: object) -> float:
+    return float(f"{float(value):.3f}")
+
+
+def dumps(obj: object) -> str:
+    return json.dumps(obj, ensure_ascii=False, separators=(", ", ": "))
+
+
+def terminal_columns() -> int:
+    width = shutil.get_terminal_size(fallback=(108, 40)).columns
+    return max(72, width)
+
+
+def wrap_text(text: str) -> list[str]:
+    cols = terminal_columns()
+    lines: list[str] = []
+    rest = text
+    while rest:
+        if len(rest) <= cols:
+            lines.append(rest)
+            break
+        if len(lines) == 3:
+            lines.append(clip(rest, cols))
+            break
+        window = rest[:cols]
+        cut = window.rfind(", ")
+        if cut < 24:
+            cut = window.rfind(" ")
+        if cut < 24:
+            lines.append(clip(rest, cols))
+            break
+        lines.append(rest[: cut + 1])
+        rest = "      " + rest[cut + 2 :]
+    return lines
+
+
+def emit(text: str, color: str) -> None:
+    for line in wrap_text(text):
+        say(f"{color}{line}{RST}")
+
+
+def display_args(arguments: dict) -> dict:
+    shown: dict = {}
+    for key in _ARG_ORDER:
+        if key not in arguments:
+            continue
+        value = arguments[key]
+        if value is None:
+            continue
+        if key == "check_duplicates" and value is True:
+            continue
+        if key == "include_outdated" and value is False:
+            continue
+        if key in {"from_id", "to_id", "fact_id", "node_id"} and isinstance(value, str):
+            value = value[:8] + "…"
+        if key == "similarity_threshold" and isinstance(value, float):
+            value = rounded(value)
+        shown[key] = value
+    return shown
+
+
+def response_excerpt(name: str, payload: dict) -> dict:
+    if payload.get("code") == "memory_duplicate":
+        dups = payload.get("possible_duplicates") or []
+        excerpt: dict = {"code": "memory_duplicate"}
+        if dups and dups[0].get("similarity") is not None:
+            excerpt["similarity"] = rounded(dups[0]["similarity"])
+        return excerpt
+    if name == "search":
+        raw_rows = (payload.get("results") or [])[:2]
+        shown_ids = {str(row.get("node_id")) for row in raw_rows if row.get("node_id")}
+        rows = []
+        for row in raw_rows:
+            item: dict = {"text": clip(str(row.get("text") or ""), 56)}
+            if row.get("similarity") is not None:
+                item["similarity"] = rounded(row["similarity"])
+            if row.get("status") not in (None, "active"):
+                item["status"] = row.get("status")
+            rows.append(item)
+        excerpt = {"results": rows}
+        pairs = []
+        for pair in payload.get("contradiction_pairs") or []:
+            ends = {str(pair.get("from_id")), str(pair.get("to_id"))}
+            if ends <= shown_ids:
+                pairs.append(
+                    {"relation_type": pair.get("relation_type") or "CONTRADICTS"}
+                )
+        if pairs:
+            excerpt["contradiction_pairs"] = pairs
+        return excerpt
+    if name == "get_context":
+        nodes = [
+            {"text": clip(str(node.get("text") or ""), 48)}
+            for node in (payload.get("nodes") or [])[:3]
+        ]
+        edges = [
+            {"relation_type": edge.get("relation_type")}
+            for edge in (payload.get("edges") or [])[:2]
+        ]
+        return {"nodes": nodes, "edges": edges}
+    if name == "create_node":
+        node = payload.get("node") or {}
+        if node:
+            shown = {"text": clip(str(node.get("text") or ""), 56)}
+            if node.get("node_type") not in (None, "Fact"):
+                shown["node_type"] = node.get("node_type")
+            if node.get("status"):
+                shown["status"] = node.get("status")
+            return {"node": shown}
+    if name == "mark_outdated":
+        node = payload.get("node") or {}
+        return {"success": True, "status": node.get("status") or "outdated"}
+    if name == "create_relation":
+        return {
+            "success": bool(payload.get("success", True)),
+            "relation_type": payload.get("relation_type"),
+        }
+    if payload.get("success") is False or payload.get("error"):
+        excerpt = {"success": False}
+        if payload.get("code"):
+            excerpt["code"] = payload.get("code")
+        if payload.get("error"):
+            excerpt["error"] = clip(str(payload.get("error")), 72)
+        return excerpt
+    return {"success": bool(payload.get("success", True))}
+
+
+def render_request(name: str, arguments: dict) -> None:
+    body = display_args(arguments)
+    call = f"{name} {dumps(body)}" if body else name
+    emit(f"    → {call}", CYAN)
+
+
+def render_response(name: str, payload: dict) -> None:
+    emit(f"    ← {dumps(response_excerpt(name, payload))}", DIM)
+
+
 def as_dict(result) -> dict:
     structured = getattr(result, "structuredContent", None)
     if isinstance(structured, dict):
@@ -141,12 +316,20 @@ def as_dict(result) -> dict:
 
 
 class Tools:
-    def __init__(self, session: ClientSession):
+    def __init__(self, session: ClientSession, *, show: bool = False):
         self.session = session
+        self.show = show
 
     async def call(self, name: str, arguments: dict) -> dict:
+        if self.show:
+            render_request(name, arguments)
+            hold(0.45)
         result = await self.session.call_tool(name, arguments=arguments)
-        return as_dict(result)
+        payload = as_dict(result)
+        if self.show:
+            render_response(name, payload)
+            hold(0.55)
+        return payload
 
 
 def require_node(payload: dict, what: str) -> str:
@@ -180,7 +363,7 @@ def row_text(row: dict) -> str:
 
 
 def begin(title: str, subtitle: str = "") -> None:
-    say("\033[?25l\033[2J\033[H")
+    say("")
     say(f"{BOLD}{WHITE}{title}{RST}", PAUSE_STEP)
     if subtitle:
         say(f"{DIM}{subtitle}{RST}", PAUSE_BEAT)
@@ -191,10 +374,6 @@ def step(number: int, title: str) -> None:
     say(f"{BOLD}{CYAN}{number:>2}  {title}{RST}", PAUSE_STEP)
 
 
-def tool(name: str) -> None:
-    say(f"{DIM}    {name}{RST}", PAUSE_BEAT)
-
-
 def reset_owner() -> None:
     base = SERVER_URL.removesuffix("/mcp")
     try:
@@ -203,6 +382,44 @@ def reset_owner() -> None:
         fail(f"reset owner failed: {exc}")
     if response.status_code not in (200, 404):
         fail(f"reset owner failed: {response.status_code} {response.text}")
+
+
+async def list_tool_count(session: ClientSession) -> int:
+    count = 0
+    cursor = None
+    while True:
+        if cursor is None:
+            page = await session.list_tools()
+        else:
+            page = await session.list_tools(
+                params=PaginatedRequestParams(cursor=cursor)
+            )
+        count += len(page.tools)
+        cursor = page.nextCursor
+        if not cursor:
+            return count
+
+
+async def announce(session: ClientSession, init) -> None:
+    """Print the live initialize result and tool count. No screen clear."""
+    info = init.serverInfo
+    name = str(getattr(info, "name", "") or "")
+    version = str(getattr(info, "version", "") or "")
+    if not name or not version:
+        fail(f"initialize missing serverInfo: {info!r}")
+    print("\033[?25l", end="", flush=True)
+    pause = header_pause()
+    say(f"{BOLD}MCP client{RST}  →  graph-memory-mcp  {SERVER_URL}", pause)
+    say(f"{DIM}serverInfo{RST}     name={dumps(name)}  version={dumps(version)}", pause)
+    count = await list_tool_count(session)
+    if count < 1:
+        fail("list_tools returned no tools")
+    say(f"{DIM}list_tools{RST}     {count} tools", pause)
+    say(
+        f"{DIM}server{RST}         already running · "
+        "uv run graph-memory-mcp --host 127.0.0.1 --port 8000",
+        pause,
+    )
 
 
 async def prepare(tools: Tools) -> None:
@@ -338,58 +555,6 @@ def require_current_only(rows: list[dict], *, what: str) -> None:
         fail(f"{what}: outdated Component X was returned")
 
 
-async def scenario_sparse(tools: Tools) -> None:
-    configure_pace(1.35, 0.78, 1.6)
-    begin("Graph Memory MCP")
-    reset_owner()
-
-    step(1, "Save the decision")
-    tool("create_node")
-    old_id = await create_fact(tools, TEXT_X, created_by="alice")
-    say(f"    {TEXT_X}", PAUSE_BEAT)
-    say(f"    {GREEN}✓{RST}  saved", PAUSE_BEAT)
-
-    step(2, "Link it to the service")
-    tool("create_node · create_relation")
-    service_id = await create_service(tools)
-    await link(tools, old_id, service_id, "RELATED_TO")
-    say(f"    decision  {CYAN}→ RELATED_TO →{RST}  service", PAUSE_BEAT)
-    say(f"    {GREEN}✓{RST}  linked", PAUSE_BEAT)
-
-    step(3, "Migrate and mark the old one outdated")
-    tool("create_node · mark_outdated")
-    await create_fact(tools, TEXT_Y, created_by="bob")
-    await mark_old(tools, old_id)
-    say(f"    {TEXT_Y}", PAUSE_BEAT)
-    say(f"    {YELLOW}outdated{RST}  Component X", PAUSE_BEAT)
-
-    step(4, "Search returns only the current decision")
-    tool("search")
-    found = await search(
-        tools,
-        QUERY_GATEWAY,
-        limit=5,
-        node_types=["Fact"],
-    )
-    rows = result_rows(found)
-    require_current_only(rows, what="sparse search")
-    say(f"    {WHITE}{TEXT_Y}{RST}", PAUSE_BEAT)
-
-    step(5, "Near-duplicate refused")
-    tool("create_node")
-    duplicate = await tools.call(
-        "create_node",
-        {
-            "text": TEXT_Y_DUP,
-            "metadata": {"project": "api"},
-            "owner_id": OWNER,
-        },
-    )
-    similarity = _refused_similarity(duplicate, what="sparse dedup")
-    say(f"    {YELLOW}refused{RST}  similarity {similarity:.3f}", PAUSE_END)
-    set_status(True)
-
-
 def _refused_similarity(duplicate: dict, *, what: str) -> float:
     if duplicate.get("node"):
         fail(f"{what}: near-duplicate was stored")
@@ -403,20 +568,17 @@ def _refused_similarity(duplicate: dict, *, what: str) -> float:
 
 
 async def scenario_contradictions(tools: Tools) -> None:
-    configure_pace(1.15, 1.15, 1.8)
+    configure_pace(1.4, 1.15, 1.5)
     begin(
         "Contradiction the agent marked",
         "The agent created CONTRADICTS. The server does not detect it.",
     )
-    tool("search")
-    say(f'    "{QUERY_RATE}"', PAUSE_BEAT)
+    step(1, "Search returns both rate limits")
     found = await search(tools, QUERY_RATE, limit=5, node_types=["Fact"])
     rows = result_rows(found)
     shown = [row for row in rows if "rate limit" in row_text(row).lower()]
     if len(shown) < 2:
         shown = rows
-    for row in shown[:2]:
-        say(f"    {row_text(row)}", PAUSE_BEAT)
     pairs = found.get("contradiction_pairs") or []
     if len(pairs) < 1:
         fail(f"contradictions: no pair in search results {texts_of(rows)}")
@@ -438,18 +600,25 @@ async def scenario_contradictions(tools: Tools) -> None:
 
 
 async def scenario_lifecycle(tools: Tools) -> None:
-    configure_pace(1.15, 1.15, 1.8)
+    configure_pace(0.95, 0.75, 1.05)
     begin("Outdating and dedup")
-    tool("search")
-    say(f'    "{QUERY_GATEWAY}"', PAUSE_BEAT)
-    found = await search(tools, QUERY_GATEWAY, limit=5, node_types=["Fact"])
+    step(1, "Search returns the current decision")
+    found = await search(
+        tools,
+        QUERY_GATEWAY,
+        limit=5,
+        node_types=["Fact"],
+        similarity_threshold=0.80,
+    )
     rows = result_rows(found)
     require_current_only(rows, what="lifecycle search")
-    say(f"    {WHITE}{TEXT_Y}{RST}", PAUSE_BEAT)
+    say(f"    {GREEN}✓{RST}  current decision", PAUSE_BEAT * 0.35)
+
+    step(2, "Component X is stored as outdated")
     hidden = await search(
         tools,
         "Component X for routing",
-        limit=5,
+        limit=2,
         include_outdated=True,
         node_types=["Fact"],
     )
@@ -463,9 +632,9 @@ async def scenario_lifecycle(tools: Tools) -> None:
         fail(
             f"lifecycle: Component X is not stored as outdated ({texts_of(hidden_rows)})"
         )
-    say("    Component X is outdated, so search leaves it out", PAUSE_BEAT)
+    say("    the first search leaves it out", PAUSE_BEAT * 0.35)
 
-    tool("create_node")
+    step(3, "Near-duplicate refused")
     duplicate = await tools.call(
         "create_node",
         {
@@ -475,22 +644,27 @@ async def scenario_lifecycle(tools: Tools) -> None:
         },
     )
     similarity = _refused_similarity(duplicate, what="lifecycle dedup")
-    say(f"    {YELLOW}refused{RST}  similarity {similarity:.3f}", PAUSE_END)
+    say(f"    {YELLOW}refused{RST}  similarity {rounded(similarity):.3f}", PAUSE_END)
     set_status(True)
 
 
 async def scenario_retrieval(tools: Tools) -> None:
-    configure_pace(1.15, 1.15, 1.8)
+    configure_pace(1.15, 0.95, 1.25)
     begin("Search, then the graph")
-    tool("search")
-    say(f'    "{QUERY_GATEWAY}"', PAUSE_BEAT)
-    found = await search(tools, QUERY_GATEWAY, limit=5)
+    step(1, "Search for the gateway decision")
+    found = await search(
+        tools,
+        QUERY_GATEWAY,
+        limit=5,
+        node_types=["Fact"],
+        similarity_threshold=0.80,
+    )
     rows = result_rows(found)
     require_current_only(rows, what="retrieval search")
     current = next(row for row in rows if TEXT_Y in row_text(row))
-    say(f"    {WHITE}{TEXT_Y}{RST}", PAUSE_BEAT)
+    say(f"    {GREEN}✓{RST}  current decision", PAUSE_BEAT * 0.35)
 
-    tool("get_context")
+    step(2, "get_context shows the related service")
     context = await tools.call(
         "get_context",
         {"node_id": current["node_id"], "owner_id": OWNER, "depth": 1},
@@ -510,21 +684,17 @@ async def scenario_retrieval(tools: Tools) -> None:
         fail("retrieval: outdated Component X was included")
     if len(edges) < 1:
         fail("retrieval: context has no edges")
-    for text in neighbor_texts:
-        say(f"    {CYAN}→{RST}  {text}", PAUSE_BEAT)
-    say(f"    {GREEN}✓{RST}  {counted(len(edges), 'edge')}", PAUSE_END)
+    say(f"    {GREEN}✓{RST}  {counted(len(edges), 'edge')} · {TEXT_SERVICE}", PAUSE_END)
     set_status(True)
 
 
 async def scenario_dense(tools: Tools) -> None:
-    configure_pace(0.55, 0.18, 1.6)
+    configure_pace(0.42, 0.14, 1.2)
     begin("Graph Memory MCP")
-    say(f"{DIM}{SERVER_URL}{RST}", 0.2)
-    say("Scenario: Team decides API gateway component", 0.3)
+    say("Scenario: Team decides API gateway component", PAUSE_BEAT)
     reset_owner()
 
     step(1, "Alice decides: API gateway uses Component X")
-    tool("create_node")
     decision_old = await tools.call(
         "create_node",
         {
@@ -534,26 +704,20 @@ async def scenario_dense(tools: Tools) -> None:
         },
     )
     old_id = require_node(decision_old, "create_node decision")
-    say(f"    {TEXT_X}", PAUSE_BEAT)
-    say(f"    {GREEN}✓{RST}  saved {short_id(old_id)}", PAUSE_BEAT)
+    say(f"    {GREEN}✓{RST}  saved {short_id(old_id)}", PAUSE_BEAT * 0.4)
 
     step(2, "Create service node: API Gateway Service")
-    tool("create_node  Entity")
     service_id = await create_service(tools)
-    say(f"    {GREEN}✓{RST}  saved {short_id(service_id)}", PAUSE_BEAT)
+    say(f"    {GREEN}✓{RST}  saved {short_id(service_id)}", PAUSE_BEAT * 0.4)
 
     step(3, "Link: decision RELATED_TO service")
-    tool("create_relation")
     await link(tools, old_id, service_id, "RELATED_TO")
     say(
         f"    {short_id(old_id)}  {CYAN}→ RELATED_TO →{RST}  {short_id(service_id)}",
-        PAUSE_BEAT,
+        PAUSE_BEAT * 0.4,
     )
-    say(f"    {GREEN}✓{RST}  linked", PAUSE_BEAT)
 
     step(4, "Search miss → write-back loop")
-    tool("search  threshold 0.80")
-    say(f'    "{QUERY_PORT}"', PAUSE_BEAT)
     search_miss = await search(
         tools,
         QUERY_PORT,
@@ -561,11 +725,9 @@ async def scenario_dense(tools: Tools) -> None:
         similarity_threshold=0.80,
     )
     miss_rows = result_rows(search_miss)
-    say(f"    {counted(len(miss_rows), 'result')}", PAUSE_BEAT)
-    say(f"{DIM}    create_node{RST}  write the answer back", PAUSE_BEAT)
+    say(f"    {counted(len(miss_rows), 'result')}", PAUSE_BEAT * 0.3)
     writeback_id = await create_fact(tools, TEXT_PORT, source="config/staging.yaml")
-    say(f"    {GREEN}✓{RST}  saved {short_id(writeback_id)}", PAUSE_BEAT)
-    say(f"{DIM}    search{RST}  same question", PAUSE_BEAT)
+    say(f"    {GREEN}✓{RST}  saved {short_id(writeback_id)}", PAUSE_BEAT * 0.3)
     search_hit = await search(
         tools,
         QUERY_PORT,
@@ -573,16 +735,15 @@ async def scenario_dense(tools: Tools) -> None:
         similarity_threshold=0.80,
     )
     hits = result_rows(search_hit)
-    say(f"    {counted(len(hits), 'result')}", PAUSE_BEAT)
+    say(f"    {counted(len(hits), 'result')}", PAUSE_BEAT * 0.3)
     if hits:
-        say(f"    {WHITE}{clip(row_text(hits[0]))}{RST}", 0.45)
+        say(f"    {WHITE}{clip(row_text(hits[0]))}{RST}", PAUSE_BEAT * 0.4)
     if len(miss_rows) != 0:
         fail(f"dense: expected a search miss, got {texts_of(miss_rows)}")
     if not hits or hits[0].get("node_id") != writeback_id:
         fail("dense: write-back was not the top search hit")
 
     step(5, "Get context: what affects the service?")
-    tool("get_context")
     context = await tools.call(
         "get_context",
         {"node_id": service_id, "owner_id": OWNER, "depth": 1},
@@ -593,76 +754,70 @@ async def scenario_dense(tools: Tools) -> None:
     edges = context.get("edges") or []
     say(
         f"    {counted(len(nodes), 'node')}, {counted(len(edges), 'edge')}",
-        PAUSE_BEAT,
+        PAUSE_BEAT * 0.4,
     )
     for node in nodes:
         if node.get("node_id") != service_id:
-            say(f"    {CYAN}→{RST}  {clip(str(node.get('text', '')))}", PAUSE_BEAT)
+            say(
+                f"    {CYAN}→{RST}  {clip(str(node.get('text', '')))}", PAUSE_BEAT * 0.3
+            )
 
     step(6, "Bob migrates to Component Y")
-    tool("create_node")
     new_id = await create_fact(tools, TEXT_Y, created_by="bob")
-    say(f"    {GREEN}✓{RST}  saved {short_id(new_id)}", PAUSE_BEAT)
+    say(f"    {GREEN}✓{RST}  saved {short_id(new_id)}", PAUSE_BEAT * 0.3)
 
     step(7, "Mark old decision outdated")
-    tool("mark_outdated")
     await mark_old(tools, old_id)
-    say(f"    {YELLOW}outdated{RST}  {short_id(old_id)}", PAUSE_BEAT)
+    say(f"    {YELLOW}outdated{RST}  {short_id(old_id)}", PAUSE_BEAT * 0.3)
 
     step(8, "Link: new FOLLOWS_FROM old")
-    tool("create_relation")
     await link(tools, new_id, old_id, "FOLLOWS_FROM")
     say(
         f"    {short_id(new_id)}  {CYAN}→ FOLLOWS_FROM →{RST}  {short_id(old_id)}",
-        PAUSE_BEAT,
+        PAUSE_BEAT * 0.3,
     )
 
     step(9, "Search 'API gateway' excludes outdated")
-    tool("search")
     search_gateway = await search(tools, QUERY_GATEWAY, limit=5, include_outdated=False)
     gateway_hits = result_rows(search_gateway)
-    say(f"    {counted(len(gateway_hits), 'result')}", PAUSE_BEAT)
+    say(f"    {counted(len(gateway_hits), 'result')}", PAUSE_BEAT * 0.25)
     for index, row in enumerate(gateway_hits[:2], 1):
         status = row.get("status") or "active"
         say(
             f"    [{index}] ({status}) {clip(row_text(row), 52)}",
-            PAUSE_BEAT,
+            PAUSE_BEAT * 0.25,
         )
 
     step(10, "Contradicting facts: rate limits")
-    tool("create_node")
     rate1_id = await create_fact(tools, TEXT_RATE_HI)
-    say(f"    {GREEN}✓{RST}  {short_id(rate1_id)}  1000 req/min", PAUSE_BEAT)
+    say(f"    {GREEN}✓{RST}  {short_id(rate1_id)}  1000 req/min", PAUSE_BEAT * 0.25)
     rate2_id = await create_fact(tools, TEXT_RATE_LO, check_duplicates=False)
-    say(f"    {GREEN}✓{RST}  {short_id(rate2_id)}  500 req/min", PAUSE_BEAT)
+    say(f"    {GREEN}✓{RST}  {short_id(rate2_id)}  500 req/min", PAUSE_BEAT * 0.25)
 
     step(11, "Agent marks contradiction")
-    tool("create_relation  CONTRADICTS")
     await link(tools, rate1_id, rate2_id, "CONTRADICTS")
     say(
         f"    {short_id(rate1_id)}  {YELLOW}↔{RST}  {short_id(rate2_id)}",
-        PAUSE_BEAT,
+        PAUSE_BEAT * 0.3,
     )
 
     step(12, "Search returns the contradiction pair")
-    tool("search")
     search_rates = await search(tools, QUERY_RATE, limit=5)
     rate_rows = result_rows(search_rates)
     pairs = search_rates.get("contradiction_pairs") or []
     say(
         f"    {counted(len(rate_rows), 'result')}, "
         f"{counted(len(pairs), 'contradiction pair', 'contradiction pairs')}",
-        PAUSE_BEAT,
+        PAUSE_BEAT * 0.3,
     )
     for pair in pairs:
         say(
             f"    {YELLOW}⚠{RST}  {short_id(str(pair.get('from_id', '')))}"
             f"  ↔  {short_id(str(pair.get('to_id', '')))}",
-            PAUSE_BEAT,
+            PAUSE_BEAT * 0.25,
         )
 
     step(13, "Write-time dedup: near-duplicate")
-    tool("create_node")
     duplicate = await tools.call(
         "create_node",
         {
@@ -680,10 +835,10 @@ async def scenario_dense(tools: Tools) -> None:
     else:
         say(
             f"    {YELLOW}refused{RST}  {duplicate.get('code') or 'duplicate'}",
-            PAUSE_BEAT,
+            PAUSE_BEAT * 0.4,
         )
         if dups:
-            say(f"    similarity {similarity:.3f}  threshold 0.92", 0.4)
+            say(f"    similarity {rounded(similarity):.3f}  threshold 0.92", PAUSE_BEAT)
 
     context_has_decision = any(
         "Component X" in str(node.get("text", "")) for node in nodes
@@ -696,11 +851,11 @@ async def scenario_dense(tools: Tools) -> None:
         return f"{GREEN}✓{RST}" if ok else f"{YELLOW}✗{RST}"
 
     say("")
-    say(f"{BOLD}Demo complete{RST}", 0.2)
-    say(f"    write-back after miss   {mark(True)}", 0.12)
-    say(f"    graph traversal         {mark(context_has_decision)}", 0.12)
-    say(f"    outdated excluded       {mark(outdated_excluded)}", 0.12)
-    say(f"    contradiction surfaced  {mark(contradictions_found)}", 0.12)
+    say(f"{BOLD}Demo complete{RST}", 0.15)
+    say(f"    write-back after miss   {mark(True)}", 0.08)
+    say(f"    graph traversal         {mark(context_has_decision)}", 0.08)
+    say(f"    outdated excluded       {mark(outdated_excluded)}", 0.08)
+    say(f"    contradiction surfaced  {mark(contradictions_found)}", 0.08)
     say(f"    near-duplicate refused  {mark(dedup_refused)}", PAUSE_END)
 
     if not all(
@@ -712,6 +867,50 @@ async def scenario_dense(tools: Tools) -> None:
         ]
     ):
         fail("dense checks failed")
+    set_status(True)
+
+
+async def scenario_sparse_run(tools: Tools) -> None:
+    configure_pace(1.4, 0.95, 1.5)
+    begin("Graph Memory MCP")
+    reset_owner()
+
+    step(1, "Save the decision")
+    old_id = await create_fact(tools, TEXT_X, created_by="alice")
+    say(f"    {GREEN}✓{RST}  saved", PAUSE_BEAT * 0.35)
+
+    step(2, "Link it to the service")
+    service_id = await create_service(tools)
+    await link(tools, old_id, service_id, "RELATED_TO")
+    say(f"    decision  {CYAN}→ RELATED_TO →{RST}  service", PAUSE_BEAT * 0.35)
+
+    step(3, "Migrate and mark the old one outdated")
+    await create_fact(tools, TEXT_Y, created_by="bob")
+    await mark_old(tools, old_id)
+    say(f"    {YELLOW}outdated{RST}  Component X", PAUSE_BEAT * 0.35)
+
+    step(4, "Search returns only the current decision")
+    found = await search(
+        tools,
+        QUERY_GATEWAY,
+        limit=5,
+        node_types=["Fact"],
+    )
+    rows = result_rows(found)
+    require_current_only(rows, what="sparse search")
+    say(f"    {GREEN}✓{RST}  current decision", PAUSE_BEAT * 0.35)
+
+    step(5, "Near-duplicate refused")
+    duplicate = await tools.call(
+        "create_node",
+        {
+            "text": TEXT_Y_DUP,
+            "metadata": {"project": "api"},
+            "owner_id": OWNER,
+        },
+    )
+    similarity = _refused_similarity(duplicate, what="sparse dedup")
+    say(f"    {YELLOW}refused{RST}  similarity {rounded(similarity):.3f}", PAUSE_END)
     set_status(True)
 
 
@@ -732,13 +931,14 @@ async def main() -> None:
         parser.error("--scenario is required unless --prepare is set")
 
     runners = {
-        "sparse": scenario_sparse,
+        "sparse": scenario_sparse_run,
         "dense": scenario_dense,
         "seed": seed_story,
         "contradictions": scenario_contradictions,
         "lifecycle": scenario_lifecycle,
         "retrieval": scenario_retrieval,
     }
+    recorded = bool(args.scenario) and args.scenario != "seed" and not args.prepare
 
     timeout = httpx.Timeout(120.0, connect=10.0)
     try:
@@ -749,8 +949,10 @@ async def main() -> None:
                 _session_id,
             ):
                 async with ClientSession(read, write) as session:
-                    await session.initialize()
-                    tools = Tools(session)
+                    init = await session.initialize()
+                    tools = Tools(session, show=recorded)
+                    if recorded:
+                        await announce(session, init)
                     if args.prepare:
                         await prepare(tools)
                         return

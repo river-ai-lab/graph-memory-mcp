@@ -1,7 +1,9 @@
 #!/bin/bash
 #
-# Record demo GIFs against a running ArcadeDB and Graph Memory MCP server.
-# One command records every scenario. Pass a scenario name to record just that one.
+# Record demo GIFs of a real MCP client session against a live server.
+# session.sh types the client command at a shell prompt; generate_demo.py
+# prints initialize, list_tools, and each tool call. Pass a scenario name
+# to record just that one.
 #
 #   ./assets/demo/record.sh
 #   ./assets/demo/record.sh sparse
@@ -17,16 +19,21 @@ SERVER_PID_FILE="${TMPDIR:-/tmp}/graph-memory-demo-server.pid"
 STATUS_FILE="${TMPDIR:-/tmp}/graph-memory-demo-status"
 MAX_BYTES=$((2 * 1024 * 1024))
 
-# name gif cols rows font last_frame seed(yes/no)
+# name gif cols rows font last_frame seed(yes/no) fps
+# Rows fit the shell prompt plus the client transcript, except dense, which scrolls.
 TAKES=(
-  "sparse demo.gif 80 26 22 2.0 no"
-  "dense demo_dense.gif 88 26 22 2.5 no"
-  "contradictions demo_contradictions.gif 76 14 24 1.2 yes"
-  "lifecycle demo_lifecycle.gif 76 16 24 1.2 yes"
-  "retrieval demo_retrieval.gif 76 14 24 1.2 yes"
+  "sparse demo.gif 108 44 20 2.0 no 10"
+  "dense demo_dense.gif 104 28 18 1.6 no 6"
+  "contradictions demo_contradictions.gif 108 18 20 2.2 yes 10"
+  "lifecycle demo_lifecycle.gif 108 30 20 1.3 yes 10"
+  "retrieval demo_retrieval.gif 108 23 20 1.8 yes 10"
 )
 
 ONLY="${1:-all}"
+
+# A previous shell can export zero pauses and shrink every GIF. Recording uses
+# the paces in generate_demo.py and the typing delay in session.sh.
+unset DEMO_PAUSE_STEP DEMO_PAUSE_BEAT DEMO_PAUSE_END DEMO_PAUSE_HEADER DEMO_TYPE_DELAY
 
 echo "=== Graph Memory Demo Recorder ==="
 echo ""
@@ -180,6 +187,7 @@ record_one() {
     local font="$5"
     local last_frame="$6"
     local seeded="$7"
+    local fps="$8"
     local gif="$SCRIPT_DIR/$gif_name"
     local cast="$SCRIPT_DIR/${name}.cast"
 
@@ -197,7 +205,7 @@ record_one() {
         --overwrite \
         --cols "$cols" \
         --rows "$rows" \
-        --command "uv run python assets/demo/generate_demo.py --scenario ${name}" \
+        --command "bash assets/demo/session.sh ${name}" \
         --quiet
 
     if [ ! -f "$STATUS_FILE" ] || ! grep -qx "ok" "$STATUS_FILE"; then
@@ -213,7 +221,7 @@ record_one() {
         --font-size "$font" \
         --line-height 1.32 \
         --speed 1.0 \
-        --fps-cap 10 \
+        --fps-cap "$fps" \
         --last-frame-duration "$last_frame"
 
     if command -v gifsicle >/dev/null 2>&1; then
@@ -241,18 +249,32 @@ record_one() {
         echo "❌ ${gif_name} is over 2 MB"
         exit 1
     fi
+    python3 - "$name" "${duration%s}" <<'PY'
+import sys
+name, raw = sys.argv[1], sys.argv[2]
+value = float(raw)
+bounds = {
+    "sparse": (20.0, 25.0),
+    "contradictions": (10.0, 15.0),
+    "lifecycle": (10.0, 15.0),
+    "retrieval": (10.0, 15.0),
+}
+lo, hi = bounds.get(name, (0.0, 1000.0))
+if not lo <= value <= hi:
+    sys.exit(f"❌ {name} duration {value:.1f}s is outside {lo:.0f}–{hi:.0f}s")
+PY
     echo ""
 }
 
 echo "[4/5] Recording..."
 found=0
 for spec in "${TAKES[@]}"; do
-    read -r name gif_name cols rows font last_frame seeded <<<"$spec"
+    read -r name gif_name cols rows font last_frame seeded fps <<<"$spec"
     if [ "$ONLY" != "all" ] && [ "$ONLY" != "$name" ]; then
         continue
     fi
     found=1
-    record_one "$name" "$gif_name" "$cols" "$rows" "$font" "$last_frame" "$seeded"
+    record_one "$name" "$gif_name" "$cols" "$rows" "$font" "$last_frame" "$seeded" "$fps"
 done
 
 if [ "$found" -ne 1 ]; then

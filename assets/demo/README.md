@@ -1,6 +1,10 @@
 # Demo Assets
 
-Terminal recordings of a running Graph Memory MCP server. `record.sh` starts ArcadeDB, starts the server, and records every scenario with asciinema and agg (monokai, JetBrains Mono).
+These GIFs are recorded from a real MCP client session against a live Graph Memory MCP server. Each one starts at a shell prompt, types `uv run python assets/demo/generate_demo.py --scenario <name>`, and runs that command. The client connects to `http://127.0.0.1:8000/mcp`, prints the server name and version from `initialize`, prints the tool count from `list_tools`, then shows every tool call as `→ name {arguments}` and a trimmed excerpt of the JSON response as `← {...}`. Arguments omit `owner_id`. Ids in the excerpt are prefixes of the ids the server returned. Similarity scores are the live scores, rounded to three decimals.
+
+The server process is already listening. The GIF notes `uv run graph-memory-mcp --host 127.0.0.1 --port 8000` instead of typing a server command that does not run.
+
+`record.sh` starts ArcadeDB, starts the server, and records every scenario with asciinema and agg (monokai, JetBrains Mono). `session.sh` is the prompt the recorder types.
 
 The README uses the short GIF. The 13-step take is `demo_dense.gif`. Three shorter GIFs are for a landing page. They share one seeded API-gateway story (same owner): Component X marked outdated, Component Y linked to the API Gateway Service, and two rate-limit facts with a CONTRADICTS edge the agent created. The server does not detect contradictions.
 
@@ -22,7 +26,7 @@ Record a single scenario with `./assets/demo/record.sh sparse` (also `dense`, `c
 4. Starts `graph-memory-mcp` on `127.0.0.1:8000` when that port is free, and waits until `/admin/health` responds. The first start loads the local embedding model; that wait is not part of the GIF
 5. Warms indexes with `--prepare`
 6. For each scenario, resets owner `demo_team`. The three landing-page scenarios then run `--scenario seed` (not recorded) so they share one dataset
-7. Records `generate_demo.py --scenario <name>` with asciinema. The script calls the live MCP tools and exits non-zero when a check fails
+7. Records `session.sh <name>` with asciinema. That script types and runs `generate_demo.py --scenario <name>`. The client calls the live MCP server and exits non-zero when a check fails. Sparse must land at 20–25 s. Each landing-page GIF must land at 10–15 s
 8. Converts with agg (monokai, JetBrains Mono, large font). `gifsicle` optimizes the GIF when it is installed
 9. Removes the temporary cast and refuses a GIF at or over 2 MB
 
@@ -81,7 +85,8 @@ Search for the gateway component, then `get_context` on that decision shows the 
 ## Files
 
 - `record.sh`: Records every GIF (or one scenario name)
-- `generate_demo.py`: Scenarios, the shared seed, and checks
+- `session.sh`: Shell prompt that types the client command, then runs it
+- `generate_demo.py`: MCP client, scenarios, the shared seed, and checks
 - `demo.gif`: Sparse README recording
 - `demo_dense.gif`: 13-step recording
 - `demo_contradictions.gif`, `demo_lifecycle.gif`, `demo_retrieval.gif`: Landing-page clips
