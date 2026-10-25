@@ -24,12 +24,14 @@ def main():
     print(f"Using owner_id: {owner_id}\n")
 
     # Ensure vector indexes exist before semantic search.
-    server.ensure_vector_indexes()
+    # ensure_indexes_status is always on the server. The MCP tool of the
+    # same job is registered only when MCP_EXPOSE_ADMIN_TOOLS is set.
+    server.ensure_indexes_status()
 
     # --- Create a Fact ---
     print("1. Creating a fact...")
     result = server.create_node(
-        text="FastMCP allows running MCP servers directly in Python.",
+        text="The MCP server can run inside a Python process.",
         node_type="Fact",
         metadata={"source": "integration_example"},
         owner_id=owner_id,

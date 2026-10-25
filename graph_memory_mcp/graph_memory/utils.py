@@ -249,7 +249,15 @@ def validate_inputs(inputs: dict[str, Any], config: Any) -> Optional[str]:
     Returns:
         Error message if validation fails, None otherwise
     """
+    from graph_memory_mcp.graph_memory.owner_scope import (
+        bound_key,
+        resolve_token_owner,
+    )
+
     for field, value in inputs.items():
+        if field == "owner_id" and bound_key() is not None:
+            requested = value if isinstance(value, str) and value.strip() else None
+            value = resolve_token_owner(requested)
         if value is not None and (validator := VALIDATORS.get(field)):
             if error := validator(value, config):
                 return error

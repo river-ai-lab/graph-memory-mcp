@@ -22,8 +22,8 @@ from graph_memory_mcp.server import GraphMemoryMCP
 
 
 def _extract_tool_json(result) -> dict:
-    """Extract JSON from MCP tool result (FastMCP returns list of content)."""
-    # If result is from FastMCP.call_tool, it's a list of TextContent objects
+    """Extract JSON from an MCP tool result."""
+    # call_tool may return a list of content blocks or a result with .content.
     if isinstance(result, list):
         if not result:
             return {}
@@ -325,7 +325,7 @@ async def test_error_handling_invalid_inputs(server_instance):
         )
         data = _extract_tool_json(result)
     except Exception:
-        pass  # FastMCP might raise validation error if text is missing but it's optional in signature (None default)
+        pass  # A create_node call that omits text is rejected.
 
     # Test 3: Create relation with non-existent nodes
     result = await server.mcp.call_tool(

@@ -29,8 +29,8 @@ from graph_memory_mcp.jobs.scheduler import shutdown_scheduler, start_scheduler
 
 logger = logging.getLogger(__name__)
 
-# mcp 1 enabled this when FastMCP host defaulted to 127.0.0.1. The uvicorn
-# bind address is separate and does not change the allowlist.
+# DNS-rebinding allowlist for the /mcp session. The uvicorn bind address is
+# separate and does not change this list.
 _TRANSPORT_SECURITY = TransportSecuritySettings(
     enable_dns_rebinding_protection=True,
     allowed_hosts=["127.0.0.1:*", "localhost:*", "[::1]:*"],

@@ -20,6 +20,7 @@ from typing import Any
 
 from graph_memory_mcp.base_server import _mcp_instructions
 from graph_memory_mcp.config import MCPServerConfig
+from graph_memory_mcp.graph_memory.owner_scope import resolve_token_owner
 from graph_memory_mcp.server import GraphMemoryMCP
 
 # Filled by the server from the bound API key. Not agent input.
@@ -46,9 +47,12 @@ def _without_server_owned(fn: Callable[..., Any]) -> Callable[..., Any]:
         bound = public.bind(*args, **kwargs)
         bound.apply_defaults()
         payload = dict(bound.arguments)
-        # Empty owner_id selects the key's first project in token mode.
+        # Resolve before the handler validates. An empty string is not an
+        # owner id, and --auth has no owner_id argument to choose a project,
+        # so the key's first project is the owner.
         for name in hidden:
-            payload[name] = ""
+            if name == "owner_id":
+                payload[name] = resolve_token_owner(None)
         return fn(**payload)
 
     wrapper.__signature__ = public  # type: ignore[attr-defined]

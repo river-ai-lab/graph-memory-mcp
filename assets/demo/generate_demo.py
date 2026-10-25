@@ -416,22 +416,18 @@ async def list_tool_count(session: ClientSession) -> int:
                 params=PaginatedRequestParams(cursor=cursor)
             )
         count += len(page.tools)
-        cursor = getattr(page, "nextCursor", None)
-        if cursor is None:
-            cursor = getattr(page, "next_cursor", None)
+        cursor = page.next_cursor
         if not cursor:
             return count
 
 
 async def announce(session: ClientSession, init) -> None:
     """Print the live initialize result and tool count. No screen clear."""
-    info = getattr(init, "serverInfo", None)
-    if info is None:
-        info = getattr(init, "server_info", None)
+    info = init.server_info
     name = str(getattr(info, "name", "") or "")
     version = str(getattr(info, "version", "") or "")
     if not name or not version:
-        fail(f"initialize missing serverInfo: {info!r}")
+        fail(f"initialize missing server info: {info!r}")
     print("\033[?25l", end="", flush=True)
     pause = header_pause()
     say(f"{BOLD}MCP client{RST}  →  graph-memory-mcp  {SERVER_URL}", pause)
