@@ -393,7 +393,7 @@ See [docs/features.md](docs/features.md) for details.
 
 ## Graph Explorer
 
-Local web UI for inspecting nodes, running searches, and exploring graph context. Requires a running MCP server.
+Local read-only web UI. It talks to a running MCP server: brief, search, recall, context, traces, and node details (status, validity, timestamps). CONTRADICTS and FOLLOWS_FROM are drawn. Node text on the map is **On hover** by default, or **Always** (short preview); the choice is stored in `localStorage`.
 
 ```bash
 # Terminal 1 — MCP server
@@ -403,7 +403,13 @@ uv run graph-memory-mcp --host 127.0.0.1 --port 8000
 uv run graph-memory-explorer --host 127.0.0.1 --port 8088
 ```
 
-Open http://127.0.0.1:8088 and enter an `owner_id` and `node_id` to start exploring.
+Open http://127.0.0.1:8088. Set `owner_id`, then search or load the brief. Against `graph-memory-mcp --auth`:
+
+```bash
+GRAPH_MEMORY_API_KEY=<key> uv run graph-memory-explorer --auth --host 127.0.0.1 --port 8088
+```
+
+The owner field is then bound by the key. `--token` is the same as the env var.
 
 ## Multi-agent usage
 

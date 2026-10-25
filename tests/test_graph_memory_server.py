@@ -712,9 +712,12 @@ def test_get_context_depth_zero_includes_anchor(memory_backend):
     )
 
     assert result["success"] is True
-    assert result["nodes"] == [
-        {"node_id": anchor_id, "node_type": "Fact", "text": "depth zero anchor"}
-    ]
+    assert len(result["nodes"]) == 1
+    node = result["nodes"][0]
+    assert node["node_id"] == anchor_id
+    assert node["node_type"] == "Fact"
+    assert node["text"] == "depth zero anchor"
+    assert node.get("status") == "active"
     assert result["edges"] == []
 
 

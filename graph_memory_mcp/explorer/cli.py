@@ -33,7 +33,26 @@ def main() -> None:
         default=os.environ.get("GRAPH_DIFF_PATH"),
         help="Optional graph-diff source checkout for map evolution analysis",
     )
+    parser.add_argument(
+        "--auth",
+        action="store_true",
+        help=(
+            "MCP server is graph-memory-mcp --auth. "
+            "Omit owner_id and send a Bearer API key."
+        ),
+    )
+    parser.add_argument(
+        "--token",
+        default=os.environ.get("GRAPH_MEMORY_API_KEY")
+        or os.environ.get("GRAPH_MEMORY_TOKEN"),
+        help=(
+            "Bearer API key for OWNER_SCOPE=token / --auth. "
+            "Prefer GRAPH_MEMORY_API_KEY."
+        ),
+    )
     args = parser.parse_args()
+    if args.auth and not args.token:
+        parser.error("--auth requires --token or GRAPH_MEMORY_API_KEY")
     if args.graph_diff_path:
         import sys
         from pathlib import Path
@@ -48,7 +67,14 @@ def main() -> None:
     from graph_memory_mcp.explorer.app import create_app
     from graph_memory_mcp.explorer.mcp_client import McpHttpClient
 
-    mcp_client = McpHttpClient(args.mcp_url)
+    headers = {}
+    if args.token:
+        headers["Authorization"] = f"Bearer {args.token}"
+    mcp_client = McpHttpClient(
+        args.mcp_url,
+        headers=headers,
+        hide_owner=True if args.auth else None,
+    )
     app = create_app(mcp_client)
 
     try:

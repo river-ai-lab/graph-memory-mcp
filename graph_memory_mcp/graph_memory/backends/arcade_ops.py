@@ -767,6 +767,9 @@ class ArcadeOps:
                         else record.get("created_at")
                     ),
                     record.get("access_count") or 0,
+                    record.get("status"),
+                    record.get("created_at"),
+                    record.get("metadata_str"),
                 ]
             )
         return rows
@@ -829,6 +832,9 @@ class ArcadeOps:
                             ),
                             other_rec.get("access_count") or 0,
                             [],
+                            other_rec.get("status"),
+                            other_rec.get("created_at"),
+                            other_rec.get("metadata_str"),
                         ],
                     }
                     slot = collected[uid]
@@ -895,7 +901,14 @@ class ArcadeOps:
         ordered = sorted(visited.items(), key=lambda item: item[0])
         page = ordered[int(offset) : int(offset) + int(limit)]
         return [
-            [rec.get("uid"), rec_label, rec.get("text")]
+            [
+                rec.get("uid"),
+                rec_label,
+                rec.get("text"),
+                rec.get("status"),
+                rec.get("created_at"),
+                rec.get("metadata_str"),
+            ]
             for _rid, (rec_label, rec) in page
         ]
 

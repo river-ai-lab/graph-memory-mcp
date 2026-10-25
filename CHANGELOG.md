@@ -6,6 +6,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- Explorer node text preview: **On hover** (default) or **Always**. Stored in `localStorage` as `gm_node_preview`. Always-mode labels hide when the map is zoomed out.
+- `graph-memory-explorer --auth` with `GRAPH_MEMORY_API_KEY` or `--token` for `graph-memory-mcp --auth`. Tool calls omit `owner_id`.
 - Token-mode API keys are a person (`name`) plus owner graphs (`projects`); writes record server-set `created_by` / `created_at` / `updated_by` / `updated_at`.
 - `OWNER_SCOPE=client` (default) keeps the tool `owner_id`. `OWNER_SCOPE=header` ignores it and requires `X-Owner-Id` on `/mcp`.
 - GROW ritual in the agent policies (Ground → Record → Orient → Write after meaningful work)
@@ -33,6 +35,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- Explorer search draws `CONTRADICTS` from `contradiction_pairs` and lists those pairs. Status "Any" includes outdated facts.
+- Explorer context expansion sends `include_outdated` and `include_ttl`, so FOLLOWS_FROM / outdated neighbors appear on the map.
+- Explorer details and search results show status, validity (`valid_from` / `valid_until`), TTL, and created/updated times. Unix-ms timestamps format correctly.
+- `get_context` / `recall_context` return `status`, `created_at`, and `metadata` on walk nodes.
+- Explorer styles `FOLLOWS_FROM` separately from related/mentions. Archived status has its own chip color.
 - `--auth` and token mode resolve `owner_id` from the API key before validation. A call that omits it uses the key's first project. `--auth` still ignores a caller-supplied `owner_id`.
 - `health_check` stays healthy when a sampled owner has data but no vector index. `vector_index_missing` lists those owners (up to 20). Search still creates the index.
 - The first write for an owner (`create_node`, `create_nodes`, `upsert_node`, `create_relation`, entity creation, `import_owner`) creates Fact and Entity vector indexes. Later writes reuse a per-owner cache. Search still creates a missing index.

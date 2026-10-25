@@ -23,6 +23,7 @@
       <section>
         <label for="owner-id">Memory owner</label>
         <div class="row owner-row"><input id="owner-id" type="text" value="default" placeholder="default" /><button id="btn-brief" type="button" class="secondary">Brief</button></div>
+        <p id="owner-bound" class="muted filter-note" hidden>Owner is bound by the API key.</p>
       </section>
       <section id="tour-section" hidden>
         <label>Model lenses · Luminaria</label>
@@ -47,18 +48,19 @@
         <section><label>Similar facts from your anchor</label><div class="row"><label class="inline" for="similar-limit">Results</label><input id="similar-limit" type="number" value="5" min="1" max="30" /><label class="inline" for="similar-threshold">Threshold</label><input id="similar-threshold" type="number" value="0.55" min="0" max="1" step="0.05" /></div><button id="btn-similar" type="button" class="secondary">Find similar</button></section>
       </details>
       <details class="sidebar-disclosure"><summary>Expand the map</summary><div class="row"><label class="inline" for="depth">Depth</label><input id="depth" type="number" value="1" min="0" max="3" /><label class="inline" for="max-nodes">Node limit</label><input id="max-nodes" type="number" value="10" min="1" max="50" /></div><div class="row"><button id="btn-context" type="button" class="secondary">Context</button><button id="btn-hop" type="button" class="secondary">+1 hop</button><button id="btn-clear" type="button" class="secondary">Clear map</button></div></details>
-      <details class="legend sidebar-disclosure"><summary>Relation legend</summary><ul class="legend-list"><li><span class="swatch swatch-contradicts"></span>Contradicts</li><li><span class="swatch swatch-summarizes"></span>Summarizes</li><li><span class="swatch swatch-triplet"></span>Domain relation</li><li><span class="swatch swatch-default"></span>Related / mentions</li><li><span class="swatch swatch-path"></span>Highlighted path</li></ul></details>
+      <details class="legend sidebar-disclosure"><summary>Relation legend</summary><ul class="legend-list"><li><span class="swatch swatch-contradicts"></span>Contradicts</li><li><span class="swatch swatch-follows"></span>Follows from</li><li><span class="swatch swatch-summarizes"></span>Summarizes</li><li><span class="swatch swatch-triplet"></span>Domain relation</li><li><span class="swatch swatch-default"></span>Related / mentions</li><li><span class="swatch swatch-path"></span>Highlighted path</li></ul></details>
       <details id="log-section" class="sidebar-disclosure"><summary>Activity log</summary><pre id="log"></pre></details>
     </aside>
 
     <main class="graph-wrap">
-      <div class="canvas-heading"><div><span class="eyebrow">KNOWLEDGE MAP</span><h2 id="map-title">Your memory</h2><span id="map-caption" class="muted">Select a node to read its full text.</span></div><div class="canvas-actions"><label class="chk"><input id="edge-labels" type="checkbox" /> Relations</label><button id="btn-inspector" type="button" class="secondary" aria-expanded="true" aria-controls="inspector-panel">Details</button></div></div>
+      <div class="canvas-heading"><div><span class="eyebrow">KNOWLEDGE MAP</span><h2 id="map-title">Your memory</h2><span id="map-caption" class="muted">Select a node to read its full text.</span></div><div class="canvas-actions"><label class="chk"><input id="edge-labels" type="checkbox" /> Relations</label><label class="inline preview-label" for="node-preview">Text</label><select id="node-preview" aria-label="Node text preview"><option value="hover" selected>On hover</option><option value="always">Always</option></select><button id="btn-inspector" type="button" class="secondary" aria-expanded="true" aria-controls="inspector-panel">Details</button></div></div>
       <div id="cy" role="img" aria-label="Interactive knowledge graph"></div>
-      <div id="graph-empty" class="graph-empty"><div class="empty-orbit" aria-hidden="true">◈</div><h2>Start with a question.</h2><p>Search your memory or choose a model<br />to explore its facts and connections.</p></div>
+      <div id="graph-empty" class="graph-empty"><div class="empty-orbit" aria-hidden="true">◈</div><h2>Start with a question.</h2><p>Search, load the brief, or enter a node ID<br />to explore facts, relations, and lifecycle.</p></div>
       <div id="notice" class="notice" role="status" aria-live="polite" hidden><span id="notice-text"></span><button id="btn-dismiss-notice" type="button" aria-label="Dismiss message">×</button></div>
       <div class="graph-toolbar" role="toolbar" aria-label="Map controls"><div class="map-actions"><button id="btn-fit" type="button" class="secondary" title="Show the whole map">Fit view</button><button id="btn-layout" type="button" class="secondary" title="Rearrange nodes">Arrange</button><button id="btn-physics" type="button" class="secondary" aria-pressed="false" title="Enable attraction along connections and node repulsion">Physics</button></div><div class="zoom-controls"><button id="btn-zoom-out" type="button" class="secondary" aria-label="Zoom out">−</button><span id="zoom-level">100%</span><button id="btn-zoom-in" type="button" class="secondary" aria-label="Zoom in">+</button></div></div>
       <div class="canvas-footer"><span><i class="dot fact-dot"></i>Fact</span><span><i class="dot entity-dot"></i>Entity</span><span>Drag to move · Scroll to zoom</span></div>
       <button id="hover-plus" type="button" class="hover-plus" title="Load 10 neighbors" aria-label="Load 10 neighbors">+</button>
+      <div id="node-preview-tip" class="node-preview-tip" hidden></div>
     </main>
 
     <aside id="inspector-panel" class="panel panel-right" aria-label="Node details">
@@ -91,6 +93,7 @@
     <details class="evolution-caveat"><summary>What this view can tell you</summary><p>Activity shows surviving objects by their creation and update dates. It cannot recover deleted objects or earlier text and status. Comparing partial maps shows changes in those views; a full graph diff needs two complete captures.</p></details>
   </dialog>
   <script src="/static/forces.js"></script>
+  <script src="/static/logic.js"></script>
   <script src="/static/explorer.js"></script>
   <script src="/static/physics.js"></script>
   <script src="/static/evolution.js"></script>

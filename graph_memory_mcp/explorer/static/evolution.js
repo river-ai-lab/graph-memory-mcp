@@ -223,12 +223,12 @@ async function modelLens(kind) {
   for (const [id, key] of [["btn-wheat", "wheat"], ["btn-corn", "corn"], ["btn-both", "both"]]) $(id).setAttribute("aria-pressed", String(key === kind));
   const ids = kind === "wheat" ? ["f337518108a7400a87c1485fb36533be"] : kind === "corn" ? ["b58b3151e1c54092a9ac68bbdbf0734d"] : ["f337518108a7400a87c1485fb36533be", "b58b3151e1c54092a9ac68bbdbf0734d"];
   for (const id of ids) {
-    const data = await callTool("get_context", ownerArgs({ node_id: id, depth: 1, max_nodes: 12, exclude_relation_types: ["MENTIONS"] }));
+    const data = await callTool("get_context", contextArgs(id, { depth: 1, max_nodes: 12, exclude_relation_types: ["MENTIONS"] }));
     mergeToolResult(data, { fresh: true }, { fullLayout: true });
   }
   // Read the shared body bridge to show how corn reuses the wheat encoder.
   if (kind === "both") {
-    const bridge = await callTool("get_context", ownerArgs({ node_id: "33e8108ae2ae41c98f262236d2c04550", depth: 1, max_nodes: 12, exclude_relation_types: ["MENTIONS"] }));
+    const bridge = await callTool("get_context", contextArgs("33e8108ae2ae41c98f262236d2c04550", { depth: 1, max_nodes: 12, exclude_relation_types: ["MENTIONS"] }));
     mergeToolResult(bridge, { fresh: true }, { fullLayout: true });
   }
   state.anchorId = ids[0]; $("node-id").value = ids[0];

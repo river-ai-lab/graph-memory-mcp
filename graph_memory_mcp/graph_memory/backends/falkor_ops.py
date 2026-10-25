@@ -448,7 +448,8 @@ class FalkorOps:
     MATCH (n)
     WHERE n.uid IN $ids AND n.owner_id = $owner_id
     RETURN n.uid, labels(n)[0], n.text,
-           coalesce(n.updated_at, n.created_at), coalesce(n.access_count, 0)
+           coalesce(n.updated_at, n.created_at), coalesce(n.access_count, 0),
+           n.status, n.created_at, n.metadata_str
 """,
             {"ids": ids, "owner_id": owner_id},
         )
@@ -495,7 +496,7 @@ class FalkorOps:
     {order_clause}
     RETURN m.uid, labels(m)[0], m.text,
            coalesce(m.updated_at, m.created_at), coalesce(m.access_count, 0),
-           parents
+           parents, m.status, m.created_at, m.metadata_str
     LIMIT {int(remaining)}
     """
         return self.rows(query, params)
@@ -543,7 +544,10 @@ class FalkorOps:
     RETURN
         connected.uid as node_id,
         labels(connected)[0] as node_type,
-        connected.text as text
+        connected.text as text,
+        connected.status as status,
+        connected.created_at as created_at,
+        connected.metadata_str as metadata_str
     """
         return self.rows(query, params)
 

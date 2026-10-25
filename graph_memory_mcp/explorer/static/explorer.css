@@ -87,6 +87,7 @@ summary { cursor: pointer; color: #d0dfec; padding: 13px 0; font-size: 13px; fon
 .legend-list li { display: flex; gap: 10px; align-items: center; }
 .swatch { width: 20px; height: 3px; border-radius: 2px; }
 .swatch-contradicts { background: var(--danger); }
+.swatch-follows { background: #c4a574; border-style: dashed; height: 0; border-top-width: 2px; }
 .swatch-summarizes { background: #85c7ed; }
 .swatch-triplet { background: var(--warn); }
 .swatch-default { background: #7893ab; }
@@ -100,6 +101,11 @@ summary { cursor: pointer; color: #d0dfec; padding: 13px 0; font-size: 13px; fon
 #map-caption { font-size: 12px; }
 .canvas-actions { display: flex; align-items: center; gap: 12px; pointer-events: auto; flex-shrink: 0; }
 .canvas-actions .chk { font-size: 12px; }
+.preview-label { margin: 0; font-size: 12px; color: var(--muted); }
+#node-preview { width: auto; min-width: 108px; padding: 6px 8px; font-size: 12px; }
+.node-preview-tip { position: absolute; z-index: 19; max-width: 220px; padding: 7px 9px; border: 1px solid #3c5369; border-radius: 8px; background: #142131f2; color: #d6e5f3; font-size: 12px; line-height: 1.45; pointer-events: none; box-shadow: 0 6px 20px #0005; }
+body.auth-owner .owner-row input { opacity: .7; }
+body.auth-owner #owner-bound { display: block !important; }
 #btn-inspector[aria-expanded=true] { background: #213c3b; border-color: #507c73; color: #a6ecda; }
 .graph-empty { position: absolute; top: 44%; left: 50%; transform: translate(-50%, -50%); text-align: center; width: 85%; pointer-events: none; }
 .empty-orbit { font-size: 60px; color: var(--accent); margin-bottom: 18px; opacity: .65; }
@@ -126,6 +132,7 @@ summary { cursor: pointer; color: #d0dfec; padding: 13px 0; font-size: 13px; fon
 .node-chip[data-value=Entity] { border-color: #716498; color: #d8cafb; }
 .node-chip[data-value=Fact], .node-chip[data-value=active] { border-color: #38665b; color: #a6ecda; }
 .node-chip[data-value=outdated] { border-color: #78603d; color: var(--warn); }
+.node-chip[data-value=archived] { border-color: #475569; color: #94a3b8; }
 #detail-text { white-space: pre-wrap; overflow-wrap: anywhere; font: 14px/1.8 ui-sans-serif, system-ui, sans-serif; margin: 0 0 20px; }
 .detail-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 18px 0; }
 .detail-actions button { padding-inline: 7px; }

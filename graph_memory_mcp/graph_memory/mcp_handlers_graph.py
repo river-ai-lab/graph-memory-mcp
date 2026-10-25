@@ -16,12 +16,47 @@ from graph_memory_mcp.graph_memory.relation_policy import (
 )
 from graph_memory_mcp.graph_memory.utils import (
     ensure_text,
+    load_json,
     mcp_handler,
     normalize_owner_id,
     require_node_id,
     success_response,
     touch_nodes,
 )
+
+
+def _walk_node_fields(
+    *,
+    status: Any = None,
+    created_at: Any = None,
+    metadata: Any = None,
+) -> Dict[str, Any]:
+    extra: Dict[str, Any] = {}
+    if status:
+        extra["status"] = ensure_text(status)
+    if created_at is not None:
+        extra["created_at"] = created_at
+    meta = metadata if isinstance(metadata, dict) else load_json(metadata, None)
+    if meta:
+        extra["metadata"] = meta
+    return extra
+
+
+def _public_walk_node(record: Dict[str, Any]) -> Dict[str, Any]:
+    node = {
+        "node_id": record["node_id"],
+        "node_type": record["node_type"],
+        "text": record["text"],
+    }
+    node.update(
+        _walk_node_fields(
+            status=record.get("status"),
+            created_at=record.get("created_at"),
+            metadata=record.get("metadata"),
+        )
+    )
+    return node
+
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +120,9 @@ def _bfs_expand(
             "text": ensure_text(row[2]),
             "touched_at": row[3],
             "access_count": row[4],
+            "status": row[5] if len(row) > 5 else None,
+            "created_at": row[6] if len(row) > 6 else None,
+            "metadata": row[7] if len(row) > 7 else None,
             "seed_hops": dict(seed_labels.get(uid, {uid: 0})),
         }
 
@@ -118,6 +156,9 @@ def _bfs_expand(
                 "text": ensure_text(row[2]),
                 "touched_at": row[3],
                 "access_count": row[4],
+                "status": row[6] if len(row) > 6 else None,
+                "created_at": row[7] if len(row) > 7 else None,
+                "metadata": row[8] if len(row) > 8 else None,
                 "seed_hops": seed_hops,
             }
             new_frontier.append(uid)
@@ -228,11 +269,7 @@ def get_context(
             exclude_types=exclude_types,
         )
         for uid, record in visited.items():
-            nodes[uid] = {
-                "node_id": uid,
-                "node_type": record["node_type"],
-                "text": record["text"],
-            }
+            nodes[uid] = _public_walk_node(record)
         paginated = False
     else:
         # Paginated (operator/explorer) path: full expansion with stable order.
@@ -247,11 +284,19 @@ def get_context(
             exclude_types=exclude_types,
         ):
             current_id = str(row[0])
-            nodes[current_id] = {
+            node = {
                 "node_id": current_id,
                 "node_type": row[1],
                 "text": ensure_text(row[2]),
             }
+            node.update(
+                _walk_node_fields(
+                    status=row[3] if len(row) > 3 else None,
+                    created_at=row[4] if len(row) > 4 else None,
+                    metadata=row[5] if len(row) > 5 else None,
+                )
+            )
+            nodes[current_id] = node
         paginated = True
 
     if nodes:
@@ -414,15 +459,21 @@ def recall_context(
             touched_at_ms=record["touched_at"],
             access_count=record["access_count"],
         )
-        expanded.append(
-            {
-                "node_id": record["node_id"],
-                "node_type": record["node_type"],
-                "text": record["text"],
-                "score": round(score, 6),
-                "min_hop": min_hop,
-            }
+        item = {
+            "node_id": record["node_id"],
+            "node_type": record["node_type"],
+            "text": record["text"],
+            "score": round(score, 6),
+            "min_hop": min_hop,
+        }
+        item.update(
+            _walk_node_fields(
+                status=record.get("status"),
+                created_at=record.get("created_at"),
+                metadata=record.get("metadata"),
+            )
         )
+        expanded.append(item)
 
     expanded.sort(
         key=lambda node: (-node["score"], node["node_id"]),

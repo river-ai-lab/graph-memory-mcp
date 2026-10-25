@@ -9,8 +9,11 @@ const KNOWN_EDGE_TYPES = new Set([
   "EXTRACTED_FROM",
 ]);
 
+const L = window.ExplorerLogic;
 const state = {
   ownerId: new URLSearchParams(location.search).get("owner") || localStorage.getItem("gm_owner_id") || "default",
+  hideOwner: false,
+  previewMode: L.readPreviewMode(localStorage),
   anchorId: null,
   depth: 1,
   nodes: new Map(),
@@ -71,7 +74,16 @@ async function callTool(tool, arguments_) {
 
 function ownerArgs(extra = {}) {
   syncOwner();
-  return { owner_id: state.ownerId, ...extra };
+  return L.toolArguments(state.hideOwner, { owner_id: state.ownerId, ...extra });
+}
+
+function contextArgs(nodeId, extra = {}) {
+  return ownerArgs({
+    node_id: nodeId,
+    include_outdated: true,
+    include_ttl: true,
+    ...extra,
+  });
 }
 
 function nodeText(n) {
@@ -80,15 +92,11 @@ function nodeText(n) {
 }
 
 function preview(text, n = 48) {
-  if (!text) return "(empty)";
-  const s = String(text).replace(/\s+/g, " ").trim();
-  return s.length <= n ? s : `${s.slice(0, n)}…`;
+  return L.preview(text, n);
 }
 
 function formatTime(value, includeSeconds = false) {
-  if (!value) return "—";
-  const date = new Date(value);
-  return Number.isFinite(date.getTime()) ? new Intl.DateTimeFormat("en-GB", { dateStyle: "medium", timeStyle: includeSeconds ? "medium" : "short", hour12: false }).format(date) : "—";
+  return L.formatTime(value, includeSeconds);
 }
 
 function nodeLabel(n) {
@@ -110,7 +118,7 @@ function nodeLabel(n) {
     ];
     for (const [pattern, label] of titles) if (pattern.test(text)) return label;
   }
-  return preview(text, 62);
+  return preview(text, L.previewChars(state.previewMode));
 }
 
 function setInspectorOpen(open) {
@@ -151,6 +159,7 @@ function nodeStyle(nodeType, status) {
 function edgeClass(relationType) {
   const t = relationType || "RELATED";
   if (t === "CONTRADICTS") return "edge-contradicts";
+  if (t === "FOLLOWS_FROM") return "edge-follows";
   if (t === "SUMMARIZES") return "edge-summarizes";
   if (!KNOWN_EDGE_TYPES.has(t)) return "edge-triplet";
   return "edge-default";
@@ -159,10 +168,7 @@ function edgeClass(relationType) {
 function searchFilters() {
   const extra = {};
   const status = $("search-status").value;
-  if (status) {
-    extra.status = status;
-    if (status !== "active") extra.include_outdated = true;
-  }
+  Object.assign(extra, L.searchFilterArgs(status));
   const fact = $("type-fact").checked;
   const entity = $("type-entity").checked;
   if (fact && !entity) extra.node_types = ["Fact"];
@@ -198,6 +204,11 @@ function mergeNodes(nodes, meta = {}) {
       source: n.source ?? prev.source,
       created_at: n.created_at ?? prev.created_at,
       updated_at: n.updated_at ?? prev.updated_at,
+      created_by: n.created_by ?? prev.created_by,
+      updated_by: n.updated_by ?? prev.updated_by,
+      ttl_days: n.ttl_days ?? prev.ttl_days,
+      expires_at: n.expires_at ?? prev.expires_at,
+      type: n.type ?? prev.type,
       status: n.status ?? prev.status,
       similarity: meta.similarity ?? n.similarity ?? n.score ?? prev.similarity,
       metadata: n.metadata ?? prev.metadata,
@@ -250,6 +261,7 @@ function mergeToolResult(data, meta = {}, syncOpts = {}) {
   mergeNodes(data.seeds, meta);
   if (data.node) mergeNodes([data.node], meta);
   mergeEdges(data.edges);
+  mergeEdges(L.contradictionEdges(data.contradiction_pairs));
   for (const p of data.paths || []) {
     mergeNodes(p.nodes, { fresh: true });
     mergeEdges(edgesFromTrace(p.nodes || [], p.relations || []), { path: true });
@@ -347,12 +359,13 @@ function syncGraph({ fullLayout = false, originNodeId = null } = {}) {
     if (ele.empty()) {
       cy.add(def);
     } else {
-      ele.removeClass("edge-contradicts edge-summarizes edge-triplet edge-default edge-path");
+      ele.removeClass("edge-contradicts edge-follows edge-summarizes edge-triplet edge-default edge-path");
       ele.addClass(def.classes);
     }
   }
 
   applyNodeColors();
+  applyPreviewMode();
 
   if ((fullLayout || (!originNodeId && addedNodes.length > 0)) && cy.nodes().length > 1) {
     const connected = cy.edges().length > 0;
@@ -399,7 +412,7 @@ let cy = cytoscape({
     {
       selector: "node",
       style: {
-        label: "data(label)",
+        label: "",
         "font-size": 14,
         "line-height": 1.4,
         color: "#d6e5f3",
@@ -448,6 +461,16 @@ let cy = cytoscape({
         "line-color": "#f38f9b",
         "target-arrow-color": "#f38f9b",
         color: "#fca5a5",
+      },
+    },
+    {
+      selector: "edge.edge-follows",
+      style: {
+        width: 2,
+        "line-color": "#c4a574",
+        "target-arrow-color": "#c4a574",
+        "line-style": "dashed",
+        color: "#e7d3a8",
       },
     },
     {
@@ -538,12 +561,15 @@ function showDetail(nodeId, nodeOverride) {
   $("detail-metadata").textContent = JSON.stringify({
     ...n.metadata, ...(n.source ? { source: n.source } : {}),
     ...(n.created_at ? { created_at: n.created_at } : {}),
+    ...(n.updated_at ? { updated_at: n.updated_at } : {}),
+    ...(n.ttl_days != null ? { ttl_days: n.ttl_days } : {}),
+    ...(n.expires_at ? { expires_at: n.expires_at } : {}),
   }, null, 2);
-  const provenance = [
-    ["Source", n.source?.ref], ["Created", n.created_at ? formatTime(n.created_at) : null],
-    ["Author", n.metadata?.created_by], ["Project", n.metadata?.project],
-    ["Tags", n.metadata?.tags?.join(", ")],
-  ].filter(([, value]) => value);
+  const timeKeys = new Set(["Created", "Updated", "Expires"]);
+  const provenance = L.provenanceRows(n).map(([label, value]) => [
+    label,
+    timeKeys.has(label) ? formatTime(value) : value,
+  ]);
   $("detail-provenance").innerHTML = provenance.length
     ? provenance.map(([label, value]) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd>`).join("")
     : "<dd>No source metadata available.</dd>";
@@ -571,8 +597,7 @@ async function loadAnchor(nodeId) {
 async function loadContext(nodeId, opts = {}) {
   const depth = opts.depth ?? Number($("depth").value);
   const maxNodes = Number($("max-nodes").value) || 10;
-  const args = ownerArgs({
-    node_id: nodeId,
+  const args = contextArgs(nodeId, {
     depth,
     max_nodes: maxNodes,
   });
@@ -592,8 +617,7 @@ async function loadContext(nodeId, opts = {}) {
 
 async function loadNeighbors(nodeId, pageSize = 10) {
   let off = state.neighborOffset.get(nodeId) ?? 0;
-  const args = ownerArgs({
-    node_id: nodeId,
+  const args = contextArgs(nodeId, {
     depth: 1,
     max_nodes: pageSize,
   });
@@ -636,7 +660,7 @@ async function findSimilar() {
 
   const ctx = await callTool(
     "get_context",
-    ownerArgs({ node_id: anchor, depth: 2, max_nodes: 50 }),
+    contextArgs(anchor, { depth: 2, max_nodes: 50 }),
   );
   const filteredEdges = (ctx.edges || []).filter(
     (e) => ids.has(e.from_id) && ids.has(e.to_id),
@@ -848,6 +872,7 @@ function clearGraph() {
   state.anchorId = null;
   state.hoverId = null;
   $("hover-plus").classList.remove("visible");
+  hideNodePreviewTip();
   $("node-id").value = "";
   updateStats();
   $("detail").hidden = true;
@@ -857,6 +882,7 @@ function clearGraph() {
 }
 
 const hoverPlus = $("hover-plus");
+const previewTip = $("node-preview-tip");
 let hidePlusTimer = null;
 
 function positionHoverPlus(node) {
@@ -868,10 +894,31 @@ function positionHoverPlus(node) {
   hoverPlus.style.top = `${bb.y1}px`;
 }
 
+function showNodePreviewTip(node) {
+  if (!node || node.empty()) return;
+  if (L.shouldShowAlwaysLabels(state.previewMode, cy.zoom())) {
+    hideNodePreviewTip();
+    return;
+  }
+  const n = state.nodes.get(node.id());
+  previewTip.textContent = preview(nodeText(n), L.HOVER_CHARS);
+  const bb = node.renderedBoundingBox({ includeLabels: false, includeOverlays: false });
+  previewTip.hidden = false;
+  previewTip.style.left = `${Math.max(8, Math.min(bb.x1, cy.width() - 228))}px`;
+  previewTip.style.top = `${Math.min(bb.y2 + 8, cy.height() - 48)}px`;
+}
+
+function hideNodePreviewTip() {
+  previewTip.hidden = true;
+  previewTip.textContent = "";
+}
+
 function refreshHoverPlusPosition() {
-  if (!state.hoverId || !hoverPlus.classList.contains("visible")) return;
+  if (!state.hoverId) return;
   const node = cy.getElementById(state.hoverId);
-  if (node.nonempty()) positionHoverPlus(node);
+  if (node.empty()) return;
+  if (hoverPlus.classList.contains("visible")) positionHoverPlus(node);
+  if (!previewTip.hidden) showNodePreviewTip(node);
 }
 
 function showHoverPlus(node) {
@@ -879,12 +926,14 @@ function showHoverPlus(node) {
   state.hoverId = node.id();
   positionHoverPlus(node);
   hoverPlus.classList.add("visible");
+  showNodePreviewTip(node);
 }
 
 function scheduleHideHoverPlus() {
   clearTimeout(hidePlusTimer);
   hidePlusTimer = setTimeout(() => {
     hoverPlus.classList.remove("visible");
+    hideNodePreviewTip();
     state.hoverId = null;
   }, 250);
 }
@@ -1043,10 +1092,12 @@ async function checkHealth() {
     if (data.ready) {
       badge.textContent = "Memory connected";
       badge.className = "badge badge-ok";
-      if (generation === state.generation) loadBrief({ open: window.innerWidth > 600, seedGraph: false }).catch((e) => log(`brief error: ${e.message}`));
+      applyAuthMode(data);
+      if (generation === state.generation) loadBrief({ open: window.innerWidth > 600, seedGraph: true }).catch((e) => log(`brief error: ${e.message}`));
     } else {
+      applyAuthMode(data);
       badge.textContent = "Memory offline";
-      notice("MCP is unavailable. Check the port-forward and restart Explorer to reconnect.", true);
+      notice(data.error || "MCP is unavailable. Check the port-forward and restart Explorer to reconnect.", true);
       badge.className = "badge badge-err";
     }
   } catch {
@@ -1056,19 +1107,43 @@ async function checkHealth() {
   }
 }
 
+function applyAuthMode(data) {
+  state.hideOwner = Boolean(data.hide_owner);
+  document.body.classList.toggle("auth-owner", state.hideOwner);
+  $("owner-id").disabled = state.hideOwner;
+  $("owner-bound").hidden = !state.hideOwner;
+}
+
 function renderResults(nodes, data) {
   $("results-section").hidden = false;
   $("overview-section").open = false;
   $("result-summary").textContent = `${nodes.length} results${data.budget?.tokens_est != null ? ` · ≈${data.budget.tokens_est} tokens` : ""}. Open a result for full text.`;
+  const pairs = data.contradiction_pairs || [];
+  const pairBlock = pairs.length
+    ? `<div class="ov-block"><h3>Contradicts</h3><ul class="ov-list">${pairs.map((c) => {
+        const from = state.nodes.get(c.from_id);
+        const to = state.nodes.get(c.to_id);
+        return `<li class="contradict" data-from="${escapeHtml(c.from_id)}" data-to="${escapeHtml(c.to_id)}"><span data-id="${escapeHtml(c.from_id)}">${escapeHtml(preview(nodeText(from), 28))}</span><span class="sep">⚡</span><span data-id="${escapeHtml(c.to_id)}">${escapeHtml(preview(nodeText(to), 28))}</span></li>`;
+      }).join("")}</ul></div>`
+    : "";
   $("search-results").innerHTML = nodes.length
-    ? `<ul class="ov-list">${nodes.map(n => `<li data-id="${escapeHtml(n.node_id)}">${escapeHtml(preview(nodeText(n), 150))}<span class="result-meta">${escapeHtml(n.node_type || "Fact")}${n.similarity != null ? ` · similarity ${Number(n.similarity).toFixed(3)}` : ""}</span></li>`).join("")}</ul>`
+    ? `${pairBlock}<ul class="ov-list">${nodes.map(n => `<li data-id="${escapeHtml(n.node_id)}">${escapeHtml(preview(nodeText(n), 150))}<span class="result-meta">${escapeHtml(L.resultMeta(n))}</span></li>`).join("")}</ul>`
     : '<p class="muted">No matches. Try a broader question or adjust your filters.</p>';
   if (!nodes.length) notice("No matches. Try a broader question or adjust your filters.");
 }
 
 $("search-results").addEventListener("click", e => {
-  const id = e.target.closest("[data-id]")?.dataset.id;
-  if (id) loadAnchor(id).catch(error => notice(error.message, true));
+  const pair = e.target.closest("[data-from][data-to]");
+  const id = pair ? null : e.target.closest("[data-id]")?.dataset.id;
+  if (id) {
+    loadAnchor(id).catch(error => notice(error.message, true));
+    return;
+  }
+  if (pair) {
+    $("trace-from").value = pair.dataset.from;
+    $("trace-to").value = pair.dataset.to;
+    runTrace().catch((err) => log(`trace: ${err.message}`));
+  }
 });
 $("search-query").addEventListener("keydown", e => {
   if (e.key === "Enter") textSearch().catch(error => notice(error.message, true));
@@ -1083,10 +1158,33 @@ function zoomBy(factor) {
 }
 $("btn-zoom-in").addEventListener("click", () => zoomBy(1.25));
 $("btn-zoom-out").addEventListener("click", () => zoomBy(.8));
-cy.on("zoom", () => { $("zoom-level").textContent = `${Math.round(cy.zoom()*100)}%`; });
+cy.on("zoom", () => {
+  $("zoom-level").textContent = `${Math.round(cy.zoom()*100)}%`;
+  applyPreviewMode();
+});
 $("edge-labels").addEventListener("change", () => {
   cy.style().selector("edge").style("label", $("edge-labels").checked ? "data(label)" : "").update();
 });
+let lastAlwaysLabels = null;
+function applyPreviewMode() {
+  state.previewMode = L.normalizePreviewMode($("node-preview").value);
+  L.writePreviewMode(localStorage, state.previewMode);
+  const show = L.shouldShowAlwaysLabels(state.previewMode, cy.zoom());
+  cy.batch(() => {
+    for (const n of state.nodes.values()) {
+      const ele = cy.getElementById(n.node_id);
+      if (ele.nonempty()) ele.data("label", nodeLabel(n).replace(" · ", "\n"));
+    }
+  });
+  if (lastAlwaysLabels !== show) {
+    lastAlwaysLabels = show;
+    cy.style().selector("node").style("label", show ? "data(label)" : "").update();
+  }
+  if (!show && state.hoverId) showNodePreviewTip(cy.getElementById(state.hoverId));
+  else if (show) hideNodePreviewTip();
+}
+$("node-preview").value = state.previewMode;
+$("node-preview").addEventListener("change", applyPreviewMode);
 $("btn-present").addEventListener("click", () => {
   const active = document.body.classList.toggle("presenting");
   $("btn-present").setAttribute("aria-pressed", String(active));
@@ -1118,7 +1216,10 @@ for (const [id, field] of [["btn-trace-from", "trace-from"], ["btn-trace-to", "t
   });
 }
 cy.on("mouseover", "edge", event => { event.target.style("label", event.target.data("label")); });
-cy.on("mouseout", "edge", event => { event.target.removeStyle("label"); });
+cy.on("mouseout", "edge", event => {
+  if ($("edge-labels").checked) event.target.style("label", event.target.data("label"));
+  else event.target.removeStyle("label");
+});
 new ResizeObserver(() => cy.resize()).observe($("cy"));
 for (const el of document.querySelectorAll("input, select")) {
   if (!el.labels?.length) el.setAttribute("aria-label", el.placeholder || el.title || el.id.replaceAll("-", " "));
