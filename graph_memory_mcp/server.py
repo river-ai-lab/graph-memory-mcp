@@ -733,6 +733,8 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
                 "Get subgraph context around a node. "
                 "Returns nodes and edges within specified depth. "
                 "Pass offset (with max_nodes as page size) for paginated neighbor loading. "
+                "page=true reads stable id-ordered pages from that offset, including the first page. "
+                "offset=0 without page is the priority walk. "
                 "Useful for building agent context from related facts and entities. "
                 "Depth defaults to config (SUBGRAPH_DEFAULT_DEPTH, default 1). "
                 "Neighbors that have ttl_days are omitted unless include_ttl=true. "
@@ -747,6 +749,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
             depth: int | None = None,
             max_nodes: int | None = None,
             offset: int = 0,
+            page: bool = False,
             include_outdated: bool = False,
             include_ttl: bool = False,
             relation_priority: list[str] | None = None,
@@ -760,6 +763,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
                 depth=depth,
                 max_nodes=max_nodes,
                 offset=offset,
+                page=page,
                 include_outdated=include_outdated,
                 include_ttl=include_ttl,
                 relation_priority=relation_priority,

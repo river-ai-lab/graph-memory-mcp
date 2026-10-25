@@ -42,6 +42,9 @@ test("always-mode labels hide on a dense zoomed-out map", () => {
   assert.equal(logic.shouldShowAlwaysLabels("always", 1), true);
   assert.equal(logic.shouldShowAlwaysLabels("always", 0.4), false);
   assert.equal(logic.shouldShowAlwaysLabels("hover", 1), false);
+  assert.equal(logic.previewZoom("always", 0.2), logic.DENSE_ZOOM);
+  assert.equal(logic.previewZoom("always", 0.8), 0.8);
+  assert.equal(logic.previewZoom("hover", 0.2), 0.2);
 });
 
 test("contradiction_pairs become CONTRADICTS edges", () => {

@@ -365,21 +365,24 @@ function syncGraph({ fullLayout = false, originNodeId = null } = {}) {
   if ((fullLayout || (!originNodeId && addedNodes.length > 0)) && cy.nodes().length > 1) {
     const connected = cy.edges().length > 0;
     cy.layout({
-      name: connected ? (cy.nodes().length <= 16 ? "concentric" : "cose") : "grid",
+      name: connected ? "concentric" : "grid",
       animate: false,
-      padding: labelLayout ? 84 : 60,
-      concentric: node => node.data("nodeType") === "Entity" ? 2 : 1,
+      padding: labelLayout ? 48 : 40,
+      concentric: (node) => (node.data("nodeType") === "Entity" ? 2 : 1),
       levelWidth: () => 1,
-      minNodeSpacing: labelLayout ? 40 : 65,
-      nodeDimensionsIncludeLabels: labelLayout || !connected || cy.nodes().length > 16,
+      minNodeSpacing: labelLayout ? 18 : 32,
+      nodeDimensionsIncludeLabels: Boolean(labelLayout),
       avoidOverlap: true,
-      spacingFactor: labelLayout ? 1.65 : connected ? 1.1 : 1.15,
-      nodeRepulsion: () => (labelLayout ? 32000 : 12000),
-      idealEdgeLength: () => (labelLayout ? 160 : 100),
-      componentSpacing: labelLayout ? 220 : 180,
+      spacingFactor: labelLayout ? 1.15 : 1.05,
       fit: true,
     }).run();
-    if (cy.zoom() > 1.2) cy.zoom({ level: 1.2, renderedPosition: { x: cy.width()/2, y: cy.height()/2 } });
+    let level = cy.zoom();
+    if (level > 1.2) level = 1.2;
+    level = L.previewZoom(state.previewMode, level);
+    if (level !== cy.zoom()) {
+      cy.zoom({ level, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } });
+    }
+    applyPreviewMode();
   }
 
   for (const n of state.nodes.values()) n._fresh = false;
@@ -1159,7 +1162,13 @@ $("search-query").addEventListener("keydown", e => {
 $("node-id").addEventListener("keydown", e => {
   if (e.key === "Enter") $("btn-load-node").click();
 });
-$("btn-fit").addEventListener("click", () => cy.fit(undefined, 60));
+$("btn-fit").addEventListener("click", () => {
+  cy.fit(undefined, 60);
+  const floor = L.previewZoom(state.previewMode, cy.zoom());
+  if (floor > cy.zoom()) {
+    cy.zoom({ level: floor, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } });
+  }
+});
 $("btn-layout").addEventListener("click", () => syncGraph({ fullLayout: true }));
 function zoomBy(factor) {
   cy.zoom({ level: Math.min(cy.maxZoom(), Math.max(cy.minZoom(), cy.zoom() * factor)), renderedPosition: { x: cy.width()/2, y: cy.height()/2 } });

@@ -307,7 +307,33 @@ def get_context(
         paginated = True
 
     if nodes:
-        edges = _load_edges_between_nodes(db, list(nodes), owner_id)
+        if paginated:
+            # A page often omits the seed and splits a FOLLOWS_FROM pair.
+            # Load edges that touch this page and stay inside the same context.
+            closure_ids = [node_id]
+            if offset > 0 or len(nodes) >= effective_max_nodes:
+                closure_limit = max(
+                    effective_max_nodes, int(config.subgraph_max_nodes_limit)
+                )
+                for row in db.context_page_rows(
+                    depth=depth,
+                    offset=0,
+                    limit=closure_limit,
+                    include_outdated=include_outdated,
+                    node_id=node_id,
+                    owner_id=owner_id,
+                    include_ttl=include_ttl,
+                    exclude_types=exclude_types,
+                ):
+                    closure_ids.append(str(row[0]))
+            edge_ids = list(dict.fromkeys([*nodes, *closure_ids]))
+            edges = [
+                edge
+                for edge in _load_edges_between_nodes(db, edge_ids, owner_id)
+                if edge["from_id"] in nodes or edge["to_id"] in nodes
+            ]
+        else:
+            edges = _load_edges_between_nodes(db, list(nodes), owner_id)
 
     response = success_response(
         nodes=list(nodes.values()),

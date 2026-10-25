@@ -74,6 +74,14 @@
     );
   }
 
+  // Automatic fit on a dense map can zoom past the label cutoff. Keep Always
+  // labels on by stopping that fit at DENSE_ZOOM; a manual zoom-out still hides them.
+  function previewZoom(mode, zoom) {
+    if (typeof zoom !== "number" || !Number.isFinite(zoom)) return zoom;
+    if (normalizePreviewMode(mode) !== PREVIEW_ALWAYS) return zoom;
+    return zoom < DENSE_ZOOM ? DENSE_ZOOM : zoom;
+  }
+
   function contradictionEdges(pairs) {
     const edges = [];
     for (const pair of pairs || []) {
@@ -257,6 +265,7 @@
     writePreviewMode,
     previewChars,
     shouldShowAlwaysLabels,
+    previewZoom,
     contradictionEdges,
     countPhrase,
     briefStatLine,

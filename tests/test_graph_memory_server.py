@@ -832,6 +832,149 @@ def test_get_context_default_and_pagination_integration(memory_backend):
     assert seen == {node["node_id"] for node in default_result["nodes"]}
 
 
+@pytest.mark.integration
+def test_get_context_page_keeps_edges_across_pages(memory_backend):
+    """A later page still returns edges to the seed and to nodes from earlier pages."""
+    cfg = memory_backend.config
+    db = memory_backend.db
+    owner_id = f"pytest_ctx_page_edges_{uuid.uuid4().hex[:8]}"
+
+    center = create_node(
+        db,
+        cfg,
+        text="Page edge center",
+        node_type="Fact",
+        owner_id=owner_id,
+        auto_link=False,
+        check_duplicates=False,
+    )
+    center_id = center["node"]["node_id"]
+    neighbor_ids = []
+    for i in range(3):
+        neighbor = create_node(
+            db,
+            cfg,
+            text=f"Page edge neighbor {i}",
+            node_type="Fact",
+            owner_id=owner_id,
+            auto_link=False,
+            check_duplicates=False,
+        )
+        neighbor_id = neighbor["node"]["node_id"]
+        neighbor_ids.append(neighbor_id)
+        create_relation(
+            db,
+            from_id=center_id,
+            to_id=neighbor_id,
+            relation_type="RELATED_TO",
+            owner_id=owner_id,
+            config=cfg,
+        )
+    create_relation(
+        db,
+        from_id=neighbor_ids[0],
+        to_id=neighbor_ids[1],
+        relation_type="FOLLOWS_FROM",
+        owner_id=owner_id,
+        config=cfg,
+    )
+
+    seen_edges: set[tuple[str, str, str]] = set()
+    offset = 0
+    while offset < 20:
+        paged = get_context(
+            db,
+            cfg,
+            node_id=center_id,
+            owner_id=owner_id,
+            depth=1,
+            max_nodes=2,
+            offset=offset,
+            page=True,
+        )
+        assert paged["success"] is True
+        for edge in paged["edges"]:
+            seen_edges.add((edge["from_id"], edge["relation_type"], edge["to_id"]))
+        if not paged["has_more"]:
+            break
+        offset += 2
+
+    for neighbor_id in neighbor_ids:
+        assert (center_id, "RELATED_TO", neighbor_id) in seen_edges
+    assert (neighbor_ids[0], "FOLLOWS_FROM", neighbor_ids[1]) in seen_edges
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_get_context_tool_forwards_page(memory_backend):
+    """The MCP tool must accept page. offset 0 is otherwise the priority walk and has no has_more."""
+    cfg = memory_backend.config
+    owner_id = f"pytest_ctx_tool_page_{uuid.uuid4().hex[:8]}"
+    server = GraphMemoryMCP(cfg)
+    app = server.get_mcp_app()
+
+    async with server.mcp.session_manager.run():
+        async with streamable_http_client(
+            "http://127.0.0.1:8000/mcp",
+            http_client=httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://127.0.0.1:8000",
+            ),
+        ) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                listed = await session.list_tools()
+                tool = next(item for item in listed.tools if item.name == "get_context")
+                schema = getattr(tool, "input_schema", None) or getattr(
+                    tool, "inputSchema", {}
+                )
+                assert "page" in (schema.get("properties") or {})
+
+                ids = []
+                for i in range(4):
+                    created = await session.call_tool(
+                        "create_node",
+                        {
+                            "text": f"Tool page fact {i} {uuid.uuid4().hex[:6]}",
+                            "node_type": "Fact",
+                            "owner_id": owner_id,
+                            "auto_link": False,
+                            "check_duplicates": False,
+                        },
+                    )
+                    data = _extract_tool_json(created)
+                    assert data.get("success") is True
+                    ids.append(data["node"]["node_id"])
+                for other in ids[1:]:
+                    linked = await session.call_tool(
+                        "create_relation",
+                        {
+                            "from_id": ids[0],
+                            "to_id": other,
+                            "relation_type": "RELATED_TO",
+                            "owner_id": owner_id,
+                        },
+                    )
+                    assert _extract_tool_json(linked).get("success") is True
+
+                paged = await session.call_tool(
+                    "get_context",
+                    {
+                        "node_id": ids[0],
+                        "owner_id": owner_id,
+                        "depth": 1,
+                        "max_nodes": 2,
+                        "offset": 0,
+                        "page": True,
+                    },
+                )
+                body = _extract_tool_json(paged)
+                assert body.get("success") is True
+                assert body.get("offset") == 0
+                assert body.get("has_more") is True
+                assert len(body.get("nodes") or []) == 2
+
+
 class _FakeResult:
     def __init__(self, rows):
         self.result_set = rows
