@@ -26,6 +26,11 @@ from typing import Any, Dict, Iterator, List, Optional
 
 from graph_memory_mcp import __version__
 from graph_memory_mcp.graph_memory.backends.arcade_ops import VERTEX_TYPES, ArcadeOps
+from graph_memory_mcp.graph_memory.backends.embedding_cache import (
+    attach_embedding_service,
+    cached_embedding,
+    cached_embeddings_batch,
+)
 from graph_memory_mcp.graph_memory.cache import CacheManager
 
 logger = logging.getLogger(__name__)
@@ -135,44 +140,15 @@ class ArcadeDBClient(ArcadeOps):
         return None
 
     def set_embedding_service(self, service: Any) -> None:
-        self._embedding_service = service
-        logger.info(
-            "Embedding service attached (dimension=%s)",
-            getattr(service, "dimension", 0),
-        )
+        attach_embedding_service(self, service)
 
     def get_embedding(self, text: str, kind: str = "passage") -> List[float]:
-        if self._embedding_service is None:
-            logger.warning("Embedding service not available")
-            return []
-        cache_key = f"{kind}:{text}"
-        cached = self.cache.get_embedding(cache_key)
-        if cached is not None:
-            return cached
-        try:
-            embedding = self._embedding_service.get_embedding(text, kind=kind)
-        except TypeError:
-            embedding = self._embedding_service.get_embedding(text)
-        except Exception as exc:  # noqa: BLE001
-            logger.error("Failed to get embedding: %s", exc)
-            return []
-        if embedding:
-            self.cache.set_embedding(cache_key, embedding)
-        return embedding
+        return cached_embedding(self, text, kind)
 
     def get_embeddings_batch(
         self, texts: List[str], kind: str = "passage"
     ) -> List[List[float]]:
-        if self._embedding_service is None:
-            logger.warning("Embedding service not available")
-            return [[] for _ in texts]
-        try:
-            return self._embedding_service.get_embeddings_batch(texts, kind=kind)
-        except TypeError:
-            return self._embedding_service.get_embeddings_batch(texts)
-        except Exception as exc:  # noqa: BLE001
-            logger.error("Failed to get batch embeddings: %s", exc)
-            return [[] for _ in texts]
+        return cached_embeddings_batch(self, texts, kind)
 
     def ensure_ready(self) -> None:
         name = self._require_db()
