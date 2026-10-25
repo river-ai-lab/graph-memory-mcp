@@ -40,7 +40,12 @@ def _discard_vector_cache(db, owner_id: str) -> None:
         if hasattr(db, "graph_for")
         else db.database_name(owner_id)
     )
-    ready.discard(key)
+    lock = getattr(db, "_vector_index_lock", None)
+    if lock is None:
+        ready.discard(key)
+        return
+    with lock:
+        ready.discard(key)
 
 
 def _index_cache_key(db, owner_id: str) -> str:
@@ -78,6 +83,47 @@ def test_create_node_creates_vector_indexes_before_search(memory_backend):
         assert payload["success"] is True
         assert payload["healthy"] is True
         assert owner_id not in payload["vector_index_missing"]
+    finally:
+        db.delete_owner_graph(owner_id)
+
+
+def test_delete_owner_then_write_recreates_vector_indexes(memory_backend):
+    """delete_owner_graph drops the index cache. The next write creates indexes again."""
+    cfg = memory_backend.config
+    db = memory_backend.db
+    owner_id = f"0idxdel_{uuid.uuid4().hex[:8]}"
+    text = f"Write after delete recreates vector indexes {owner_id}"
+    try:
+        created = create_node(
+            db,
+            cfg,
+            text=text,
+            node_type="Fact",
+            owner_id=owner_id,
+            check_duplicates=False,
+            auto_link=False,
+        )
+        assert created.get("success") is True, created
+        key = _index_cache_key(db, owner_id)
+        assert db.get_vector_index_status(owner_id) == {"Fact": True, "Entity": True}
+        assert key in db._vector_indexes_ready
+
+        assert db.delete_owner_graph(owner_id) is True
+        assert key not in db._vector_indexes_ready
+        assert db.get_vector_index_status(owner_id) == {"Fact": False, "Entity": False}
+
+        again = create_node(
+            db,
+            cfg,
+            text=text + " again",
+            node_type="Fact",
+            owner_id=owner_id,
+            check_duplicates=False,
+            auto_link=False,
+        )
+        assert again.get("success") is True, again
+        assert db.get_vector_index_status(owner_id) == {"Fact": True, "Entity": True}
+        assert key in db._vector_indexes_ready
     finally:
         db.delete_owner_graph(owner_id)
 

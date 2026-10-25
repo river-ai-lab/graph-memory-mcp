@@ -8,6 +8,7 @@ graph (`{FALKORDB_GRAPH}_{owner_id}`).
 """
 
 import logging
+import threading
 import time
 from typing import Any, Dict, List, Optional
 
@@ -39,6 +40,9 @@ class FalkorDBClient(FalkorOps):
         self._search_indexes_ready: set[str] = set()
         # Owners whose Fact and Entity vector indexes were created in this process.
         self._vector_indexes_ready: set[str] = set()
+        # Covers the cache check, index creation, and the add. Delete discards
+        # the owner under this same lock after the graph is gone.
+        self._vector_index_lock = threading.RLock()
         self._embedding_service: Any | None = None
         self.start_time = time.time()  # Retain start_time for health check
         self.cache = CacheManager(config)
@@ -123,9 +127,10 @@ class FalkorDBClient(FalkorOps):
             if "empty key" not in str(exc).lower():
                 logger.error("Failed to delete graph %s: %s", name, exc)
                 return False
-        self._graphs.pop(name, None)
-        self._search_indexes_ready.discard(name)
-        self._vector_indexes_ready.discard(name)
+        with self._vector_index_lock:
+            self._graphs.pop(name, None)
+            self._search_indexes_ready.discard(name)
+            self._vector_indexes_ready.discard(name)
         logger.info("Deleted owner graph %s", name)
         return True
 
@@ -336,32 +341,35 @@ class FalkorDBClient(FalkorOps):
     ) -> Dict[str, bool]:
         """Create Fact/Entity vector indexes when absent (idempotent, cached per owner)."""
         key = self.graph_name(owner_id)
-        if key in self._vector_indexes_ready:
-            return {"Fact": True, "Entity": True}
-        dim = int(dimension or getattr(self._embedding_service, "dimension", 0) or 0)
-        if dim <= 0:
-            logger.warning(
-                "Cannot ensure vector indexes: embedding dimension is %s", dim
+        with self._vector_index_lock:
+            if key in self._vector_indexes_ready:
+                return {"Fact": True, "Entity": True}
+            dim = int(
+                dimension or getattr(self._embedding_service, "dimension", 0) or 0
             )
-            return self.get_vector_index_status(owner_id=owner_id)
+            if dim <= 0:
+                logger.warning(
+                    "Cannot ensure vector indexes: embedding dimension is %s", dim
+                )
+                return self.get_vector_index_status(owner_id=owner_id)
 
-        status = self.get_vector_index_status(owner_id=owner_id)
-        if not status.get("Fact"):
-            self.create_vector_index(
-                dimension=dim,
-                similarity_function=similarity_function,
-                owner_id=owner_id,
-            )
-        if not status.get("Entity"):
-            self.create_entity_vector_index(
-                dimension=dim,
-                similarity_function=similarity_function,
-                owner_id=owner_id,
-            )
-        status = self.get_vector_index_status(owner_id=owner_id)
-        if all(status.values()):
-            self._vector_indexes_ready.add(key)
-        return status
+            status = self.get_vector_index_status(owner_id=owner_id)
+            if not status.get("Fact"):
+                self.create_vector_index(
+                    dimension=dim,
+                    similarity_function=similarity_function,
+                    owner_id=owner_id,
+                )
+            if not status.get("Entity"):
+                self.create_entity_vector_index(
+                    dimension=dim,
+                    similarity_function=similarity_function,
+                    owner_id=owner_id,
+                )
+            status = self.get_vector_index_status(owner_id=owner_id)
+            if all(status.values()):
+                self._vector_indexes_ready.add(key)
+            return status
 
     def _indexed_props_by_label(
         self, owner_id: str, wanted_type: str

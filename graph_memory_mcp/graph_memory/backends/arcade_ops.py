@@ -169,7 +169,6 @@ class ArcadeOps:
         """Drop the owner's database, including its vertices and HNSW indexes."""
         name = self.database_name(owner_id)
         self._ready.discard(name)
-        self._vector_indexes_ready.discard(name)
         self._edge_types.pop(name, None)
         try:
             self._server(f"drop database {name}")
@@ -180,9 +179,13 @@ class ArcadeOps:
                 or "does not exist" in message
                 or "not available" in message
             ):
+                with self._vector_index_lock:
+                    self._vector_indexes_ready.discard(name)
                 return True
             logger.error("Failed to delete owner database %s: %s", name, exc)
             return False
+        with self._vector_index_lock:
+            self._vector_indexes_ready.discard(name)
         logger.info("Deleted owner database %s", name)
         return True
 
