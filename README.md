@@ -395,6 +395,14 @@ See [docs/features.md](docs/features.md) for details.
 
 Local read-only web UI. **Open a memory**: enter a memory name and click **Load**, then search under **Ask a question** or open an item from the summary. An empty name shows "Enter a memory name, then click Load." and does not open `default`. **More tools** covers open by ID, find a path, similar wording, and how far to look. The toolbar is Fit, Arrange, Physics, zoom, text preview, **Names**, and **Details**. The map legend shows facts, entities, outdated items, contradicts, follows-from, and related. Details lead with the text, status, and validity. Timestamps, the id, and raw fields are under **More about this item**. Node text on the map is **On hover** by default, or **Always** (one short line). Always-mode labels hide when the map is zoomed out. The choice is stored in `localStorage` as `gm_node_preview`. The summary counts outdated facts. With `--auth`, the memory name shows the key's project and cannot be edited.
 
+The shots below are `readme_demo` from [`assets/demo/seed.py`](assets/demo/seed.py) and the dense demo owner `demo_team`. Regenerate them with `node scripts/explorer_screenshots.mjs` while Explorer is running.
+
+![readme_demo with Always labels and the map legend](docs/images/explorer-readme-always.webp)
+
+![Details for an outdated fact, including validity](docs/images/explorer-readme-details.webp)
+
+![Dense demo on demo_team, node text on hover](docs/images/explorer-dense-hover.webp)
+
 ```bash
 # Terminal 1 — MCP server
 uv run graph-memory-mcp --host 127.0.0.1 --port 8000
