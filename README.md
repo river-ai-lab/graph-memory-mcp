@@ -16,7 +16,7 @@ Install from PyPI: `pip install graph-memory-mcp` or `uvx graph-memory-mcp`.
 <!-- Demo GIF: assets/demo/demo.gif (readme scenario). Seed first: assets/demo/seed.py -->
 
 <p align="center">
-  <img src="assets/demo/demo.gif" alt="Search the release deadline, see both dates and the CONTRADICTS edge the agent marked, then the snapshot of the superseded beta" width="820">
+  <img src="assets/demo/demo.gif" alt="Search the release deadline, see both dates and the CONTRADICTS edge the agent marked, then the snapshot of the superseded beta" width="100%">
 </p>
 
 The GIF is a recording of the demo script running against a real server. Run it yourself with `uv run graph-memory-mcp --host 127.0.0.1 --port 8000`, then `uv run python assets/demo/seed.py` and `uv run python assets/demo/generate_demo.py --scenario readme`, and read [assets/demo/seed.py](assets/demo/seed.py) and [assets/demo/generate_demo.py](assets/demo/generate_demo.py) to see exactly what happens.
