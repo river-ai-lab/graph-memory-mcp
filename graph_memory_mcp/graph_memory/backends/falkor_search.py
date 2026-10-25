@@ -212,27 +212,19 @@ def ann_rows(
         "max_distance": float(max_distance),
         "owner_id": owner_id,
     }
-    filters = ""
-    if status:
-        filters += " AND node.status = $status"
-        params["status"] = status
-    elif not include_outdated:
-        filters += " AND (node.status IS NULL OR node.status = 'active')"
+    filters, filter_params = _property_filter_clauses(
+        node_type,
+        include_outdated=include_outdated,
+        status=status,
+        include_ttl=include_ttl,
+    )
+    params.update(filter_params)
     meta_clauses, meta_params = build_metadata_filter_clauses(metadata_filter)
     filters += meta_clauses
     params.update(meta_params)
     if exclude_node_id is not None:
         filters += " AND node.uid <> $exclude_uid"
         params["exclude_uid"] = str(exclude_node_id)
-    if (
-        node_type == "Fact"
-        and (status is None or status == "active")
-        and not include_outdated
-    ):
-        if include_ttl:
-            filters += " AND (node.expires_at IS NULL OR node.expires_at > timestamp())"
-        else:
-            filters += " AND node.expires_at IS NULL"
 
     query = f"""
     CALL db.idx.vector.queryNodes('{node_type}', 'embedding', {int(ann_k)}, vecf32($embedding))
