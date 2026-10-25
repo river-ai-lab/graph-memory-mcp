@@ -72,6 +72,34 @@ async def test_explorer_auth_mode_strips_owner_and_reads_graph(
                     )
                     assert created.get("success") is True, created
                     node_id = created["node"]["node_id"]
+                    listed = await session.list_tools()
+                    tool = next(
+                        item for item in listed.tools if item.name == "get_context"
+                    )
+                    schema = getattr(tool, "input_schema", None) or getattr(
+                        tool, "inputSchema", {}
+                    )
+                    properties = schema.get("properties") or {}
+                    assert "owner_id" not in properties
+                    assert "page" in properties
+                    assert "page" not in (schema.get("required") or [])
+                    assert properties["page"].get("default", False) is False
+                    omitted = _tool_json(
+                        await session.call_tool("get_context", {"node_id": node_id})
+                    )
+                    assert omitted.get("success") is True, omitted
+                    assert omitted["nodes"][0]["node_id"] == node_id
+                    assert "has_more" not in omitted
+                    assert "offset" not in omitted
+                    paged = _tool_json(
+                        await session.call_tool(
+                            "get_context",
+                            {"node_id": node_id, "page": True, "max_nodes": 5},
+                        )
+                    )
+                    assert paged.get("success") is True, paged
+                    assert paged.get("offset") == 0
+                    assert paged.get("has_more") is False
 
             http_client = httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app),
@@ -122,5 +150,20 @@ async def test_explorer_auth_mode_strips_owner_and_reads_graph(
                 assert node["node"]["text"] == "Deadline is November 1."
                 assert node["node"].get("status") == "active"
                 assert node["node"].get("created_at") is not None
+
+                context = client.post(
+                    "/api/tool",
+                    json={
+                        "tool": "get_context",
+                        "arguments": {
+                            "node_id": node_id,
+                            "owner_id": "should-be-stripped",
+                        },
+                    },
+                ).json()
+                assert context.get("success") is True, context
+                assert context["nodes"][0]["node_id"] == node_id
+                assert "has_more" not in context
+                assert "offset" not in context
     finally:
         server.db_client.delete_owner_graph(owner)

@@ -74,6 +74,11 @@ async function callTool(tool, arguments_) {
 }
 
 function ownerArgs(extra = {}) {
+  if (!state.hideOwner && !$("owner-id").value.trim()) {
+    const message = "Enter a memory name, then click Load.";
+    notice(message, true);
+    throw new Error(message);
+  }
   syncOwner();
   return L.toolArguments(state.hideOwner, { owner_id: state.ownerId, ...extra });
 }
@@ -320,6 +325,12 @@ function placeNearNode(originId, index) {
   };
 }
 
+function mapFitPadding() {
+  if (window.innerWidth <= 600) return 150;
+  if (window.innerWidth <= 850) return 96;
+  return 60;
+}
+
 function syncGraph({ fullLayout = false, originNodeId = null } = {}) {
   if (typeof pausePhysics === "function") pausePhysics();
   const addedNodes = [];
@@ -368,7 +379,7 @@ function syncGraph({ fullLayout = false, originNodeId = null } = {}) {
     cy.layout({
       name: connected ? "concentric" : "grid",
       animate: false,
-      padding: labelLayout ? 48 : 40,
+      padding: Math.max(labelLayout ? 48 : 40, mapFitPadding()),
       concentric: (node) => (node.data("nodeType") === "Entity" ? 2 : 1),
       levelWidth: () => 1,
       minNodeSpacing: labelLayout ? 18 : 32,
@@ -1025,8 +1036,9 @@ hoverPlus.addEventListener("click", (e) => {
 
 $("owner-id").value = state.ownerId;
 function syncOwner() {
-  const owner = $("owner-id").value.trim() || "default";
-  if (owner === state.ownerId) return false;
+  if (state.hideOwner) return false;
+  const owner = $("owner-id").value.trim();
+  if (!owner || owner === state.ownerId) return false;
 
   if ($("evolution-dialog").open) $("evolution-dialog").close();
   state.generation++;
@@ -1039,7 +1051,7 @@ function syncOwner() {
   $("trace-to").value = "";
   $("filter-project").value = "";
   $("filter-tags").value = "";
-  state.ownerId = $("owner-id").value.trim() || "default";
+  state.ownerId = $("owner-id").value.trim();
   $("owner-id").value = state.ownerId;
   localStorage.setItem("gm_owner_id", state.ownerId);
   updateStats();
@@ -1053,7 +1065,7 @@ $("owner-id").addEventListener("blur", () => {
 });
 
 $("btn-brief").addEventListener("click", () => {
-  loadBrief().catch((e) => log(`brief error: ${e.message}`));
+  loadBrief().catch((e) => notice(e.message, true));
 });
 
 $("overview").addEventListener("click", (e) => {
@@ -1201,7 +1213,7 @@ $("node-id").addEventListener("keydown", e => {
   if (e.key === "Enter") $("btn-load-node").click();
 });
 $("btn-fit").addEventListener("click", () => {
-  cy.fit(undefined, 60);
+  cy.fit(undefined, mapFitPadding());
   const floor = L.previewZoom(state.previewMode, cy.zoom());
   if (floor > cy.zoom()) {
     cy.zoom({ level: floor, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } });
@@ -1253,7 +1265,7 @@ $("btn-present").addEventListener("click", () => {
   $("btn-present").setAttribute("aria-pressed", String(active));
   $("btn-present").textContent = active ? "Exit focus" : "Focus";
   cy.resize();
-  cy.fit(undefined, 60);
+  cy.fit(undefined, mapFitPadding());
 });
 $("btn-inspector").addEventListener("click", () => setInspectorOpen($("inspector-panel").hidden));
 $("btn-dismiss-notice").addEventListener("click", () => { $("notice").hidden = true; });
@@ -1283,7 +1295,21 @@ cy.on("mouseout", "edge", event => {
   if ($("edge-labels").checked) event.target.style("label", event.target.data("label"));
   else event.target.removeStyle("label");
 });
-new ResizeObserver(() => cy.resize()).observe($("cy"));
+let lastCyWidth = 0;
+let cyResizeTimer = 0;
+new ResizeObserver(() => {
+  cy.resize();
+  clearTimeout(cyResizeTimer);
+  cyResizeTimer = setTimeout(() => {
+    const width = cy.width();
+    if (!width || width === lastCyWidth || !cy.nodes().length) {
+      lastCyWidth = width;
+      return;
+    }
+    lastCyWidth = width;
+    cy.fit(undefined, mapFitPadding());
+  }, 60);
+}).observe($("cy"));
 for (const el of document.querySelectorAll("input, select")) {
   if (!el.labels?.length) el.setAttribute("aria-label", el.placeholder || el.title || el.id.replaceAll("-", " "));
 }

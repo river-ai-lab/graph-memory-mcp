@@ -928,7 +928,10 @@ async def test_get_context_tool_forwards_page(memory_backend):
                 schema = getattr(tool, "input_schema", None) or getattr(
                     tool, "inputSchema", {}
                 )
-                assert "page" in (schema.get("properties") or {})
+                properties = schema.get("properties") or {}
+                assert "page" in properties
+                assert "page" not in (schema.get("required") or [])
+                assert properties["page"].get("default", False) is False
 
                 ids = []
                 for i in range(4):
@@ -973,6 +976,235 @@ async def test_get_context_tool_forwards_page(memory_backend):
                 assert body.get("offset") == 0
                 assert body.get("has_more") is True
                 assert len(body.get("nodes") or []) == 2
+
+                omitted = await session.call_tool(
+                    "get_context",
+                    {
+                        "node_id": ids[0],
+                        "owner_id": owner_id,
+                        "depth": 1,
+                        "max_nodes": 20,
+                    },
+                )
+                explicit = await session.call_tool(
+                    "get_context",
+                    {
+                        "node_id": ids[0],
+                        "owner_id": owner_id,
+                        "depth": 1,
+                        "max_nodes": 20,
+                        "page": False,
+                    },
+                )
+                omitted_body = _extract_tool_json(omitted)
+                explicit_body = _extract_tool_json(explicit)
+                assert omitted_body == explicit_body
+                assert "has_more" not in omitted_body
+                assert "offset" not in omitted_body
+
+
+@pytest.mark.integration
+def test_get_context_page_range_and_owner_isolation(memory_backend):
+    """Last page, a page past the end, a negative offset, and a foreign owner."""
+    cfg = memory_backend.config
+    db = memory_backend.db
+    owner_id = f"pytest_ctx_bounds_{uuid.uuid4().hex[:8]}"
+    other_owner = f"pytest_ctx_bounds_b_{uuid.uuid4().hex[:8]}"
+
+    center = create_node(
+        db,
+        cfg,
+        text="Bounds center",
+        node_type="Fact",
+        owner_id=owner_id,
+        auto_link=False,
+        check_duplicates=False,
+    )
+    center_id = center["node"]["node_id"]
+    for i in range(3):
+        neighbor = create_node(
+            db,
+            cfg,
+            text=f"Bounds neighbor {i}",
+            node_type="Fact",
+            owner_id=owner_id,
+            auto_link=False,
+            check_duplicates=False,
+        )
+        create_relation(
+            db,
+            from_id=center_id,
+            to_id=neighbor["node"]["node_id"],
+            relation_type="RELATED_TO",
+            owner_id=owner_id,
+            config=cfg,
+        )
+
+    foreign = create_node(
+        db,
+        cfg,
+        text="Foreign owner fact",
+        node_type="Fact",
+        owner_id=other_owner,
+        auto_link=False,
+        check_duplicates=False,
+    )
+    foreign_id = foreign["node"]["node_id"]
+
+    # 4 nodes, page size 2: the second page is full, so has_more stays true.
+    second = get_context(
+        db,
+        cfg,
+        node_id=center_id,
+        owner_id=owner_id,
+        depth=1,
+        max_nodes=2,
+        offset=2,
+        page=True,
+    )
+    assert second["success"] is True
+    assert len(second["nodes"]) == 2
+    assert second["has_more"] is True
+    assert second["offset"] == 2
+
+    empty = get_context(
+        db,
+        cfg,
+        node_id=center_id,
+        owner_id=owner_id,
+        depth=1,
+        max_nodes=2,
+        offset=4,
+        page=True,
+    )
+    assert empty["success"] is True
+    assert empty["nodes"] == []
+    assert empty["edges"] == []
+    assert empty["has_more"] is False
+    assert empty["offset"] == 4
+
+    partial = get_context(
+        db,
+        cfg,
+        node_id=center_id,
+        owner_id=owner_id,
+        depth=1,
+        max_nodes=2,
+        offset=3,
+        page=True,
+    )
+    assert len(partial["nodes"]) == 1
+    assert partial["has_more"] is False
+    assert partial["offset"] == 3
+
+    past = get_context(
+        db,
+        cfg,
+        node_id=center_id,
+        owner_id=owner_id,
+        depth=1,
+        max_nodes=2,
+        offset=50,
+    )
+    assert past["nodes"] == []
+    assert past["edges"] == []
+    assert past["has_more"] is False
+    assert past["offset"] == 50
+
+    first = get_context(
+        db,
+        cfg,
+        node_id=center_id,
+        owner_id=owner_id,
+        depth=1,
+        max_nodes=2,
+        offset=0,
+        page=True,
+    )
+    negative = get_context(
+        db,
+        cfg,
+        node_id=center_id,
+        owner_id=owner_id,
+        depth=1,
+        max_nodes=2,
+        offset=-5,
+        page=True,
+    )
+    assert negative["offset"] == 0
+    assert [node["node_id"] for node in negative["nodes"]] == [
+        node["node_id"] for node in first["nodes"]
+    ]
+
+    walked = get_context(
+        db,
+        cfg,
+        node_id=center_id,
+        owner_id=owner_id,
+        depth=1,
+        max_nodes=10,
+        offset=-3,
+    )
+    assert "has_more" not in walked
+    assert "offset" not in walked
+    walked_ids = {node["node_id"] for node in walked["nodes"]}
+    assert foreign_id not in walked_ids
+    assert center_id in walked_ids
+
+    paged = get_context(
+        db,
+        cfg,
+        node_id=center_id,
+        owner_id=owner_id,
+        depth=1,
+        max_nodes=10,
+        offset=0,
+        page=True,
+    )
+    paged_ids = {node["node_id"] for node in paged["nodes"]}
+    assert foreign_id not in paged_ids
+    assert paged_ids == walked_ids
+    for edge in paged["edges"]:
+        assert foreign_id not in (edge["from_id"], edge["to_id"])
+        assert edge["from_id"] in paged_ids or edge["to_id"] in paged_ids
+
+    other = get_context(
+        db,
+        cfg,
+        node_id=foreign_id,
+        owner_id=other_owner,
+        depth=1,
+        max_nodes=10,
+        page=True,
+    )
+    assert {node["node_id"] for node in other["nodes"]} == {foreign_id}
+    assert other["edges"] == []
+
+    found_cross_page = False
+    offset = 0
+    while offset < 8:
+        page = get_context(
+            db,
+            cfg,
+            node_id=center_id,
+            owner_id=owner_id,
+            depth=1,
+            max_nodes=1,
+            offset=offset,
+            page=True,
+        )
+        ids = [node["node_id"] for node in page["nodes"]]
+        if ids and center_id not in ids:
+            assert any(
+                edge["from_id"] == center_id or edge["to_id"] == center_id
+                for edge in page["edges"]
+            )
+            found_cross_page = True
+            break
+        if not page["has_more"]:
+            break
+        offset += 1
+    assert found_cross_page
 
 
 class _FakeResult:

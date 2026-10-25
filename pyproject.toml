@@ -82,6 +82,7 @@ asyncio_mode = "auto"
 markers = [
   "integration: requires running FalkorDB (docker compose up -d)",
   "arcade: requires a running ArcadeDB server",
+  "browser: headless Playwright UI smoke; skipped unless EXPLORER_BROWSER=1",
 ]
 
 [tool.basedpyright]

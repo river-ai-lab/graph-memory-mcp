@@ -21,6 +21,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
+- `get_context` `page` is optional and defaults to false. Existing graphs need no migration. A call that omits `page` and uses `offset=0` is unchanged. `offset>0` (and `page=true`) also returns edges from that page to the rest of the context, so a later page is larger than before.
+- Clearing the Explorer memory name and clicking Load asks for a name. It no longer opens the memory called `default`.
 - Explorer opens with a memory name and **Load**. Fit, arrange, zoom, text preview, link names, and details share one toolbar. The map legend shows fact, entity, outdated, contradicts, and follows-from. Details lead with the text, status, and validity; timestamps, the id, and raw fields are under More.
 - The server uses MCP 2 (`MCPServer`, `mcp>=2.3,<3`). FastMCP and mcp 1 are gone.
 - PyPI packaging adds `README_pypi.md`, project metadata, and `.github/workflows/publish.yml` (OIDC, tags `v*`, environments `pypi` and `testpypi`).
