@@ -11,6 +11,7 @@ You have access to **Graph Memory MCP** — a long-term knowledge base shared ac
 5. **No third paraphrase.** `create_node` returns `memory_duplicate` before write when a near-copy already exists. Update that node or `mark_outdated` it. Pass `check_duplicates=false` only when the new fact is different. A `possible_duplicates` list on a successful write is the same stop: do not create another wording of it.
 6. **GROW after meaningful work** — before the final reply: Ground → Record → Orient (if recurring) → Write. Do not defer to “end of session”.
 7. **Temporary facts carry `ttl_days`.** The server never sets it and does not infer it from `metadata.type`. A decision or durable outcome has no TTL. A run, pod, launch, or debug note uses `ttl_days` (typically 14–30). Do not store a pod lifecycle; store the decision and the outcome. A wrong prior fact is `mark_outdated` + `create_node`.
+8. **If a tool schema has no `owner_id`,** the server sets it from the API key. Do not pass it.
 
 ## After meaningful work (GROW)
 
