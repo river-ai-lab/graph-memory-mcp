@@ -16,23 +16,14 @@ from __future__ import annotations
 import time
 from typing import Any, Dict, List, Optional
 
-_METADATA_KEYS = frozenset({"type", "tags", "confidence_min", "project", "created_by"})
+from graph_memory_mcp.graph_memory.backends.metadata_filter import (
+    validate_metadata_filter,
+)
 
 # A filter is very selective when it keeps under 5% of the owner's labeled
 # rows, or when fewer than this many RIDs remain (the beam would starve).
 _SELECTIVITY = 0.05
 _MIN_RIDS = 32
-
-
-def _validate_metadata(metadata_filter: Optional[Dict[str, Any]]) -> None:
-    if not metadata_filter:
-        return
-    unknown = set(metadata_filter) - _METADATA_KEYS
-    if unknown:
-        raise ValueError(
-            f"Unsupported metadata_filter keys: {sorted(unknown)}; "
-            f"allowed: {sorted(_METADATA_KEYS)}"
-        )
 
 
 def _needs_attribute_filter(
@@ -66,7 +57,7 @@ def _attribute_where(
     ``include_ttl`` also keeps facts that have not expired yet.
     ``include_outdated`` drops the expiry predicate.
     """
-    _validate_metadata(metadata_filter)
+    validate_metadata_filter(metadata_filter)
     parts: list[str] = ["embedding IS NOT NULL"]
     params: Dict[str, Any] = {}
     if status:

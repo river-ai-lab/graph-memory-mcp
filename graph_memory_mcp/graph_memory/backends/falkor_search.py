@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
-SearchType = Literal["pre_filter", "post_filter"]
-
-_METADATA_FILTER_KEYS = frozenset(
-    {"type", "tags", "confidence_min", "project", "created_by"}
+from graph_memory_mcp.graph_memory.backends.metadata_filter import (
+    validate_metadata_filter,
 )
+
+SearchType = Literal["pre_filter", "post_filter"]
 
 
 def build_metadata_filter_clauses(
@@ -26,12 +26,7 @@ def build_metadata_filter_clauses(
     """
     if not metadata_filter:
         return "", {}
-    unknown = set(metadata_filter) - _METADATA_FILTER_KEYS
-    if unknown:
-        raise ValueError(
-            f"Unsupported metadata_filter keys: {sorted(unknown)}; "
-            f"allowed: {sorted(_METADATA_FILTER_KEYS)}"
-        )
+    validate_metadata_filter(metadata_filter)
     clauses: list[str] = []
     params: Dict[str, Any] = {}
     for key, prop in (
