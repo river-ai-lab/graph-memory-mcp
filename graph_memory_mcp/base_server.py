@@ -30,9 +30,19 @@ logger = logging.getLogger(__name__)
 _AGENT_POLICIES_URI = "graph-memory://agent-policies"
 # Canonical copy lives in repo docs/ (clone + uv). MCP resource is optional;
 # put these operator constants in your own AGENTS.md (docs/AGENTS_example.md).
-_AGENT_POLICIES_PATH = (
+# The wheel ships the same file under resources/ for an installed server.
+_AGENT_POLICIES_CHECKOUT = (
     Path(__file__).resolve().parent.parent / "docs" / "memory_policies_for_LLM.md"
 )
+_AGENT_POLICIES_PACKAGED = (
+    Path(__file__).resolve().parent / "resources" / "memory_policies_for_LLM.md"
+)
+
+
+def _agent_policies_path() -> Path:
+    if _AGENT_POLICIES_CHECKOUT.is_file():
+        return _AGENT_POLICIES_CHECKOUT
+    return _AGENT_POLICIES_PACKAGED
 
 
 def _mcp_instructions(scope: str, *, hide_owner: bool = False) -> str:
@@ -138,7 +148,7 @@ class BaseGraphMemoryMCP:
     def _register_resources(self) -> None:
         """Expose agent policy docs as an MCP resource."""
         mcp = self.mcp
-        policies_path = _AGENT_POLICIES_PATH
+        policies_path = _agent_policies_path()
 
         @mcp.resource(
             _AGENT_POLICIES_URI,

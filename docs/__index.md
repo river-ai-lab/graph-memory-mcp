@@ -10,5 +10,6 @@
 - [memory_faq.md](./memory_faq.md) — ops FAQ
 - [roadmap.md](./roadmap.md) — unfinished work
 - [comparison.md](./comparison.md) — vs other stacks
+- [releasing.md](./releasing.md) — PyPI trusted publisher and version tags
 
 Explorer: [README](../README.md).

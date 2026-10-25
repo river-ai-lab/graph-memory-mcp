@@ -17,7 +17,7 @@ WORKDIR /app
 
 RUN pip install --no-cache-dir "uv==${UV_VERSION}"
 
-COPY pyproject.toml uv.lock README.md ./
+COPY pyproject.toml uv.lock README.md README_pypi.md ./
 COPY graph_memory_mcp ./graph_memory_mcp
 COPY docs ./docs
 
