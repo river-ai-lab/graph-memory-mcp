@@ -168,6 +168,23 @@
       .join("\n\n");
   }
 
+  function edgesFromTrace(nodes, relations) {
+    const edges = [];
+    const path = nodes || [];
+    const steps = relations || [];
+    for (let i = 0; i < steps.length; i++) {
+      const a = path[i];
+      const b = path[i + 1];
+      if (!a || !a.node_id || !b || !b.node_id) continue;
+      edges.push({
+        from_id: a.node_id,
+        to_id: b.node_id,
+        relation_type: steps[i].relation_type || "RELATED",
+      });
+    }
+    return edges;
+  }
+
   function placeEdge(store, edge, options) {
     const path = Boolean(options && options.path);
     const from = edge && (edge.from_id || edge.fromId);
@@ -287,6 +304,7 @@
     linkPhrase,
     detailWhen,
     formatHistory,
+    edgesFromTrace,
     placeEdge,
     toolArguments,
     searchFilterArgs,

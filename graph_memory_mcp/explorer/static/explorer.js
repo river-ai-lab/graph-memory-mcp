@@ -233,21 +233,6 @@ function mergeEdges(edges, { path = false } = {}) {
   state.pathEdgeKeys = new Set(store.pathKeys);
 }
 
-function edgesFromTrace(nodes, relations) {
-  const edges = [];
-  for (let i = 0; i < (relations || []).length; i++) {
-    const a = nodes[i];
-    const b = nodes[i + 1];
-    if (!a?.node_id || !b?.node_id) continue;
-    edges.push({
-      from_id: a.node_id,
-      to_id: b.node_id,
-      relation_type: relations[i].relation_type || "RELATED",
-    });
-  }
-  return edges;
-}
-
 function clearPathHighlight() {
   state.pathEdgeKeys.clear();
 }
@@ -899,7 +884,7 @@ async function runTrace() {
     return;
   }
   mergeNodes(nodes, { fresh: true });
-  mergeEdges(edgesFromTrace(nodes, data.relations || []), { path: true });
+  mergeEdges(L.edgesFromTrace(nodes, data.relations || []), { path: true });
   syncGraph({ fullLayout: true, originNodeId: fromId });
   if (cy.nodes().length === nodes.length) {
     const order = new Map(nodes.map((node, index) => [node.node_id, index]));

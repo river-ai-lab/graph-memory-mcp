@@ -198,3 +198,14 @@ test("search result meta and provenance include status, validity, timestamps", (
   assert.equal(labels["TTL days"], 7);
   assert.equal(labels["Entity type"], "Project");
 });
+
+test("edgesFromTrace links consecutive path nodes", () => {
+  assert.deepEqual(
+    logic.edgesFromTrace(
+      [{ node_id: "a" }, { node_id: "b" }, {}],
+      [{ relation_type: "FOLLOWS_FROM" }, { relation_type: "" }],
+    ),
+    [{ from_id: "a", to_id: "b", relation_type: "FOLLOWS_FROM" }],
+  );
+  assert.deepEqual(logic.edgesFromTrace(null, null), []);
+});
