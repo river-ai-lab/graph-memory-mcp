@@ -11,8 +11,10 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
+from mcp.server.transport_security import TransportSecuritySettings
 
+from graph_memory_mcp import __version__
 from graph_memory_mcp.config import MCPServerConfig
 from graph_memory_mcp.graph_memory.api_keys import validate_token_mode
 from graph_memory_mcp.graph_memory.database import open_store
@@ -26,6 +28,18 @@ from graph_memory_mcp.graph_memory.owner_scope import (
 from graph_memory_mcp.jobs.scheduler import shutdown_scheduler, start_scheduler
 
 logger = logging.getLogger(__name__)
+
+# mcp 1 enabled this when FastMCP host defaulted to 127.0.0.1. The uvicorn
+# bind address is separate and does not change the allowlist.
+_TRANSPORT_SECURITY = TransportSecuritySettings(
+    enable_dns_rebinding_protection=True,
+    allowed_hosts=["127.0.0.1:*", "localhost:*", "[::1]:*"],
+    allowed_origins=[
+        "http://127.0.0.1:*",
+        "http://localhost:*",
+        "http://[::1]:*",
+    ],
+)
 
 _AGENT_POLICIES_URI = "graph-memory://agent-policies"
 # Canonical copy lives in repo docs/ (clone + uv). MCP resource is optional;
@@ -136,11 +150,10 @@ class BaseGraphMemoryMCP:
 
         self.db_client.set_embedding_service(self.embedding_service)
 
-        self.mcp = FastMCP(
+        self.mcp = MCPServer(
             name=self.server_config.description or self.server_config.name,
             instructions=self._instructions(),
-            stateless_http=True,
-            json_response=True,
+            version=__version__,
         )
         self._register_resources()
         self._register_tools()
@@ -167,7 +180,11 @@ class BaseGraphMemoryMCP:
 
     def get_mcp_app(self):
         """Get MCP app with /metrics, /admin/* and optional scheduler support."""
-        app = self.mcp.streamable_http_app()
+        app = self.mcp.streamable_http_app(
+            stateless_http=True,
+            json_response=True,
+            transport_security=_TRANSPORT_SECURITY,
+        )
         if not getattr(app.state, "_owner_scope_wrapped", False):
             if self.server_config.owner_scope == "token":
                 app.add_middleware(

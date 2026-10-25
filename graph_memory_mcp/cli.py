@@ -9,7 +9,7 @@ from pathlib import Path
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="graph-memory-mcp",
-        description="Run MCP Graph Memory server (FastMCP HTTP).",
+        description="Run MCP Graph Memory server (streamable HTTP).",
     )
     parser.add_argument(
         "--backend",

@@ -113,7 +113,7 @@ async def test_all_mcp_tools_comprehensive(monkeypatch, memory_backend):
                 transport=httpx.ASGITransport(app=app),
                 base_url="http://127.0.0.1:8000",
             ),
-        ) as (read, write, _get_session_id):
+        ) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
 
@@ -576,7 +576,7 @@ async def test_multi_tenant_isolation(memory_backend):
                 transport=httpx.ASGITransport(app=app),
                 base_url="http://127.0.0.1:8000",
             ),
-        ) as (read, write, _get_session_id):
+        ) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
 
@@ -652,7 +652,7 @@ async def test_search_type_finds_fact_within_owner(search_type: str, memory_back
                 transport=httpx.ASGITransport(app=app),
                 base_url="http://127.0.0.1:8000",
             ),
-        ) as (read, write, _get_session_id):
+        ) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
 

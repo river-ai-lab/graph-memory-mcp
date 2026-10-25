@@ -23,10 +23,10 @@ def dump_tool_result(res):
 
 
 async def main():
-    async with streamable_http_client(SERVER_URL) as (read, write, get_session_id):
+    async with streamable_http_client(SERVER_URL) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
-            print("Connected. Session ID:", get_session_id())
+            print("Connected.")
 
             tools = await session.list_tools()
             print("Tools:", [t.name for t in tools.tools])

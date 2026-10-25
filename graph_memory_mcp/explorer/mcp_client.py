@@ -81,7 +81,7 @@ class McpHttpClient:
         self._transport_cm = streamable_http_client(
             self.url, http_client=self._http_client
         )
-        read, write, _get_session_id = await self._transport_cm.__aenter__()
+        read, write = await self._transport_cm.__aenter__()
         self._session_cm = ClientSession(read, write)
         session = await self._session_cm.__aenter__()
         if session is None:

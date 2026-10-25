@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 
 class GraphMemoryMCP(BaseGraphMemoryMCP):
-    """Graph Memory MCP Server: builds FastMCP app and registers tools."""
+    """Graph Memory MCP Server: builds the MCP server app and registers tools."""
 
     def __init__(self, server_config: MCPServerConfig):
         super().__init__(server_config)

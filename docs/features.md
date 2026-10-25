@@ -83,4 +83,4 @@ Defaults: `owner_id` from `DEFAULT_OWNER_ID` (env, default `"default"`). Pass `o
 ## Admin (HTTP; not MCP by default)
 
 See [admin.md](./admin.md): `/admin/health`, `/admin/ensure-indexes`, export/import (incl. `FactVersion` when `include_versions=true`), delete/prune owners, `/metrics`, `/internal/graph-size`.
-Set `MCP_EXPOSE_ADMIN_TOOLS=true` to also expose `test_connection`, `ensure_vector_indexes`, `export_owner`, `import_owner` as MCP tools.
+Set `MCP_EXPOSE_ADMIN_TOOLS=true` to also expose `test_connection`, `ensure_vector_indexes`, `export_owner`, `import_owner` as MCP tools. An `import_owner` tool call is a streamable HTTP POST; the SDK rejects a body larger than 4 MiB. `/admin/import` is not under that limit.

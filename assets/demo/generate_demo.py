@@ -395,14 +395,18 @@ async def list_tool_count(session: ClientSession) -> int:
                 params=PaginatedRequestParams(cursor=cursor)
             )
         count += len(page.tools)
-        cursor = page.nextCursor
+        cursor = getattr(page, "nextCursor", None)
+        if cursor is None:
+            cursor = getattr(page, "next_cursor", None)
         if not cursor:
             return count
 
 
 async def announce(session: ClientSession, init) -> None:
     """Print the live initialize result and tool count. No screen clear."""
-    info = init.serverInfo
+    info = getattr(init, "serverInfo", None)
+    if info is None:
+        info = getattr(init, "server_info", None)
     name = str(getattr(info, "name", "") or "")
     version = str(getattr(info, "version", "") or "")
     if not name or not version:
@@ -946,7 +950,6 @@ async def main() -> None:
             async with streamable_http_client(SERVER_URL, http_client=http_client) as (
                 read,
                 write,
-                _session_id,
             ):
                 async with ClientSession(read, write) as session:
                     init = await session.initialize()

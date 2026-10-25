@@ -302,7 +302,7 @@ async def test_mcp_create_relation_policy_enforce(memory_backend):
                 transport=httpx.ASGITransport(app=app),
                 base_url="http://127.0.0.1:8000",
             ),
-        ) as (read, write, _):
+        ) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
 
@@ -381,7 +381,7 @@ async def test_mcp_create_triplet_policy_enforce(memory_backend):
                 transport=httpx.ASGITransport(app=app),
                 base_url="http://127.0.0.1:8000",
             ),
-        ) as (read, write, _):
+        ) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
 

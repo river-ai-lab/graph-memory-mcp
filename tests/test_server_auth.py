@@ -107,8 +107,8 @@ def test_auth_resolves_owner_from_the_key(tmp_path, monkeypatch):
     with bind_api_key(record):
         direct = server.get_stats()
         ignored = server.get_stats(owner_id="p2")
-        via_schema = asyncio.run(tool.run({}))
-        via_extra = asyncio.run(tool.run({"owner_id": "p2"}))
+        via_schema = asyncio.run(tool.run({}, None))
+        via_extra = asyncio.run(tool.run({"owner_id": "p2"}, None))
 
     assert seen == ["p1", "p1", "p1", "p1"]
     for result in (direct, ignored, via_schema, via_extra):
