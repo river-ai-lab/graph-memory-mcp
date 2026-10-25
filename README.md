@@ -351,7 +351,7 @@ docker compose up -d falkordb
 Test with FalkorDB:
 
 ```bash
-GRAPH_BACKEND=falkordb uv run pytest -m falkordb -q
+GRAPH_BACKEND=falkordb uv run pytest -m "not arcade" -q
 ```
 
 Test with ArcadeDB (default):

@@ -51,14 +51,10 @@ uv run pytest -q
 
 ```bash
 GRAPH_BACKEND=arcadedb uv run pytest -m arcade
-GRAPH_BACKEND=falkordb uv run pytest -m falkordb
+GRAPH_BACKEND=falkordb uv run pytest -m "not arcade"
 ```
 
-**Without database** (config and unit tests only):
-
-```bash
-uv run pytest -m 'not arcade and not falkordb'
-```
+Tests not marked `arcade` still need FalkorDB. No marker skips the database.
 
 ## Code style
 
