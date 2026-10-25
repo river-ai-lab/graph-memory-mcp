@@ -393,7 +393,7 @@ See [docs/features.md](docs/features.md) for details.
 
 ## Graph Explorer
 
-Local read-only web UI. It talks to a running MCP server: brief, search, recall, context, traces, and node details (status, validity, timestamps). CONTRADICTS and FOLLOWS_FROM are drawn. Node text on the map is **On hover** by default, or **Always** (one short line). Always-mode labels hide when the map is zoomed out. The choice is stored in `localStorage`. The brief counts outdated facts. With `--auth`, the owner field shows the key's project and cannot be edited.
+Local read-only web UI. Enter a memory name and click **Load**, then search or open an item from the summary. The map legend shows facts, entities, outdated items, contradicts, and follows-from. Details lead with the text, status, and validity. Node text on the map is **On hover** by default, or **Always** (one short line). Always-mode labels hide when the map is zoomed out. The choice is stored in `localStorage`. The summary counts outdated facts. With `--auth`, the memory name shows the key's project and cannot be edited.
 
 ```bash
 # Terminal 1 — MCP server
@@ -403,7 +403,7 @@ uv run graph-memory-mcp --host 127.0.0.1 --port 8000
 uv run graph-memory-explorer --host 127.0.0.1 --port 8088
 ```
 
-Open http://127.0.0.1:8088. Set `owner_id`, then search or load the brief. Against `graph-memory-mcp --auth`:
+Open http://127.0.0.1:8088. Against `graph-memory-mcp --auth`:
 
 ```bash
 GRAPH_MEMORY_API_KEY=<key> uv run graph-memory-explorer --auth --host 127.0.0.1 --port 8088

@@ -91,6 +91,10 @@ def test_explorer_api_with_mock_client():
         assert "On hover" in page.text
         assert "Always" in page.text
         assert "Follows from" in page.text
+        assert "Contradicts" in page.text
+        assert "Outdated" in page.text
+        assert 'id="detail-validity"' in page.text
+        assert "Memory name" in page.text
 
         health = client.get("/health").json()
         assert health["hide_owner"] is False

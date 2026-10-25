@@ -119,7 +119,20 @@
   }
 
   function mapStats(nodes, edges) {
-    return `Map: ${countPhrase(nodes, "node", "nodes")} · ${countPhrase(edges, "edge", "edges")}`;
+    return `${countPhrase(nodes, "item", "items")} · ${countPhrase(edges, "link", "links")}`;
+  }
+
+  function validityLabel(node) {
+    const meta = (node && node.metadata) || {};
+    const from = meta.valid_from;
+    const until = meta.valid_until;
+    if (!from && !until) return "";
+    return `Valid from ${from || "unknown"} until ${until || "still open"}`;
+  }
+
+  function linkPhrase(incoming, type) {
+    const name = type || "RELATED";
+    return incoming ? `Linked from · ${name}` : `Links to · ${name}`;
   }
 
   function detailWhen(node) {
@@ -270,6 +283,8 @@
     countPhrase,
     briefStatLine,
     mapStats,
+    validityLabel,
+    linkPhrase,
     detailWhen,
     formatHistory,
     placeEdge,

@@ -10,78 +10,79 @@
 <body>
   <header class="topbar">
     <div class="brand-mark" aria-hidden="true">◈</div>
-    <div class="brand"><span class="eyebrow">CONNECTED KNOWLEDGE</span><h1>Graph Memory Explorer</h1></div>
-    <span class="read-only">Read only</span>
+    <div class="brand"><h1>Graph Memory Explorer</h1></div>
+    <span class="read-only" title="You can look, not edit">Read only</span>
     <span id="status-badge" class="badge badge-warn">Connecting…</span>
     <span id="stats-bar" class="stats" aria-live="polite"></span>
-    <div class="header-actions"><button id="btn-evolution" type="button" class="secondary">Evolution</button><button id="btn-present" class="secondary" type="button" aria-pressed="false">Present</button></div>
+    <div class="header-actions"><button id="btn-evolution" type="button" class="secondary" title="See what changed between saved views of this map">Changes</button><button id="btn-present" class="secondary" type="button" aria-pressed="false" title="Hide the side panels and show only the map">Focus</button></div>
   </header>
 
   <div class="layout">
     <aside class="panel panel-left" aria-label="Explore memory">
-      <div class="panel-heading"><span class="eyebrow">WORKSPACE</span><h2>Explore memory</h2></div>
-      <section>
-        <label for="owner-id">Memory owner</label>
-        <div class="row owner-row"><input id="owner-id" type="text" value="default" placeholder="default" /><button id="btn-brief" type="button" class="secondary">Brief</button></div>
-        <p id="owner-bound" class="muted filter-note" hidden>Owner is bound by the API key.</p>
+      <div class="panel-heading"><h2>Explore a memory</h2></div>
+      <section class="start-here">
+        <p class="step-label">1 · Open a memory</p>
+        <label for="owner-id">Memory name</label>
+        <div class="row owner-row"><input id="owner-id" type="text" value="default" placeholder="for example readme_demo" title="Each name is a separate memory." /><button id="btn-brief" type="button" title="Load a short summary and the first items">Load</button></div>
+        <p id="owner-bound" class="muted filter-note" hidden>This name comes from your key and cannot be changed.</p>
+        <p class="filter-note muted">Then ask a question, or open something from the summary.</p>
       </section>
       <section id="tour-section" hidden>
         <label>Model lenses · Luminaria</label>
         <div class="model-lenses"><button id="btn-wheat" title="Architecture view; mentions are hidden" type="button" class="secondary" aria-pressed="false">Spring wheat</button><button id="btn-corn" title="Architecture view; mentions are hidden" type="button" class="secondary" aria-pressed="false">Corn</button><button id="btn-both" title="Shared architecture; mentions are hidden" type="button" class="secondary" aria-pressed="false">Both models</button></div>
       </section>
       <section class="search-section">
-        <label for="search-query">Ask your memory</label>
+        <p class="step-label">2 · Ask a question</p>
+        <label for="search-query">What should we look up?</label>
         <input id="search-query" type="text" placeholder="What do we know about…?" />
-        <div class="search-actions"><button id="btn-search" type="button">Search</button><button id="btn-recall" type="button" class="secondary" title="Search and expand connected context">Recall context</button></div>
-        <details class="search-options"><summary>Search options</summary>
-          <div class="row"><label class="inline" for="search-limit">Results</label><input id="search-limit" type="number" value="10" min="1" max="50" /><label class="chk" title="Short previews; open a node for its full text"><input id="search-compact" type="checkbox" checked /> Compact</label></div>
-          <div class="row filters"><select id="search-status" aria-label="Search status"><option value="">Any status</option><option value="active">Active</option><option value="outdated">Outdated</option><option value="archived">Archived</option></select><label class="chk"><input id="type-fact" type="checkbox" checked /> Fact</label><label class="chk"><input id="type-entity" type="checkbox" checked /> Entity</label></div>
-          <p class="filter-note muted">Type and status filter Search. Recall expands connected context.</p>
+        <div class="search-actions"><button id="btn-search" type="button">Search</button><button id="btn-recall" type="button" class="secondary" title="Search, then draw the items linked to the best match">With links</button></div>
+        <details class="search-options"><summary>Narrow the search</summary>
+          <div class="row"><label class="inline" for="search-limit">Results</label><input id="search-limit" type="number" value="10" min="1" max="50" /><label class="chk" title="Short previews. Open an item for the full text."><input id="search-compact" type="checkbox" checked /> Short text</label></div>
+          <div class="row filters"><select id="search-status" aria-label="Search status"><option value="">Any status</option><option value="active">Active</option><option value="outdated">Outdated</option><option value="archived">Archived</option></select><label class="chk" title="A statement we stored"><input id="type-fact" type="checkbox" checked /> Fact</label><label class="chk" title="A named thing, such as a project or service"><input id="type-entity" type="checkbox" checked /> Entity</label></div>
+          <p class="filter-note muted">Status and type apply to Search. With links also draws what is connected.</p>
           <div class="row"><input id="filter-project" type="text" placeholder="Project" aria-label="Filter by project" /><input id="filter-tags" type="text" placeholder="Tags, separated by commas" aria-label="Filter by tags" /></div>
         </details>
       </section>
       <section id="results-section" hidden><label>Search results</label><p id="result-summary" class="muted"></p><div id="search-results"></div></section>
-      <details id="overview-section" class="sidebar-disclosure" open><summary>Project brief</summary><p id="overview-stats" class="muted">Load a brief to see the project context.</p><div id="overview"></div></details>
-      <details class="sidebar-disclosure"><summary>Load a node</summary><label for="node-id">Node ID</label><div class="row"><input id="node-id" type="text" placeholder="Paste a node ID" /><button id="btn-load-node" type="button" class="secondary">Load</button></div></details>
-      <details class="advanced sidebar-disclosure"><summary>Trace & discovery</summary>
-        <section><label>Find a path</label><input id="trace-from" type="text" placeholder="From node ID" aria-label="Trace from node" /><input id="trace-to" type="text" placeholder="To node ID" aria-label="Trace to node" /><div class="row"><label class="inline" for="trace-depth">Depth</label><input id="trace-depth" type="number" value="5" min="1" max="10" /><label class="chk"><input id="trace-undirected" type="checkbox" /> Both directions</label><button id="btn-trace" type="button">Trace</button></div></section>
-        <section><label>Similar facts from your anchor</label><div class="row"><label class="inline" for="similar-limit">Results</label><input id="similar-limit" type="number" value="5" min="1" max="30" /><label class="inline" for="similar-threshold">Threshold</label><input id="similar-threshold" type="number" value="0.55" min="0" max="1" step="0.05" /></div><button id="btn-similar" type="button" class="secondary">Find similar</button></section>
+      <details id="overview-section" class="sidebar-disclosure" open><summary>Summary</summary><p id="overview-stats" class="muted">Load a memory to see a short summary.</p><div id="overview"></div></details>
+      <details class="sidebar-disclosure"><summary>More tools</summary>
+        <section><label for="node-id">Open by ID</label><div class="row"><input id="node-id" type="text" placeholder="Paste an item ID" /><button id="btn-load-node" type="button" class="secondary">Open</button></div></section>
+        <section><label>Find a path</label><input id="trace-from" type="text" placeholder="Starting item ID" aria-label="Path start" /><input id="trace-to" type="text" placeholder="Ending item ID" aria-label="Path end" /><div class="row"><label class="inline" for="trace-depth" title="How many links to follow">Steps</label><input id="trace-depth" type="number" value="5" min="1" max="10" /><label class="chk" title="Also follow links that point the other way"><input id="trace-undirected" type="checkbox" /> Either way</label><button id="btn-trace" type="button">Find path</button></div></section>
+        <section><label>Similar wording</label><div class="row"><label class="inline" for="similar-limit">Results</label><input id="similar-limit" type="number" value="5" min="1" max="30" /><label class="inline" for="similar-threshold" title="How close the wording must be, from 0 to 1">Closeness</label><input id="similar-threshold" type="number" value="0.55" min="0" max="1" step="0.05" /></div><button id="btn-similar" type="button" class="secondary" title="Find facts that say something close to the open item">Find similar</button></section>
+        <section><label>How far to look</label><div class="row"><label class="inline" for="depth" title="How many links away from the open item">Steps</label><input id="depth" type="number" value="1" min="0" max="3" /><label class="inline" for="max-nodes" title="Most items to add in one step">How many</label><input id="max-nodes" type="number" value="10" min="1" max="50" /></div><div class="row"><button id="btn-context" type="button" class="secondary" title="Draw items within those limits">Show nearby</button><button id="btn-hop" type="button" class="secondary" title="Look one step further and draw again">One step further</button><button id="btn-clear" type="button" class="secondary">Clear map</button></div></section>
       </details>
-      <details class="sidebar-disclosure"><summary>Expand the map</summary><div class="row"><label class="inline" for="depth">Depth</label><input id="depth" type="number" value="1" min="0" max="3" /><label class="inline" for="max-nodes">Node limit</label><input id="max-nodes" type="number" value="10" min="1" max="50" /></div><div class="row"><button id="btn-context" type="button" class="secondary">Context</button><button id="btn-hop" type="button" class="secondary">+1 hop</button><button id="btn-clear" type="button" class="secondary">Clear map</button></div></details>
-      <details class="legend sidebar-disclosure"><summary>Relation legend</summary><ul class="legend-list"><li><span class="swatch swatch-contradicts"></span>Contradicts</li><li><span class="swatch swatch-follows"></span>Follows from</li><li><span class="swatch swatch-summarizes"></span>Summarizes</li><li><span class="swatch swatch-triplet"></span>Domain relation</li><li><span class="swatch swatch-default"></span>Related / mentions</li><li><span class="swatch swatch-path"></span>Highlighted path</li></ul></details>
-      <details id="log-section" class="sidebar-disclosure"><summary>Activity log</summary><pre id="log"></pre></details>
+      <details id="log-section" class="sidebar-disclosure"><summary>Activity</summary><pre id="log"></pre></details>
     </aside>
 
     <main class="graph-wrap">
-      <div class="canvas-heading"><div><span class="eyebrow">KNOWLEDGE MAP</span><h2 id="map-title">Your memory</h2><span id="map-caption" class="muted">Select a node to read its full text.</span></div><div class="canvas-actions"><label class="chk"><input id="edge-labels" type="checkbox" /> Relations</label><label class="inline preview-label" for="node-preview">Text</label><select id="node-preview" aria-label="Node text preview"><option value="hover" selected>On hover</option><option value="always">Always</option></select><button id="btn-inspector" type="button" class="secondary" aria-expanded="true" aria-controls="inspector-panel">Details</button></div></div>
+      <div class="canvas-heading"><div><h2 id="map-title">Your memory</h2><span id="map-caption" class="muted">Enter a memory name, then click Load.</span></div></div>
       <div id="cy" role="img" aria-label="Interactive knowledge graph"></div>
-      <div id="graph-empty" class="graph-empty"><div class="empty-orbit" aria-hidden="true">◈</div><h2>Start with a question.</h2><p>Search, load the brief, or enter a node ID<br />to explore facts, relations, and lifecycle.</p></div>
+      <div id="graph-empty" class="graph-empty"><div class="empty-orbit" aria-hidden="true">◈</div><h2 id="empty-title">Nothing on the map yet</h2><p id="empty-body">Enter a memory name on the left, then click Load.</p></div>
       <div id="notice" class="notice" role="status" aria-live="polite" hidden><span id="notice-text"></span><button id="btn-dismiss-notice" type="button" aria-label="Dismiss message">×</button></div>
-      <div class="graph-toolbar" role="toolbar" aria-label="Map controls"><div class="map-actions"><button id="btn-fit" type="button" class="secondary" title="Show the whole map">Fit view</button><button id="btn-layout" type="button" class="secondary" title="Rearrange nodes">Arrange</button><button id="btn-physics" type="button" class="secondary" aria-pressed="false" title="Enable attraction along connections and node repulsion">Physics</button></div><div class="zoom-controls"><button id="btn-zoom-out" type="button" class="secondary" aria-label="Zoom out">−</button><span id="zoom-level">100%</span><button id="btn-zoom-in" type="button" class="secondary" aria-label="Zoom in">+</button></div></div>
-      <div class="canvas-footer"><span><i class="dot fact-dot"></i>Fact</span><span><i class="dot entity-dot"></i>Entity</span><span>Drag to move · Scroll to zoom</span></div>
-      <button id="hover-plus" type="button" class="hover-plus" title="Load 10 neighbors" aria-label="Load 10 neighbors">+</button>
+      <div class="graph-toolbar" role="toolbar" aria-label="Map controls"><div class="map-actions"><button id="btn-fit" type="button" class="secondary" title="Show the whole map">Fit</button><button id="btn-layout" type="button" class="secondary" title="Space the items out again">Arrange</button><button id="btn-physics" type="button" class="secondary" aria-pressed="false" title="Let linked items pull together">Physics</button></div><div class="zoom-controls"><button id="btn-zoom-out" type="button" class="secondary" aria-label="Zoom out">−</button><span id="zoom-level">100%</span><button id="btn-zoom-in" type="button" class="secondary" aria-label="Zoom in">+</button></div><div class="view-controls"><label class="inline preview-label" for="node-preview" title="Short text on each item">Text</label><select id="node-preview" aria-label="Node text preview" title="On hover shows text only while the pointer is over an item. Always keeps a short line on every item."><option value="hover" selected>On hover</option><option value="always">Always</option></select><label class="chk" title="Write the kind of link on each line"><input id="edge-labels" type="checkbox" /> Names</label><button id="btn-inspector" type="button" class="secondary" aria-expanded="true" aria-controls="inspector-panel" title="Show or hide the panel on the right">Details</button></div></div>
+      <div class="canvas-footer" aria-label="Map legend"><span><i class="dot fact-dot"></i>Fact</span><span><i class="dot entity-dot"></i>Entity</span><span><i class="dot outdated-dot"></i>Outdated</span><span><i class="swatch swatch-contradicts"></i>Contradicts</span><span><i class="swatch swatch-follows"></i>Follows from</span><span><i class="swatch swatch-default"></i>Related</span></div>
+      <button id="hover-plus" type="button" class="hover-plus" title="Show more linked items" aria-label="Show more linked items">+</button>
       <div id="node-preview-tip" class="node-preview-tip" hidden></div>
     </main>
 
-    <aside id="inspector-panel" class="panel panel-right" aria-label="Node details">
-      <span class="eyebrow">INSPECTOR</span><h2>Node details</h2>
-      <p id="detail-empty" class="muted">Select a node or a search result to read its full text and explore its connections.</p>
+    <aside id="inspector-panel" class="panel panel-right" aria-label="About this item">
+      <h2>About this item</h2>
+      <p id="detail-empty" class="muted">Click an item on the map, or a result on the left, to read it.</p>
       <div id="detail" hidden>
-        <div class="detail-badges"><span id="detail-type" class="node-chip"></span><span id="detail-status" class="node-chip"></span><span id="detail-sim" class="node-chip"></span></div>
-        <p id="detail-policy" class="policy-hint" hidden></p>
         <pre id="detail-text"></pre>
-        <p id="detail-when" class="detail-when" hidden></p>
-        <div class="detail-actions"><button id="btn-neighbors" type="button">Expand neighbors</button><button id="btn-set-anchor" type="button" class="secondary">Explore context</button></div>
-        <div class="detail-id-row"><span id="detail-id"></span><button id="btn-copy-id" type="button" class="secondary">Copy ID</button></div>
-        <label>Connections in this map</label><ul id="detail-edges"></ul>
-        <div class="trace-actions"><button id="btn-trace-from" type="button" class="secondary">Trace from</button><button id="btn-trace-to" type="button" class="secondary">Trace to</button></div>
-        <details class="sidebar-disclosure provenance"><summary>Source & metadata</summary><dl id="detail-provenance"></dl><details><summary>Raw metadata</summary><pre id="detail-metadata"></pre></details><button id="btn-history" type="button" class="secondary">Version history</button><pre id="detail-history" hidden></pre></details>
+        <div class="detail-badges"><span id="detail-type" class="node-chip"></span><span id="detail-status" class="node-chip"></span><span id="detail-sim" class="node-chip"></span></div>
+        <p id="detail-validity" class="detail-validity" hidden></p>
+        <p id="detail-policy" class="policy-hint" hidden></p>
+        <div class="detail-actions"><button id="btn-neighbors" type="button" title="Add items linked to this one">Show links</button><button id="btn-set-anchor" type="button" class="secondary" title="Redraw the map around this item">Center here</button></div>
+        <label>On this map</label><ul id="detail-edges"></ul>
+        <div class="trace-actions"><button id="btn-trace-from" type="button" class="secondary" title="Use this item as the start of a path">Path starts here</button><button id="btn-trace-to" type="button" class="secondary" title="Use this item as the end of a path">Path ends here</button></div>
+        <details class="sidebar-disclosure provenance"><summary>More about this item</summary><p id="detail-when" class="detail-when" hidden></p><div class="detail-id-row"><span id="detail-id"></span><button id="btn-copy-id" type="button" class="secondary">Copy ID</button></div><dl id="detail-provenance"></dl><details><summary>Raw fields</summary><pre id="detail-metadata"></pre></details><button id="btn-history" type="button" class="secondary">Earlier versions</button><pre id="detail-history" hidden></pre></details>
       </div>
     </aside>
   </div>
 
   <dialog id="evolution-dialog" aria-labelledby="evolution-title">
-    <div class="evolution-header"><div><span class="eyebrow">GRAPH MEMORY × GRAPHDIFF</span><h2 id="evolution-title">How your memory evolves</h2></div><button id="btn-close-evolution" class="secondary" type="button">Close</button></div>
+    <div class="evolution-header"><div><span class="eyebrow">CHANGES</span><h2 id="evolution-title">How this memory changed</h2></div><button id="btn-close-evolution" class="secondary" type="button">Close</button></div>
     <p class="muted">Inspect activity by date, or compare two saved observations.</p>
     <p id="evolution-scope" class="scope-note">Capture the loaded map to begin. Each map belongs to one owner.</p>
     <div class="row capture-actions"><button id="btn-capture-map" type="button">Capture map</button><button id="btn-export-capture" type="button" class="secondary" disabled>Download snapshot</button><label class="snapshot-import">Import snapshots<input id="import-captures" type="file" accept=".json,application/json" multiple /></label></div>

@@ -21,6 +21,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
+- Explorer opens with a memory name and **Load**. Fit, arrange, zoom, text preview, link names, and details share one toolbar. The map legend shows fact, entity, outdated, contradicts, and follows-from. Details lead with the text, status, and validity; timestamps, the id, and raw fields are under More.
 - The server uses MCP 2 (`MCPServer`, `mcp>=2.3,<3`). FastMCP and mcp 1 are gone.
 - PyPI packaging adds `README_pypi.md`, project metadata, and `.github/workflows/publish.yml` (OIDC, tags `v*`, environments `pypi` and `testpypi`).
 - An `import_owner` call on `/mcp` is rejected when the body is larger than 4 MiB. `/admin/import` is not.

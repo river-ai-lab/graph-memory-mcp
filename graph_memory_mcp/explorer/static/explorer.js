@@ -24,6 +24,7 @@ const state = {
   pathEdgeKeys: new Set(),
   generation: 0,
   pending: 0,
+  connection: "connecting",
 };
 
 const $ = (id) => document.getElementById(id);
@@ -51,7 +52,7 @@ function escapeHtml(value) {
 async function callTool(tool, arguments_) {
   const generation = state.generation;
   state.pending++;
-  notice(({ get_brief: "Loading project brief…", get_node: "Loading full node text…", get_context: "Loading connected context…", search: "Searching memory…", recall_context: "Recalling connected context…", get_trace: "Finding a path…", find_similar: "Finding similar facts…", get_node_change_history: "Loading version history…" })[tool] || "Loading memory…");
+  notice(({ get_brief: "Loading this memory…", get_node: "Loading the full text…", get_context: "Loading linked items…", search: "Searching…", recall_context: "Searching and drawing links…", get_trace: "Finding a path…", find_similar: "Looking for similar wording…", get_node_change_history: "Loading earlier versions…" })[tool] || "Loading…");
   try {
     const res = await fetch("/api/tool", {
       method: "POST",
@@ -511,14 +512,35 @@ function applyNodeColors() {
   });
 }
 
+function paintEmpty() {
+  const title = $("empty-title");
+  const body = $("empty-body");
+  if (!title || !body) return;
+  if (state.connection === "offline") {
+    title.textContent = "Cannot reach the memory server";
+    body.textContent = "Start it, then reload this page.";
+    return;
+  }
+  if (state.connection === "connecting") {
+    title.textContent = "Connecting…";
+    body.textContent = "The map fills in when the memory is ready.";
+    return;
+  }
+  title.textContent = "Nothing on the map yet";
+  body.textContent = "Enter a memory name on the left, then click Load.";
+}
+
 function updateStats() {
   $("graph-empty").hidden = state.nodes.size > 0;
   $("tour-section").hidden = state.ownerId !== "luminaria";
   $("map-title").textContent = state.ownerId === "luminaria" ? "Luminaria" : state.ownerId;
   $("stats-bar").textContent = L.mapStats(cy.nodes().length, cy.edges().length);
   $("map-caption").textContent = state.nodes.size
-    ? "Select a node to read its full text."
-    : "Search, load the brief, or enter a node ID.";
+    ? "Click an item to read it."
+    : state.connection === "offline"
+      ? "The memory server is not responding."
+      : "Enter a memory name, then click Load.";
+  paintEmpty();
   for (const id of ["btn-fit", "btn-layout", "btn-zoom-in", "btn-zoom-out"]) $(id).disabled = !cy.nodes().length;
 }
 
@@ -546,23 +568,34 @@ function showDetail(nodeId, nodeOverride) {
   const typeName = n.node_type || "Fact";
   $("detail-type").textContent = typeName === "Entity" && n.type ? `Entity · ${n.type}` : typeName;
   $("detail-type").dataset.value = typeName;
-  $("detail-status").textContent = n.status || "active";
-  $("detail-status").dataset.value = n.status || "active";
+  $("detail-type").title = typeName === "Entity" ? "A named thing" : "A stored statement";
+  const status = n.status || "active";
+  const statusLabel = { active: "Active", outdated: "Outdated", archived: "Archived" }[status] || status;
+  $("detail-status").textContent = statusLabel;
+  $("detail-status").dataset.value = status;
+  $("detail-status").title = status === "outdated"
+    ? "Replaced or no longer current"
+    : status === "archived"
+      ? "Kept, but hidden from normal search"
+      : "Current";
   $("detail-sim").textContent =
     n.similarity != null ? `Similarity ${Number(n.similarity).toFixed(3)}` : "";
   $("detail-sim").hidden = n.similarity == null;
   const hint = policyHint(nodeText(n));
   $("detail-policy").hidden = !hint;
-  $("detail-policy").textContent = hint ? `Review hints (heuristic): ${hint}` : "";
+  $("detail-policy").textContent = hint ? `Worth a look: ${hint}` : "";
   $("detail-text").textContent = nodeText(n) || "(no text)";
+  const validity = L.validityLabel(n);
+  $("detail-validity").hidden = !validity;
+  $("detail-validity").textContent = validity;
   const when = L.detailWhen(n);
   $("detail-when").hidden = !when;
   $("detail-when").textContent = when;
 
   const related = [];
   for (const e of state.edges.values()) {
-    if (e.from_id === nodeId) related.push({ id: e.to_id, kind: `Outgoing · ${e.relation_type}` });
-    if (e.to_id === nodeId) related.push({ id: e.from_id, kind: `Incoming · ${e.relation_type}` });
+    if (e.from_id === nodeId) related.push({ id: e.to_id, kind: L.linkPhrase(false, e.relation_type) });
+    if (e.to_id === nodeId) related.push({ id: e.from_id, kind: L.linkPhrase(true, e.relation_type) });
   }
   $("detail-metadata").textContent = JSON.stringify({
     ...n.metadata, ...(n.source ? { source: n.source } : {}),
@@ -581,7 +614,7 @@ function showDetail(nodeId, nodeOverride) {
     : "<dd>No source metadata available.</dd>";
   $("detail-edges").innerHTML = related.length
     ? related.map(r => `<li><button type="button" class="connection-button" data-node-id="${escapeHtml(r.id)}" title="${escapeHtml(r.id)}"><span class="connection-kind">${escapeHtml(r.kind)}</span>${escapeHtml(state.nodes.has(r.id) ? nodeLabel(state.nodes.get(r.id)) : `Node ${r.id.slice(0, 8)}`)}</button></li>`).join("")
-    : "<li class='muted'>No connections in this map. Expand neighbors to explore.</li>";
+    : "<li class='muted'>No links on this map yet. Click Show links.</li>";
   for (const el of document.querySelectorAll("#overview [data-id], #search-results [data-id]")) {
     el.classList.toggle("active", el.dataset.id === nodeId);
     el.setAttribute("aria-pressed", String(el.dataset.id === nodeId));
@@ -791,7 +824,7 @@ function renderOverview(data) {
 
   $("overview").innerHTML = blocks.length
     ? blocks.join("")
-    : `<p class="muted">empty owner</p>`;
+    : `<p class="muted">Nothing stored under this name yet.</p>`;
 }
 
 async function loadBrief({ open = true, seedGraph = true } = {}) {
@@ -999,7 +1032,7 @@ function syncOwner() {
   state.generation++;
   clearGraph();
   $("overview").replaceChildren();
-  $("overview-stats").textContent = "Loading workspace…";
+  $("overview-stats").textContent = "Loading this memory…";
   $("results-section").hidden = true;
   $("search-results").replaceChildren();
   $("trace-from").value = "";
@@ -1061,7 +1094,7 @@ $("btn-similar").addEventListener("click", () => {
 
 $("btn-context").addEventListener("click", () => {
   const id = state.anchorId || $("node-id").value.trim();
-  if (!id) { notice("Select an anchor node first.", true); return; }
+  if (!id) { notice("Click an item on the map first.", true); return; }
   loadContext(id, { originNodeId: id }).catch((e) => log(`context: ${e.message}`));
 });
 
@@ -1069,7 +1102,7 @@ $("btn-hop").addEventListener("click", () => {
   const d = Number($("depth").value) || 1;
   $("depth").value = String(Math.min(3, d + 1));
   const id = state.anchorId || $("node-id").value.trim();
-  if (!id) { notice("Select an anchor node first.", true); return; }
+  if (!id) { notice("Click an item on the map first.", true); return; }
   loadContext(id, { depth: Number($("depth").value), originNodeId: id }).catch((e) =>
     log(`hop: ${e.message}`),
   );
@@ -1101,19 +1134,24 @@ async function checkHealth() {
     const res = await fetch("/health");
     const data = await res.json();
     if (data.ready) {
-      badge.textContent = "Memory connected";
+      state.connection = "ready";
+      badge.textContent = "Connected";
       badge.className = "badge badge-ok";
       applyAuthMode(data);
       if (generation === state.generation) loadBrief({ open: window.innerWidth > 600, seedGraph: true }).catch((e) => log(`brief error: ${e.message}`));
     } else {
+      state.connection = "offline";
       applyAuthMode(data);
-      badge.textContent = "Memory offline";
-      notice(data.error || "MCP is unavailable. Check the port-forward and restart Explorer to reconnect.", true);
+      badge.textContent = "Offline";
+      paintEmpty();
+      notice(data.error || "The memory server is not responding. Start it, then reload this page.", true);
       badge.className = "badge badge-err";
     }
   } catch {
-    badge.textContent = "Connection error";
-    notice("Explorer cannot reach its backend. Check the local server.", true);
+    state.connection = "offline";
+    badge.textContent = "Offline";
+    paintEmpty();
+    notice("Cannot reach the Explorer server. Check that it is running.", true);
     badge.className = "badge badge-err";
   }
 }
@@ -1128,7 +1166,7 @@ function applyAuthMode(data) {
 function renderResults(nodes, data) {
   $("results-section").hidden = false;
   $("overview-section").open = false;
-  $("result-summary").textContent = `${nodes.length} results${data.budget?.tokens_est != null ? ` · ≈${data.budget.tokens_est} tokens` : ""}. Open a result for full text.`;
+  $("result-summary").textContent = `${nodes.length} results${data.budget?.tokens_est != null ? ` · about ${data.budget.tokens_est} tokens` : ""}. Open one to read the full text.`;
   const pairs = data.contradiction_pairs || [];
   const pairBlock = pairs.length
     ? `<div class="ov-block"><h3>Contradicts</h3><ul class="ov-list">${pairs.map((c) => {
@@ -1139,8 +1177,8 @@ function renderResults(nodes, data) {
     : "";
   $("search-results").innerHTML = nodes.length
     ? `${pairBlock}<ul class="ov-list">${nodes.map(n => `<li data-id="${escapeHtml(n.node_id)}">${escapeHtml(preview(nodeText(n), 150))}<span class="result-meta">${escapeHtml(L.resultMeta(n))}</span></li>`).join("")}</ul>`
-    : '<p class="muted">No matches. Try a broader question or adjust your filters.</p>';
-  if (!nodes.length) notice("No matches. Try a broader question or adjust your filters.");
+    : '<p class="muted">No matches. Try a broader question, or change the filters under Narrow the search.</p>';
+  if (!nodes.length) notice("No matches. Try a broader question, or narrow the search.");
 }
 
 $("search-results").addEventListener("click", e => {
@@ -1213,7 +1251,7 @@ $("node-preview").addEventListener("change", () => applyPreviewMode({ relayout: 
 $("btn-present").addEventListener("click", () => {
   const active = document.body.classList.toggle("presenting");
   $("btn-present").setAttribute("aria-pressed", String(active));
-  $("btn-present").textContent = active ? "Exit present" : "Present";
+  $("btn-present").textContent = active ? "Exit focus" : "Focus";
   cy.resize();
   cy.fit(undefined, 60);
 });

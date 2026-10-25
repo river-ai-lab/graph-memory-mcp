@@ -92,7 +92,19 @@ test("brief stats name outdated facts and singular entity", () => {
     }),
     "4 facts · 1 entity · 5 relations · 3 active · 1 outdated",
   );
-  assert.equal(logic.mapStats(1, 1), "Map: 1 node · 1 edge");
+  assert.equal(logic.mapStats(1, 1), "1 item · 1 link");
+  assert.equal(logic.mapStats(2, 3), "2 items · 3 links");
+  assert.equal(
+    logic.validityLabel({ metadata: { valid_from: "2026-08-01", valid_until: "2026-10-01" } }),
+    "Valid from 2026-08-01 until 2026-10-01",
+  );
+  assert.equal(
+    logic.validityLabel({ metadata: { valid_from: "2026-10-01" } }),
+    "Valid from 2026-10-01 until still open",
+  );
+  assert.equal(logic.validityLabel({ metadata: {} }), "");
+  assert.equal(logic.linkPhrase(false, "FOLLOWS_FROM"), "Links to · FOLLOWS_FROM");
+  assert.equal(logic.linkPhrase(true, "CONTRADICTS"), "Linked from · CONTRADICTS");
 });
 
 test("detail line and history show validity and timestamps", () => {
