@@ -4,7 +4,7 @@ Same process as `/mcp`. In `client` and `header`, `ADMIN_TOKEN` is `Authorizatio
 
 | Route | Method | Purpose |
 |-------|--------|---------|
-| `/admin/health` | GET | graph backend, embeddings, indexes (≤20 owners), cache |
+| `/admin/health` | GET | graph backend, embeddings, cache; `vector_index_missing` for up to 20 owners (a missing index does not clear `healthy`) |
 | `/admin/ensure-indexes` | POST | vector/range indexes per owner graph |
 | `/admin/export/{owner_id}` | GET | nodes+relations; `?include_versions=&limit=&offset=&section=nodes\|relations` |
 | `/admin/import` | POST | `{owner_id, nodes, relations?, regenerate_embeddings?}` merge by `uid` (Fact/Entity/FactVersion) |

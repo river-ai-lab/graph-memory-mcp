@@ -31,6 +31,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Fixed
 
 - `--auth` and token mode resolve `owner_id` from the API key before validation. A call that omits it uses the key's first project. `--auth` still ignores a caller-supplied `owner_id`.
+- `health_check` stays healthy when a sampled owner has data but no vector index. `vector_index_missing` lists those owners (up to 20). Search still creates the index.
 
 ## [0.2.0] - 2026-07-20
 

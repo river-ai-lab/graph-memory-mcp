@@ -96,7 +96,11 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
 
         @mcp.tool(
             title="Health check",
-            description="Check server health (graph backend, embeddings, vector index).",
+            description=(
+                "Check server health. healthy follows the graph backend and embeddings. "
+                "vector_index_missing lists sampled owners that have no vector index yet; "
+                "that does not clear healthy. Search creates the index."
+            ),
             annotations=ToolAnnotations(readOnlyHint=True),
         )
         def health_check() -> dict:

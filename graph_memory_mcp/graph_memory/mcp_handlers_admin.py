@@ -28,12 +28,21 @@ def test_connection(db: FalkorDBClient) -> Dict:
     return success_response(ready=ok)
 
 
+# Cap the index sample. Listing every owner graph on each health call does not scale.
+_INDEX_SAMPLE = 20
+
+
 def health_check(db: FalkorDBClient, embedding_service: Any) -> Dict:
-    """Comprehensive health check."""
+    """Report backend, embeddings, and which sampled owners still lack a vector index.
+
+    Search creates a missing index on first use. An owner that already has facts
+    but no index does not clear ``healthy``.
+    """
     falkordb_ok = False
     arcade_ok = False
     embeddings_ok = False
-    vector_ok = False
+    missing: list[str] = []
+    index_probe_ok = False
 
     try:
         health = db.health_check()
@@ -50,22 +59,29 @@ def health_check(db: FalkorDBClient, embedding_service: Any) -> Dict:
         logger.error("health_check: embeddings probe failed: %s", exc)
 
     try:
-        # Graph-per-owner: check indexes across existing owner graphs (capped).
-        owners = db.list_owners()[:20] if hasattr(db, "list_owners") else []
-        if owners:
-            vector_ok = all(
-                all(db.get_vector_index_status(owner_id=o).values()) for o in owners
-            )
-        else:
-            vector_ok = True  # no owner graphs yet — nothing to index
+        dimension = int(getattr(embedding_service, "dimension", 0) or 0)
+    except (TypeError, ValueError):
+        dimension = 0
+
+    try:
+        owners = db.list_owners()[:_INDEX_SAMPLE] if hasattr(db, "list_owners") else []
+        for owner in owners:
+            status = db.get_vector_index_status(owner_id=owner)
+            if not status or not all(status.values()):
+                missing.append(str(owner))
+        index_probe_ok = True
     except Exception as exc:
         logger.error("health_check: vector index probe failed: %s", exc)
+        missing = []
 
+    # Embeddings with a known dimension are what search uses to build an index.
+    can_create_indexes = embeddings_ok and dimension > 0 and index_probe_ok
     return success_response(
         falkordb=falkordb_ok,
         embeddings=embeddings_ok,
-        vector_index=vector_ok,
-        healthy=(falkordb_ok or arcade_ok) and embeddings_ok and vector_ok,
+        vector_index=index_probe_ok and not missing,
+        vector_index_missing=missing,
+        healthy=(falkordb_ok or arcade_ok) and can_create_indexes,
         cache=db.cache.stats(),
     )
 
