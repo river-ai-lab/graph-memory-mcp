@@ -393,7 +393,7 @@ See [docs/features.md](docs/features.md) for details.
 
 ## Graph Explorer
 
-Local read-only web UI. It talks to a running MCP server: brief, search, recall, context, traces, and node details (status, validity, timestamps). CONTRADICTS and FOLLOWS_FROM are drawn. Node text on the map is **On hover** by default, or **Always** (short preview); the choice is stored in `localStorage`.
+Local read-only web UI. It talks to a running MCP server: brief, search, recall, context, traces, and node details (status, validity, timestamps). CONTRADICTS and FOLLOWS_FROM are drawn. Node text on the map is **On hover** by default, or **Always** (one short line). Always-mode labels hide when the map is zoomed out. The choice is stored in `localStorage`. The brief counts outdated facts. With `--auth`, the owner field shows the key's project and cannot be edited.
 
 ```bash
 # Terminal 1 — MCP server

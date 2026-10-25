@@ -89,6 +89,110 @@
     return edges;
   }
 
+  function countPhrase(count, singular, plural) {
+    const value = Number(count) || 0;
+    return `${value} ${value === 1 ? singular : plural}`;
+  }
+
+  function briefStatLine(stats) {
+    const source = stats || {};
+    const parts = [];
+    if (source.total_facts != null) parts.push(countPhrase(source.total_facts, "fact", "facts"));
+    if (source.total_entities != null) {
+      parts.push(countPhrase(source.total_entities, "entity", "entities"));
+    }
+    if (source.total_relations != null) {
+      parts.push(countPhrase(source.total_relations, "relation", "relations"));
+    }
+    if (source.active_facts != null) parts.push(`${source.active_facts} active`);
+    if (source.outdated_facts) parts.push(`${source.outdated_facts} outdated`);
+    if (source.archived_facts) parts.push(`${source.archived_facts} archived`);
+    return parts.join(" · ");
+  }
+
+  function mapStats(nodes, edges) {
+    return `Map: ${countPhrase(nodes, "node", "nodes")} · ${countPhrase(edges, "edge", "edges")}`;
+  }
+
+  function detailWhen(node) {
+    const current = node || {};
+    const meta = current.metadata || {};
+    const bits = [];
+    if (meta.valid_from || meta.valid_until) {
+      bits.push(`Valid ${meta.valid_from || "…"} → ${meta.valid_until || "open"}`);
+    }
+    if (current.created_at) bits.push(`Created ${formatTime(current.created_at)}`);
+    if (
+      current.updated_at != null &&
+      current.updated_at !== "" &&
+      String(current.updated_at) !== String(current.created_at)
+    ) {
+      bits.push(`Updated ${formatTime(current.updated_at)}`);
+    }
+    if (current.expires_at) bits.push(`Expires ${formatTime(current.expires_at)}`);
+    return bits.join(" · ");
+  }
+
+  function formatHistory(versions) {
+    if (!versions || !versions.length) return "";
+    return versions
+      .map((version) => {
+        const meta = (version && version.metadata) || {};
+        const bits = [formatTime(version && version.version_timestamp, true)];
+        if (version && version.status) bits.push(version.status);
+        if (meta.valid_from) bits.push(`from ${meta.valid_from}`);
+        if (meta.valid_until) bits.push(`until ${meta.valid_until}`);
+        return `${bits.join(" · ")}\n${preview(version && version.text, 240)}`;
+      })
+      .join("\n\n");
+  }
+
+  function placeEdge(store, edge, options) {
+    const path = Boolean(options && options.path);
+    const from = edge && (edge.from_id || edge.fromId);
+    const to = edge && (edge.to_id || edge.toId);
+    const type = (edge && (edge.relation_type || edge.relationType)) || "RELATED";
+    const edges = { ...((store && store.edges) || {}) };
+    const pathKeys = new Set((store && store.pathKeys) || []);
+    if (!from || !to) return { edges, pathKeys: [...pathKeys] };
+
+    if (type === "CONTRADICTS") {
+      const [left, right] = String(from) <= String(to) ? [String(from), String(to)] : [String(to), String(from)];
+      const key = `${left}|CONTRADICTS|${right}`;
+      const opposite = `${right}|CONTRADICTS|${left}`;
+      if (opposite !== key && edges[opposite]) {
+        if (!edges[key]) edges[key] = { ...edges[opposite], from_id: left, to_id: right };
+        delete edges[opposite];
+        pathKeys.delete(opposite);
+      }
+      const prev = edges[key];
+      edges[key] = {
+        from_id: left,
+        to_id: right,
+        relation_type: "CONTRADICTS",
+        properties: edge.properties != null ? edge.properties : (prev && prev.properties) || {},
+      };
+      if (path) pathKeys.add(key);
+      return { edges, pathKeys: [...pathKeys] };
+    }
+
+    const key = `${from}|${type}|${to}`;
+    const reverse = `${to}|${type}|${from}`;
+    if (path && !edges[key] && edges[reverse]) {
+      pathKeys.add(reverse);
+      return { edges, pathKeys: [...pathKeys] };
+    }
+    const prev = edges[key];
+    edges[key] = {
+      from_id: String(from),
+      to_id: String(to),
+      relation_type: type,
+      properties: edge.properties != null ? edge.properties : (prev && prev.properties) || {},
+    };
+    if (path) pathKeys.add(key);
+    return { edges, pathKeys: [...pathKeys] };
+  }
+
   function toolArguments(hideOwner, extra) {
     const args = { ...(extra || {}) };
     if (hideOwner) delete args.owner_id;
@@ -154,6 +258,12 @@
     previewChars,
     shouldShowAlwaysLabels,
     contradictionEdges,
+    countPhrase,
+    briefStatLine,
+    mapStats,
+    detailWhen,
+    formatHistory,
+    placeEdge,
     toolArguments,
     searchFilterArgs,
     resultMeta,

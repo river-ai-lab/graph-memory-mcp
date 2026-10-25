@@ -569,7 +569,11 @@ class FalkorOps:
     RETURN [n in nodes(path) | {{
         node_id: n.uid,
         node_type: labels(n)[0],
-        text: n.text
+        text: n.text,
+        status: n.status,
+        created_at: n.created_at,
+        updated_at: n.updated_at,
+        metadata: n.metadata_str
     }}] as nodes,
     [r in relationships(path) | {{
         relation_type: type(r)
@@ -586,7 +590,11 @@ class FalkorOps:
     RETURN [n in nodes(path) | {{
         node_id: n.uid,
         node_type: labels(n)[0],
-        text: n.text
+        text: n.text,
+        status: n.status,
+        created_at: n.created_at,
+        updated_at: n.updated_at,
+        metadata: n.metadata_str
     }}] as nodes,
     [r in relationships(path) | {{
         relation_type: type(r)

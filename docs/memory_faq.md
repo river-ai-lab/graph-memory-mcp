@@ -55,6 +55,6 @@ Each `owner_id` is its own ArcadeDB database, or its own FalkorDB graph when `GR
 
 ## Agent vs Explorer
 
-Agents → MCP tools. Explorer → human read-only GUI over MCP. Against `graph-memory-mcp --auth`, start Explorer with `--auth` and `GRAPH_MEMORY_API_KEY` (or `--token`). The owner is the key's first project. Map labels default to **On hover**; **Always** keeps a short preview.
+Agents → MCP tools. Explorer → human read-only GUI over MCP. Against `graph-memory-mcp --auth`, start Explorer with `--auth` and `GRAPH_MEMORY_API_KEY` (or `--token`). The owner field shows the key's first project. Map labels default to **On hover**; **Always** is one short line and hides when the map is zoomed out.
 
 Policy: [memory_policies_for_LLM.md](./memory_policies_for_LLM.md).

@@ -101,6 +101,13 @@ async def test_explorer_auth_mode_strips_owner_and_reads_graph(
                 assert stats.get("success") is True, stats
                 assert stats["stats"]["total_facts"] >= 1
 
+                brief = client.post(
+                    "/api/tool",
+                    json={"tool": "get_brief", "arguments": {"owner_id": "ignored"}},
+                ).json()
+                assert brief.get("success") is True, brief
+                assert brief.get("owner_id") == owner
+
                 node = client.post(
                     "/api/tool",
                     json={

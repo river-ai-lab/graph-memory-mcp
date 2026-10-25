@@ -77,6 +77,80 @@ test("any status includes outdated; active does not", () => {
   });
 });
 
+test("brief stats name outdated facts and singular entity", () => {
+  assert.equal(
+    logic.briefStatLine({
+      total_facts: 4,
+      total_entities: 1,
+      total_relations: 5,
+      active_facts: 3,
+      outdated_facts: 1,
+      archived_facts: 0,
+    }),
+    "4 facts · 1 entity · 5 relations · 3 active · 1 outdated",
+  );
+  assert.equal(logic.mapStats(1, 1), "Map: 1 node · 1 edge");
+});
+
+test("detail line and history show validity and timestamps", () => {
+  const node = {
+    created_at: Date.UTC(2026, 9, 25, 21, 7, 0),
+    updated_at: Date.UTC(2026, 9, 25, 21, 8, 0),
+    metadata: { valid_from: "2026-08-01", valid_until: "2026-10-01" },
+  };
+  const line = logic.detailWhen(node);
+  assert.match(line, /Valid 2026-08-01 → 2026-10-01/);
+  assert.match(line, /Created /);
+  assert.match(line, /Updated /);
+  assert.match(line, /2026/);
+  const history = logic.formatHistory([
+    {
+      version_timestamp: Date.UTC(2026, 9, 1, 12, 0, 0),
+      status: "active",
+      text: "Beta ships October 1.",
+      metadata: { valid_from: "2026-08-01" },
+    },
+  ]);
+  assert.match(history, /active/);
+  assert.match(history, /from 2026-08-01/);
+  assert.match(history, /Beta ships October 1\./);
+  assert.equal(logic.formatHistory([]), "");
+});
+
+test("contradictions collapse to one edge and a path does not invent the reverse", () => {
+  let store = { edges: {}, pathKeys: [] };
+  store = logic.placeEdge(store, {
+    from_id: "b",
+    to_id: "a",
+    relation_type: "CONTRADICTS",
+  });
+  store = logic.placeEdge(store, {
+    from_id: "a",
+    to_id: "b",
+    relation_type: "CONTRADICTS",
+  });
+  assert.deepEqual(Object.keys(store.edges), ["a|CONTRADICTS|b"]);
+  store = logic.placeEdge(store, {
+    from_id: "a",
+    to_id: "c",
+    relation_type: "RELATED_TO",
+  });
+  store = logic.placeEdge(
+    store,
+    { from_id: "c", to_id: "a", relation_type: "RELATED_TO" },
+    { path: true },
+  );
+  assert.deepEqual(Object.keys(store.edges), ["a|CONTRADICTS|b", "a|RELATED_TO|c"]);
+  assert.deepEqual(store.pathKeys, ["a|RELATED_TO|c"]);
+  store = logic.placeEdge(
+    store,
+    { from_id: "c", to_id: "d", relation_type: "FOLLOWS_FROM" },
+    { path: true },
+  );
+  assert.ok(store.edges["c|FOLLOWS_FROM|d"]);
+  assert.ok(store.pathKeys.includes("c|FOLLOWS_FROM|d"));
+});
+
 test("search result meta and provenance include status, validity, timestamps", () => {
   const node = {
     node_type: "Fact",

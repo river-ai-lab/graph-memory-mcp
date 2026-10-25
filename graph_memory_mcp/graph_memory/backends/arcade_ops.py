@@ -951,6 +951,10 @@ class ArcadeOps:
                     "node_id": record.get("uid"),
                     "node_type": label,
                     "text": record.get("text"),
+                    "status": record.get("status"),
+                    "created_at": record.get("created_at"),
+                    "updated_at": record.get("updated_at"),
+                    "metadata": record.get("metadata_str"),
                 }
             )
         relations = []

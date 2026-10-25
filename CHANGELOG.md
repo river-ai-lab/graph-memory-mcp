@@ -36,6 +36,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Fixed
 
 - Explorer search draws `CONTRADICTS` from `contradiction_pairs` and lists those pairs. Status "Any" includes outdated facts.
+- Explorer draws one `CONTRADICTS` edge and highlights an existing relation on a path instead of adding the reverse arrow. Neighbor "+" uses stable `get_context` pages (`page=true`) so later pages do not skip nodes. Always-mode labels are one line and the layout leaves room for them. The brief counts outdated and archived facts. Details show validity and timestamps without opening metadata. Version history is readable. `get_trace` nodes include status, timestamps, and metadata. `--auth` shows the key's project in the owner field.
 - Explorer context expansion sends `include_outdated` and `include_ttl`, so FOLLOWS_FROM / outdated neighbors appear on the map.
 - Explorer details and search results show status, validity (`valid_from` / `valid_until`), TTL, and created/updated times. Unix-ms timestamps format correctly.
 - `get_context` / `recall_context` return `status`, `created_at`, and `metadata` on walk nodes.

@@ -245,7 +245,7 @@ $("btn-history").addEventListener("click", async () => {
     if (state.selectedId !== id) return;
     $("detail-history").hidden = false;
     $("detail-history").textContent = result.versions?.length
-      ? JSON.stringify(result.versions, null, 2)
+      ? L.formatHistory(result.versions)
       : "No saved versions. Creation time alone cannot restore an earlier text or status.";
   } catch (error) { notice(error.message, true); }
 });

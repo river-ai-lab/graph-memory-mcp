@@ -804,6 +804,33 @@ def test_get_context_default_and_pagination_integration(memory_backend):
     page2_ids = {n["node_id"] for n in page2["nodes"]}
     assert page1_ids.isdisjoint(page2_ids)
 
+    # page=true uses that same order from offset 0, so the pages cover the
+    # neighborhood once with no gaps and no overlap.
+    seen: set[str] = set()
+    offset = 0
+    while offset < 30:
+        paged = get_context(
+            db,
+            cfg,
+            node_id=center_id,
+            owner_id=owner_id,
+            depth=1,
+            max_nodes=2,
+            offset=offset,
+            page=True,
+        )
+        assert paged["success"] is True
+        assert paged["offset"] == offset
+        ids = [node["node_id"] for node in paged["nodes"]]
+        assert len(ids) == len(set(ids))
+        assert seen.isdisjoint(ids)
+        seen.update(ids)
+        if not paged["has_more"]:
+            break
+        assert len(ids) == 2
+        offset += 2
+    assert seen == {node["node_id"] for node in default_result["nodes"]}
+
 
 class _FakeResult:
     def __init__(self, rows):

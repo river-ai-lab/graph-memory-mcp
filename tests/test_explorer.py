@@ -12,7 +12,7 @@ from starlette.testclient import TestClient
 
 from graph_memory_mcp.explorer.app import READ_ONLY_TOOLS, STATIC_DIR, create_app
 from graph_memory_mcp.explorer.mcp_client import McpHttpClient
-from graph_memory_mcp.graph_memory.mcp_handlers_graph import get_context
+from graph_memory_mcp.graph_memory.mcp_handlers_graph import get_context, get_trace
 from graph_memory_mcp.graph_memory.mcp_handlers_nodes import create_node, update_node
 from graph_memory_mcp.graph_memory.mcp_handlers_relations import create_relation
 
@@ -86,6 +86,7 @@ def test_explorer_api_with_mock_client():
         assert 'id="search-compact"' in page.text
         assert 'id="detail-policy"' in page.text
         assert 'id="node-preview"' in page.text
+        assert 'id="detail-when"' in page.text
         assert 'id="node-preview-tip"' in page.text
         assert "On hover" in page.text
         assert "Always" in page.text
@@ -265,3 +266,18 @@ def test_get_context_exposes_outdated_status_and_validity(memory_backend):
         and {e["from_id"], e["to_id"]} == {current["node_id"], old["node_id"]}
         for e in shown["edges"]
     )
+    traced = get_trace(
+        db,
+        from_id=current["node_id"],
+        to_id=old["node_id"],
+        owner_id=owner,
+    )
+    assert traced["success"] is True
+    by_trace = {n["node_id"]: n for n in traced["nodes"]}
+    assert by_trace[old["node_id"]]["status"] == "outdated"
+    assert by_trace[old["node_id"]]["text"] == "Beta ships October 1."
+    assert (by_trace[old["node_id"]].get("metadata") or {}).get("valid_until") == (
+        "2026-10-01"
+    )
+    assert by_trace[old["node_id"]].get("created_at") is not None
+    assert traced["relations"][0]["relation_type"] == "FOLLOWS_FROM"

@@ -133,7 +133,8 @@ body.auth-owner #owner-bound { display: block !important; }
 .node-chip[data-value=Fact], .node-chip[data-value=active] { border-color: #38665b; color: #a6ecda; }
 .node-chip[data-value=outdated] { border-color: #78603d; color: var(--warn); }
 .node-chip[data-value=archived] { border-color: #475569; color: #94a3b8; }
-#detail-text { white-space: pre-wrap; overflow-wrap: anywhere; font: 14px/1.8 ui-sans-serif, system-ui, sans-serif; margin: 0 0 20px; }
+#detail-text { white-space: pre-wrap; overflow-wrap: anywhere; font: 14px/1.8 ui-sans-serif, system-ui, sans-serif; margin: 0 0 8px; }
+.detail-when { color: var(--muted); font-size: 12px; line-height: 1.6; margin: 0 0 16px; }
 .detail-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 18px 0; }
 .detail-actions button { padding-inline: 7px; }
 .detail-id-row { display: flex; gap: 8px; align-items: center; border-block: 1px solid var(--border); padding: 11px 0; margin: 18px 0; }

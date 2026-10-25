@@ -97,6 +97,7 @@ def get_stats(db: FalkorDBClient, *, owner_id: str = "default") -> Dict:
         "total_entities": 0,
         "active_facts": 0,
         "outdated_facts": 0,
+        "archived_facts": 0,
     }
 
     for row in db.label_counts(owner_id):
@@ -115,6 +116,8 @@ def get_stats(db: FalkorDBClient, *, owner_id: str = "default") -> Dict:
             stats["active_facts"] = count
         elif status == "outdated":
             stats["outdated_facts"] = count
+        elif status == "archived":
+            stats["archived_facts"] = count
 
     rel_rows = db.relation_count(owner_id)
     stats["total_relations"] = rel_rows[0][0] if rel_rows else 0
@@ -172,6 +175,7 @@ def get_brief(
     stale_cutoff_ms = int(time.time() * 1000) - stale_days * 24 * 3600 * 1000
     stale_count = int(db.brief_stale_count(owner_id, stale_cutoff_ms))
     payload = {
+        "owner_id": owner_id,
         "about": about,
         "top_facts": top_facts,
         "contradictions": contradictions,

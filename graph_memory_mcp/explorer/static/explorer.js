@@ -218,19 +218,13 @@ function mergeNodes(nodes, meta = {}) {
 }
 
 function mergeEdges(edges, { path = false } = {}) {
-  for (const e of edges || []) {
-    const from = e.from_id;
-    const to = e.to_id;
-    if (!from || !to) continue;
-    const key = `${from}|${e.relation_type || "?"}|${to}`;
-    state.edges.set(key, {
-      from_id: from,
-      to_id: to,
-      relation_type: e.relation_type || "RELATED",
-      properties: e.properties ?? state.edges.get(key)?.properties ?? {},
-    });
-    if (path) state.pathEdgeKeys.add(key);
-  }
+  let store = {
+    edges: Object.fromEntries(state.edges),
+    pathKeys: [...state.pathEdgeKeys],
+  };
+  for (const edge of edges || []) store = L.placeEdge(store, edge, { path });
+  state.edges = new Map(Object.entries(store.edges));
+  state.pathEdgeKeys = new Set(store.pathKeys);
 }
 
 function edgesFromTrace(nodes, relations) {
@@ -367,21 +361,22 @@ function syncGraph({ fullLayout = false, originNodeId = null } = {}) {
   applyNodeColors();
   applyPreviewMode();
 
+  const labelLayout = L.shouldShowAlwaysLabels(state.previewMode, cy.zoom());
   if ((fullLayout || (!originNodeId && addedNodes.length > 0)) && cy.nodes().length > 1) {
     const connected = cy.edges().length > 0;
     cy.layout({
       name: connected ? (cy.nodes().length <= 16 ? "concentric" : "cose") : "grid",
       animate: false,
-      padding: 60,
+      padding: labelLayout ? 84 : 60,
       concentric: node => node.data("nodeType") === "Entity" ? 2 : 1,
       levelWidth: () => 1,
-      minNodeSpacing: 65,
-      nodeDimensionsIncludeLabels: !connected || cy.nodes().length > 16,
+      minNodeSpacing: labelLayout ? 40 : 65,
+      nodeDimensionsIncludeLabels: labelLayout || !connected || cy.nodes().length > 16,
       avoidOverlap: true,
-      spacingFactor: connected ? 1.1 : 1.15,
-      nodeRepulsion: () => 12000,
-      idealEdgeLength: () => 100,
-      componentSpacing: 180,
+      spacingFactor: labelLayout ? 1.65 : connected ? 1.1 : 1.15,
+      nodeRepulsion: () => (labelLayout ? 32000 : 12000),
+      idealEdgeLength: () => (labelLayout ? 160 : 100),
+      componentSpacing: labelLayout ? 220 : 180,
       fit: true,
     }).run();
     if (cy.zoom() > 1.2) cy.zoom({ level: 1.2, renderedPosition: { x: cy.width()/2, y: cy.height()/2 } });
@@ -413,16 +408,18 @@ let cy = cytoscape({
       selector: "node",
       style: {
         label: "",
-        "font-size": 14,
-        "line-height": 1.4,
+        "font-size": 11,
+        "line-height": 1.25,
         color: "#d6e5f3",
         "text-valign": "bottom",
-        "text-margin-y": 9,
-        "text-wrap": "wrap",
-        "text-max-width": 160,
+        "text-halign": "center",
+        "text-margin-y": 6,
+        "text-wrap": "ellipsis",
+        "text-max-width": 168,
         "text-background-color": "#0b111b",
-        "text-background-opacity": 0.85,
-        "text-background-padding": 3,
+        "text-background-opacity": 0.92,
+        "text-background-padding": "3px",
+        "min-zoomed-font-size": 8,
         width: 34,
         height: 34,
         "border-width": 2,
@@ -494,10 +491,10 @@ let cy = cytoscape({
     {
       selector: "edge.edge-path",
       style: {
-        width: 3.5,
-        "line-color": "#f0ce83",
-        "target-arrow-color": "#f0ce83",
-        "line-style": "solid",
+        width: 4,
+        "underlay-color": "#f0ce83",
+        "underlay-opacity": 0.55,
+        "underlay-padding": 5,
       },
     },
   ],
@@ -515,8 +512,10 @@ function updateStats() {
   $("graph-empty").hidden = state.nodes.size > 0;
   $("tour-section").hidden = state.ownerId !== "luminaria";
   $("map-title").textContent = state.ownerId === "luminaria" ? "Luminaria" : state.ownerId;
-  $("stats-bar").textContent = `Map: ${cy.nodes().length} nodes · ${cy.edges().length} edges`;
-  $("map-caption").textContent = state.nodes.size ? "Select a node to read its full text." : "Search or choose a model to start.";
+  $("stats-bar").textContent = L.mapStats(cy.nodes().length, cy.edges().length);
+  $("map-caption").textContent = state.nodes.size
+    ? "Select a node to read its full text."
+    : "Search, load the brief, or enter a node ID.";
   for (const id of ["btn-fit", "btn-layout", "btn-zoom-in", "btn-zoom-out"]) $(id).disabled = !cy.nodes().length;
 }
 
@@ -541,8 +540,9 @@ function showDetail(nodeId, nodeOverride) {
   $("detail-id").textContent = nodeId;
   $("detail-id").title = nodeId;
   $("btn-copy-id").textContent = "Copy ID";
-  $("detail-type").textContent = n.node_type || "Fact";
-  $("detail-type").dataset.value = n.node_type || "Fact";
+  const typeName = n.node_type || "Fact";
+  $("detail-type").textContent = typeName === "Entity" && n.type ? `Entity · ${n.type}` : typeName;
+  $("detail-type").dataset.value = typeName;
   $("detail-status").textContent = n.status || "active";
   $("detail-status").dataset.value = n.status || "active";
   $("detail-sim").textContent =
@@ -552,6 +552,9 @@ function showDetail(nodeId, nodeOverride) {
   $("detail-policy").hidden = !hint;
   $("detail-policy").textContent = hint ? `Review hints (heuristic): ${hint}` : "";
   $("detail-text").textContent = nodeText(n) || "(no text)";
+  const when = L.detailWhen(n);
+  $("detail-when").hidden = !when;
+  $("detail-when").textContent = when;
 
   const related = [];
   for (const e of state.edges.values()) {
@@ -616,25 +619,30 @@ async function loadContext(nodeId, opts = {}) {
 }
 
 async function loadNeighbors(nodeId, pageSize = 10) {
+  // Stable pages (page=true), not the priority walk. Skip a page that only
+  // repeats nodes already on the map so one click still reveals new neighbors.
   let off = state.neighborOffset.get(nodeId) ?? 0;
-  const args = contextArgs(nodeId, {
-    depth: 1,
-    max_nodes: pageSize,
-  });
-  if (off > 0) args.offset = off;
-
-  const data = await callTool("get_context", args);
-  mergeToolResult(data, { fresh: true }, { originNodeId: nodeId });
-  const returned = data.nodes?.length || 0;
-  if (off > 0) {
-    state.neighborOffset.set(
-      nodeId,
-      data.has_more ? off + pageSize : off + returned,
+  let data = null;
+  let added = 0;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const before = state.nodes.size;
+    data = await callTool(
+      "get_context",
+      contextArgs(nodeId, {
+        depth: 1,
+        max_nodes: pageSize,
+        offset: off,
+        page: true,
+      }),
     );
-  } else {
-    state.neighborOffset.set(nodeId, pageSize);
+    mergeToolResult(data, { fresh: true }, { originNodeId: nodeId });
+    added = state.nodes.size - before;
+    off += pageSize;
+    state.neighborOffset.set(nodeId, off);
+    if (added > 0 || !data.has_more) break;
   }
-  log(`neighbors ${nodeId} offset=${off} +${returned}`);
+  log(`neighbors ${nodeId} offset=${off - pageSize} +${added}`);
+  if (!added) notice("No further neighbors in this map.");
   return data;
 }
 
@@ -724,14 +732,8 @@ function budgetNote(data) {
 
 function renderOverview(data) {
   const stats = data.stats || {};
-  const parts = [];
-  if (stats.total_facts != null) parts.push(`${stats.total_facts} facts`);
-  if (stats.total_entities != null) parts.push(`${stats.total_entities} entities`);
-  if (stats.total_relations != null) parts.push(`${stats.total_relations} rels`);
-  if (stats.active_facts != null) parts.push(`${stats.active_facts} active`);
-  $("overview-stats").textContent = parts.length
-    ? parts.join(" · ")
-    : "no stats";
+  const line = L.briefStatLine(stats);
+  $("overview-stats").textContent = line || "no stats";
 
   const blocks = [];
   const about = data.about;
@@ -795,14 +797,20 @@ async function loadBrief({ open = true, seedGraph = true } = {}) {
   $("overview-section").open = open;
   if (!seedGraph) { updateStats(); log("project brief loaded"); return; }
   // seed graph with top + contradict endpoints for click targets
+  if (state.hideOwner && data.owner_id) {
+    state.ownerId = data.owner_id;
+    $("owner-id").value = data.owner_id;
+    localStorage.setItem("gm_owner_id", data.owner_id);
+  }
+  const asFact = (node) => ({ node_type: "Fact", status: "active", ...node });
   const seedNodes = [
-    ...(data.about ? [data.about] : []),
-    ...(data.top_facts || []),
+    ...(data.about ? [asFact(data.about)] : []),
+    ...(data.top_facts || []).map(asFact),
   ];
   for (const c of data.contradictions || []) {
     seedNodes.push(
-      { node_id: c.from_id, text: c.from_text },
-      { node_id: c.to_id, text: c.to_text },
+      asFact({ node_id: c.from_id, text: c.from_text }),
+      asFact({ node_id: c.to_id, text: c.to_text }),
     );
   }
   mergeNodes(seedNodes, { fresh: true });
@@ -1166,25 +1174,33 @@ $("edge-labels").addEventListener("change", () => {
   cy.style().selector("edge").style("label", $("edge-labels").checked ? "data(label)" : "").update();
 });
 let lastAlwaysLabels = null;
-function applyPreviewMode() {
+let applyingPreview = false;
+function applyPreviewMode({ relayout = false } = {}) {
+  if (applyingPreview) return;
   state.previewMode = L.normalizePreviewMode($("node-preview").value);
   L.writePreviewMode(localStorage, state.previewMode);
   const show = L.shouldShowAlwaysLabels(state.previewMode, cy.zoom());
-  cy.batch(() => {
-    for (const n of state.nodes.values()) {
-      const ele = cy.getElementById(n.node_id);
-      if (ele.nonempty()) ele.data("label", nodeLabel(n).replace(" · ", "\n"));
+  applyingPreview = true;
+  try {
+    cy.batch(() => {
+      for (const n of state.nodes.values()) {
+        const ele = cy.getElementById(n.node_id);
+        if (ele.nonempty()) ele.data("label", nodeLabel(n).replace(" · ", "\n"));
+      }
+    });
+    if (lastAlwaysLabels !== show) {
+      lastAlwaysLabels = show;
+      cy.style().selector("node").style("label", show ? "data(label)" : "").update();
     }
-  });
-  if (lastAlwaysLabels !== show) {
-    lastAlwaysLabels = show;
-    cy.style().selector("node").style("label", show ? "data(label)" : "").update();
+  } finally {
+    applyingPreview = false;
   }
   if (!show && state.hoverId) showNodePreviewTip(cy.getElementById(state.hoverId));
   else if (show) hideNodePreviewTip();
+  if (relayout && show && cy.nodes().length > 1) syncGraph({ fullLayout: true });
 }
 $("node-preview").value = state.previewMode;
-$("node-preview").addEventListener("change", applyPreviewMode);
+$("node-preview").addEventListener("change", () => applyPreviewMode({ relayout: true }));
 $("btn-present").addEventListener("click", () => {
   const active = document.body.classList.toggle("presenting");
   $("btn-present").setAttribute("aria-pressed", String(active));

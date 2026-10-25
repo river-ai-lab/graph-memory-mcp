@@ -34,6 +34,8 @@ def test_get_brief_anchor_recency_and_ttl():
     empty = get_brief(db, owner_id=owner_id)
     assert empty["success"] is True
     assert empty["about"] is None
+    assert empty["owner_id"] == owner_id
+    assert empty["stats"]["archived_facts"] == 0
 
     hub = create_node(
         db,

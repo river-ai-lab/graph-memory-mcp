@@ -234,12 +234,17 @@ def get_context(
     depth: Optional[int] = None,
     max_nodes: Optional[int] = None,
     offset: int = 0,
+    page: bool = False,
     include_outdated: bool = False,
     include_ttl: bool = False,
     relation_priority: Optional[List[str]] = None,
     exclude_relation_types: Optional[List[str]] = None,
 ) -> Dict:
-    """Get subgraph context around a node."""
+    """Get subgraph context around a node.
+
+    ``offset=0`` is the priority walk. ``page=true`` reads stable pages from
+    ``offset``, including the first page, so later pages do not skip neighbors.
+    """
     owner_id = normalize_owner_id(owner_id)
     node_id = require_node_id(node_id)
     depth = max(
@@ -255,7 +260,9 @@ def get_context(
 
     nodes: Dict[str, Dict[str, Any]] = {}
     edges: List[Dict] = []
-    if offset == 0:
+    # offset 0 is the priority walk. page=True is the stable id order, including
+    # the first page, so a client can ask for the next neighbors without gaps.
+    if offset == 0 and not page:
         # Iterative BFS with a node budget — no [*0..depth] path explosion.
         visited = _bfs_expand(
             db,
@@ -345,7 +352,33 @@ def get_trace(
     relations = row[1] if len(row) > 1 and row[1] else []
     if not nodes:
         return success_response(nodes=[], relations=[], message="No path found")
-    return success_response(nodes=nodes, relations=relations)
+    return success_response(
+        nodes=[_public_trace_node(node) for node in nodes], relations=relations
+    )
+
+
+def _public_trace_node(raw: Any) -> Dict[str, Any]:
+    """Path nodes carry the same status, time, and metadata as a context walk."""
+    if not isinstance(raw, dict):
+        return {"node_id": "", "node_type": None, "text": ""}
+    node = {
+        "node_id": str(raw.get("node_id") or ""),
+        "node_type": raw.get("node_type"),
+        "text": ensure_text(raw.get("text")),
+    }
+    metadata = raw.get("metadata")
+    if metadata is None and "metadata_str" in raw:
+        metadata = raw.get("metadata_str")
+    node.update(
+        _walk_node_fields(
+            status=raw.get("status"),
+            created_at=raw.get("created_at"),
+            metadata=metadata,
+        )
+    )
+    if raw.get("updated_at") is not None:
+        node["updated_at"] = raw["updated_at"]
+    return node
 
 
 @mcp_handler
