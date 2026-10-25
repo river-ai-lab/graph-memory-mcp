@@ -12,10 +12,14 @@ Requires ArcadeDB (``docker compose up -d arcadedb``) and the MCP server::
 
 Scenarios
 ---------
+readme
+    README take. The database is already seeded by ``assets/demo/seed.py``.
+    Search the release deadline (both dates and the CONTRADICTS edge the
+    agent created), search the beta with outdated facts included, then read
+    the version snapshot.
 sparse
-    README take. Save a decision, link it to a service, migrate and mark the
-    old fact outdated, search returns the current decision, near-duplicate
-    refused.
+    Save a decision, link it to a service, migrate and mark the old fact
+    outdated, search returns the current decision, near-duplicate refused.
 dense
     Full 13-step take (write-back, traversal, outdating, contradictions, dedup).
 seed
@@ -46,6 +50,22 @@ import httpx
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from mcp.types import PaginatedRequestParams
+from seed import (
+    DATE_BETA_NEW,
+    DATE_BETA_OLD,
+    DATE_BETA_UNTIL,
+    DATE_NOV1,
+    DATE_NOV15,
+    QUERY_BETA,
+    QUERY_DEADLINE,
+    TEXT_BETA_NEW,
+    TEXT_BETA_OLD,
+    TEXT_NOV1,
+    TEXT_NOV15,
+)
+from seed import (
+    OWNER as README_OWNER,
+)
 
 SERVER_URL = os.environ.get("GRAPH_MEMORY_URL", "http://127.0.0.1:8000/mcp")
 OWNER = "demo_team"
@@ -76,6 +96,7 @@ PAUSE_BEAT = 0.18
 PAUSE_END = 1.6
 
 SCENARIOS = (
+    "readme",
     "sparse",
     "dense",
     "seed",
@@ -874,6 +895,236 @@ async def scenario_dense(tools: Tools) -> None:
     set_status(True)
 
 
+def _parts_text(parts: list[tuple[str, str]]) -> str:
+    return "".join(text for text, _color in parts)
+
+
+def _emit_parts(parts: list[tuple[str, str]]) -> None:
+    visible = _parts_text(parts)
+    if len(visible) > terminal_columns():
+        fail(f"readme line is {len(visible)} columns: {visible}")
+    line = "".join(f"{color}{text}{RST}" if color else text for text, color in parts)
+    say(line)
+
+
+def _dim(text: str) -> tuple[str, str]:
+    return (text, DIM)
+
+
+def _date_word(text: str) -> str | None:
+    for word in ("November 15", "November 1", "October 20", "October 1"):
+        if word in text:
+            return word
+    return None
+
+
+def _text_parts(text: str) -> list[tuple[str, str]]:
+    word = _date_word(text)
+    if word is None:
+        return [_dim(text)]
+    head, _, tail = text.partition(word)
+    parts = []
+    if head:
+        parts.append(_dim(head))
+    parts.append((word, f"{BOLD}{CYAN}"))
+    if tail:
+        parts.append(_dim(tail))
+    return parts
+
+
+def _status_color(status: str) -> str:
+    if status == "outdated":
+        return f"{BOLD}{YELLOW}"
+    if status == "active":
+        return f"{BOLD}{GREEN}"
+    return WHITE
+
+
+def _result_line(row: dict, date_key: str, *, trailing_comma: bool) -> None:
+    """One trimmed search hit. ``date_key`` is read from metadata."""
+    text = str(row.get("text") or "")
+    status = str(row.get("status") or "")
+    meta = row.get("metadata") or {}
+    date_value = meta.get(date_key)
+    if not isinstance(date_value, str):
+        fail(f"readme row missing metadata.{date_key}: {row}")
+    parts: list[tuple[str, str]] = [_dim('      {"text": "')]
+    parts.extend(_text_parts(text))
+    parts.append(_dim('", "status": "'))
+    parts.append((status, _status_color(status)))
+    parts.append(_dim(f'", "metadata": {{"{date_key}": "'))
+    parts.append((date_value, f"{BOLD}{CYAN}"))
+    parts.append(_dim('"}},' if trailing_comma else '"}}'))
+    _emit_parts(parts)
+
+
+def _json_open(key: str) -> None:
+    _emit_parts([_dim("    ← {")])
+    _emit_parts([_dim(f'      "{key}": [')])
+
+
+def render_deadline(payload: dict, rows: list[dict]) -> None:
+    _json_open("results")
+    last = len(rows) - 1
+    for index, row in enumerate(rows):
+        _result_line(row, "valid_from", trailing_comma=index < last)
+    _emit_parts([_dim("      ],")])
+    pairs = payload.get("contradiction_pairs") or []
+    relation = str((pairs[0] or {}).get("relation_type") or "")
+    _emit_parts(
+        [
+            _dim('      "contradiction_pairs": [{"relation_type": "'),
+            (relation, f"{BOLD}{YELLOW}"),
+            _dim('"}]'),
+        ]
+    )
+    _emit_parts([_dim("    }")])
+
+
+def render_beta(rows: list[dict]) -> None:
+    _json_open("results")
+    last = len(rows) - 1
+    for index, row in enumerate(rows):
+        key = "valid_until" if row.get("status") == "outdated" else "valid_from"
+        _result_line(row, key, trailing_comma=index < last)
+    _emit_parts([_dim("      ]")])
+    _emit_parts([_dim("    }")])
+
+
+def render_history(version: dict) -> None:
+    text = str(version.get("text") or "")
+    status = str(version.get("status") or "")
+    meta = version.get("metadata") or {}
+    date_value = str(meta.get("valid_from") or "")
+    _json_open("versions")
+    parts: list[tuple[str, str]] = [_dim('        {"text": "')]
+    parts.extend(_text_parts(text))
+    parts.append(_dim('", "status": "'))
+    parts.append((status, _status_color(status)))
+    parts.append(_dim('", "metadata": {"valid_from": "'))
+    parts.append((date_value, f"{BOLD}{CYAN}"))
+    parts.append(_dim('"}}'))
+    _emit_parts(parts)
+    _emit_parts([_dim("      ],")])
+    _emit_parts([_dim('      "count": 1')])
+    _emit_parts([_dim("    }")])
+
+
+def _matching(rows: list[dict], texts: set[str]) -> list[dict]:
+    return [row for row in rows if row_text(row) in texts]
+
+
+async def _readme_search(tools: Tools, arguments: dict) -> dict:
+    render_request("search", arguments)
+    hold(0.7)
+    payload = await tools.call("search", arguments)
+    return payload
+
+
+async def scenario_readme(tools: Tools) -> None:
+    """Three reads of the database ``seed.py`` already filled. No writes."""
+    configure_pace(0.6, 0.45, 1.7)
+    say("")
+    say(f"{BOLD}{WHITE}Release deadline{RST}", PAUSE_STEP)
+    say(
+        f"{DIM}The agent marked CONTRADICTS. "
+        f"The server returns that edge and does not pick a date.{RST}",
+        PAUSE_BEAT,
+    )
+    deadline = await _readme_search(
+        tools,
+        {
+            "query": QUERY_DEADLINE,
+            "owner_id": README_OWNER,
+            "limit": 2,
+            "node_types": ["Fact"],
+        },
+    )
+    deadline_rows = result_rows(deadline)
+    shown = _matching(deadline_rows, {TEXT_NOV1, TEXT_NOV15})
+    if [row_text(row) for row in shown] != [row_text(row) for row in deadline_rows]:
+        fail(f"deadline search returned extra rows: {texts_of(deadline_rows)}")
+    if len(shown) != 2:
+        fail(f"deadline search expected both dates, got {texts_of(deadline_rows)}")
+    for row in shown:
+        meta = row.get("metadata") or {}
+        expected = DATE_NOV15 if row_text(row) == TEXT_NOV15 else DATE_NOV1
+        if row.get("status") != "active" or meta.get("valid_from") != expected:
+            fail(f"deadline row: {row}")
+    ids = {row_text(row): str(row.get("node_id")) for row in shown}
+    pairs = deadline.get("contradiction_pairs") or []
+    if len(pairs) != 1:
+        fail(f"expected one contradiction pair, got {pairs}")
+    ends = {str(pairs[0].get("from_id")), str(pairs[0].get("to_id"))}
+    if ends != {ids[TEXT_NOV1], ids[TEXT_NOV15]}:
+        fail(f"pair {ends} is not the two deadlines")
+    if pairs[0].get("relation_type") != "CONTRADICTS":
+        fail(f"pair relation is {pairs[0].get('relation_type')}")
+    render_deadline(deadline, shown)
+    hold(1.05)
+
+    say("")
+    say(f"{BOLD}{WHITE}Superseded beta{RST}", PAUSE_STEP)
+    say(
+        f"{DIM}The agent set status to outdated. Default search hides it. "
+        f"Dates are metadata the agent stored.{RST}",
+        PAUSE_BEAT,
+    )
+    beta = await _readme_search(
+        tools,
+        {
+            "query": QUERY_BETA,
+            "owner_id": README_OWNER,
+            "limit": 2,
+            "node_types": ["Fact"],
+            "include_outdated": True,
+        },
+    )
+    beta_rows = result_rows(beta)
+    beta_shown = _matching(beta_rows, {TEXT_BETA_OLD, TEXT_BETA_NEW})
+    if [row_text(row) for row in beta_shown] != [row_text(row) for row in beta_rows]:
+        fail(f"beta search returned extra rows: {texts_of(beta_rows)}")
+    if len(beta_shown) != 2:
+        fail(f"beta search expected both facts, got {texts_of(beta_rows)}")
+    old = next(row for row in beta_shown if row_text(row) == TEXT_BETA_OLD)
+    current = next(row for row in beta_shown if row_text(row) == TEXT_BETA_NEW)
+    old_meta = old.get("metadata") or {}
+    current_meta = current.get("metadata") or {}
+    if old.get("status") != "outdated" or current.get("status") != "active":
+        fail(f"beta statuses: {texts_of(beta_shown)}")
+    if old_meta.get("valid_until") != DATE_BETA_UNTIL:
+        fail(f"old beta metadata: {old_meta}")
+    if current_meta.get("valid_from") != DATE_BETA_NEW:
+        fail(f"current beta metadata: {current_meta}")
+    if old_meta.get("valid_from") != DATE_BETA_OLD:
+        fail(f"old beta lost valid_from: {old_meta}")
+    render_beta(beta_shown)
+    hold(1.05)
+
+    say("")
+    say(f"{BOLD}{WHITE}History of the outdated beta{RST}", PAUSE_STEP)
+    say(
+        f"{DIM}Snapshot from before that update. The stored status is still active.{RST}",
+        PAUSE_BEAT,
+    )
+    arguments = {"node_id": old["node_id"], "owner_id": README_OWNER}
+    render_request("get_node_change_history", arguments)
+    hold(0.7)
+    history = await tools.call("get_node_change_history", arguments)
+    versions = history.get("versions") or []
+    if history.get("count") != 1 or len(versions) != 1:
+        fail(f"history: {history}")
+    snap = versions[0]
+    snap_meta = snap.get("metadata") or {}
+    if snap.get("text") != TEXT_BETA_OLD or snap.get("status") != "active":
+        fail(f"snapshot: {snap}")
+    if snap_meta.get("valid_from") != DATE_BETA_OLD or "valid_until" in snap_meta:
+        fail(f"snapshot metadata: {snap_meta}")
+    render_history(snap)
+    say("", PAUSE_END)
+    set_status(True)
+
+
 async def scenario_sparse_run(tools: Tools) -> None:
     configure_pace(1.4, 0.95, 1.5)
     begin("Graph Memory MCP")
@@ -935,6 +1186,7 @@ async def main() -> None:
         parser.error("--scenario is required unless --prepare is set")
 
     runners = {
+        "readme": scenario_readme,
         "sparse": scenario_sparse_run,
         "dense": scenario_dense,
         "seed": seed_story,
@@ -953,7 +1205,7 @@ async def main() -> None:
             ):
                 async with ClientSession(read, write) as session:
                     init = await session.initialize()
-                    tools = Tools(session, show=recorded)
+                    tools = Tools(session, show=recorded and args.scenario != "readme")
                     if recorded:
                         await announce(session, init)
                     if args.prepare:

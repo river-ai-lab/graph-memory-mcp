@@ -6,7 +6,7 @@
 # to record just that one.
 #
 #   ./assets/demo/record.sh
-#   ./assets/demo/record.sh sparse
+#   ./assets/demo/record.sh readme
 #
 set -euo pipefail
 
@@ -19,10 +19,11 @@ SERVER_PID_FILE="${TMPDIR:-/tmp}/graph-memory-demo-server.pid"
 STATUS_FILE="${TMPDIR:-/tmp}/graph-memory-demo-status"
 MAX_BYTES=$((2 * 1024 * 1024))
 
-# name gif cols rows font last_frame seed(yes/no) fps
+# name gif cols rows font last_frame seed(no/yes/readme) fps
 # Rows fit the shell prompt plus the client transcript, except dense, which scrolls.
+# readme runs assets/demo/seed.py before the cast. That script is not recorded.
 TAKES=(
-  "sparse demo.gif 108 44 20 2.0 no 10"
+  "readme demo.gif 108 40 20 2.0 readme 10"
   "dense demo_dense.gif 104 28 18 1.6 no 6"
   "contradictions demo_contradictions.gif 108 18 20 2.2 yes 10"
   "lifecycle demo_lifecycle.gif 108 30 20 1.3 yes 10"
@@ -192,9 +193,13 @@ record_one() {
     local cast="$SCRIPT_DIR/${name}.cast"
 
     echo "--- ${name} ---"
-    curl -sf -X DELETE "http://127.0.0.1:${SERVER_PORT}/admin/owners/demo_team" >/dev/null || true
-    if [ "$seeded" = "yes" ]; then
-        uv run python "$SCRIPT_DIR/generate_demo.py" --scenario seed
+    if [ "$seeded" = "readme" ]; then
+        uv run python "$SCRIPT_DIR/seed.py"
+    else
+        curl -sf -X DELETE "http://127.0.0.1:${SERVER_PORT}/admin/owners/demo_team" >/dev/null || true
+        if [ "$seeded" = "yes" ]; then
+            uv run python "$SCRIPT_DIR/generate_demo.py" --scenario seed
+        fi
     fi
 
     rm -f "$STATUS_FILE"
@@ -254,7 +259,7 @@ import sys
 name, raw = sys.argv[1], sys.argv[2]
 value = float(raw)
 bounds = {
-    "sparse": (20.0, 25.0),
+    "readme": (10.0, 16.0),
     "contradictions": (10.0, 15.0),
     "lifecycle": (10.0, 15.0),
     "retrieval": (10.0, 15.0),
@@ -279,7 +284,7 @@ done
 
 if [ "$found" -ne 1 ]; then
     echo "❌ Unknown scenario: ${ONLY}"
-    echo "Choose: sparse dense contradictions lifecycle retrieval"
+    echo "Choose: readme dense contradictions lifecycle retrieval"
     exit 1
 fi
 

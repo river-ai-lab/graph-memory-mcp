@@ -6,7 +6,7 @@ The server process is already listening. The GIF notes `uv run graph-memory-mcp 
 
 `record.sh` starts ArcadeDB, starts the server, and records every scenario with asciinema and agg (monokai, JetBrains Mono). `session.sh` is the prompt the recorder types.
 
-The README uses the short GIF. The 13-step take is `demo_dense.gif`. Three shorter GIFs are for a landing page. They share one seeded API-gateway story (same owner): Component X marked outdated, Component Y linked to the API Gateway Service, and two rate-limit facts with a CONTRADICTS edge the agent created. The server does not detect contradictions.
+The README GIF is the `readme` scenario (`demo.gif`). `seed.py` fills owner `readme_demo` before the recording and is not in the GIF. The 13-step take is `demo_dense.gif`. Three shorter GIFs are for a landing page. They share one seeded API-gateway story (same owner): Component X marked outdated, Component Y linked to the API Gateway Service, and two rate-limit facts with a CONTRADICTS edge the agent created. The server does not detect contradictions.
 
 ## Recording
 
@@ -16,7 +16,7 @@ The README uses the short GIF. The 13-step take is `demo_dense.gif`. Three short
 ./assets/demo/record.sh
 ```
 
-Record a single scenario with `./assets/demo/record.sh sparse` (also `dense`, `contradictions`, `lifecycle`, `retrieval`).
+Record a single scenario with `./assets/demo/record.sh readme` (also `dense`, `contradictions`, `lifecycle`, `retrieval`).
 
 **What it does**:
 
@@ -25,8 +25,8 @@ Record a single scenario with `./assets/demo/record.sh sparse` (also `dense`, `c
 3. Installs Python dependencies with `uv sync`
 4. Starts `graph-memory-mcp` on `127.0.0.1:8000` when that port is free, and waits until `/admin/health` responds. The first start loads the local embedding model; that wait is not part of the GIF
 5. Warms indexes with `--prepare`
-6. For each scenario, resets owner `demo_team`. The three landing-page scenarios then run `--scenario seed` (not recorded) so they share one dataset
-7. Records `session.sh <name>` with asciinema. That script types and runs `generate_demo.py --scenario <name>`. The client calls the live MCP server and exits non-zero when a check fails. Sparse must land at 20–25 s. Each landing-page GIF must land at 10–15 s
+6. For each landing-page scenario, resets owner `demo_team`. Those three then run `--scenario seed` (not recorded) so they share one dataset. The README scenario runs `seed.py` (not recorded), which resets owner `readme_demo`
+7. Records `session.sh <name>` with asciinema. That script types and runs `generate_demo.py --scenario <name>`. The client calls the live MCP server and exits non-zero when a check fails. The README GIF must land at 10–16 s. Each landing-page GIF must land at 10–15 s
 8. Converts with agg (monokai, JetBrains Mono, large font). `gifsicle` optimizes the GIF when it is installed
 9. Removes the temporary cast and refuses a GIF at or over 2 MB
 
@@ -40,7 +40,15 @@ uv run python assets/demo/generate_demo.py --scenario sparse
 
 `--prepare` warms the model. `--scenario seed` loads the shared story and prints nothing on the terminal.
 
-### sparse — `demo.gif` (README, about 20–25 s)
+### readme — `demo.gif` (README, 10–16 s)
+
+`seed.py` has already loaded owner `readme_demo`. The GIF does not run that script.
+
+1. Search `November deadline`. Both dates are active. `contradiction_pairs` shows the CONTRADICTS edge the agent created. The server does not pick a date.
+2. Search `beta ships` with `include_outdated=true`. October 20 is active. October 1 is outdated, which a default search hides. `valid_from` and `valid_until` are metadata the agent stored.
+3. `get_node_change_history` on the outdated beta. The snapshot is the previous active fact, stored because `update_node` set `versioning=true`.
+
+### sparse
 
 1. Save the decision: API gateway uses Component X
 2. Link decision → RELATED_TO → API Gateway Service
@@ -99,8 +107,9 @@ Three commands: set `URL`, `create_node` with text `API gateway uses Component Y
 
 - `record.sh`: Records every GIF (or one scenario name)
 - `session.sh`: Shell prompt that types the client command, then runs it
-- `generate_demo.py`: MCP client, scenarios, the shared seed, and checks
-- `demo.gif`: Sparse README recording
+- `seed.py`: README dataset (owner `readme_demo`) via `create_node`, `update_node`, and `create_relation`
+- `generate_demo.py`: MCP client, scenarios, the shared landing-page seed, and checks
+- `demo.gif`: README recording of `--scenario readme`
 - `demo_dense.gif`: 13-step recording
 - `demo_contradictions.gif`, `demo_lifecycle.gif`, `demo_retrieval.gif`: Landing-page clips
 - `cli_demo.sh`: MCP Inspector commands (paste the block, or run the file). `--record` rebuilds `demo_cli.gif`
