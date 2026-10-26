@@ -28,12 +28,22 @@ def test_connection(db: FalkorDBClient) -> Dict:
     return success_response(ready=ok)
 
 
+# Cap the index sample. Listing every owner graph on each health call does not scale.
+_INDEX_SAMPLE = 20
+
+
 def health_check(db: FalkorDBClient, embedding_service: Any) -> Dict:
-    """Comprehensive health check."""
+    """Report backend, embeddings, and which sampled owners still lack a vector index.
+
+    The first write for an owner creates Fact and Entity indexes. Search still
+    creates a missing index. An owner that already has facts but no index does
+    not clear ``healthy``.
+    """
     falkordb_ok = False
     arcade_ok = False
     embeddings_ok = False
-    vector_ok = False
+    missing: list[str] = []
+    index_probe_ok = False
 
     try:
         health = db.health_check()
@@ -50,22 +60,29 @@ def health_check(db: FalkorDBClient, embedding_service: Any) -> Dict:
         logger.error("health_check: embeddings probe failed: %s", exc)
 
     try:
-        # Graph-per-owner: check indexes across existing owner graphs (capped).
-        owners = db.list_owners()[:20] if hasattr(db, "list_owners") else []
-        if owners:
-            vector_ok = all(
-                all(db.get_vector_index_status(owner_id=o).values()) for o in owners
-            )
-        else:
-            vector_ok = True  # no owner graphs yet — nothing to index
+        dimension = int(getattr(embedding_service, "dimension", 0) or 0)
+    except (TypeError, ValueError):
+        dimension = 0
+
+    try:
+        owners = db.list_owners()[:_INDEX_SAMPLE] if hasattr(db, "list_owners") else []
+        for owner in owners:
+            status = db.get_vector_index_status(owner_id=owner)
+            if not status or not all(status.values()):
+                missing.append(str(owner))
+        index_probe_ok = True
     except Exception as exc:
         logger.error("health_check: vector index probe failed: %s", exc)
+        missing = []
 
+    # Embeddings with a known dimension are what search uses to build an index.
+    can_create_indexes = embeddings_ok and dimension > 0 and index_probe_ok
     return success_response(
         falkordb=falkordb_ok,
         embeddings=embeddings_ok,
-        vector_index=vector_ok,
-        healthy=(falkordb_ok or arcade_ok) and embeddings_ok and vector_ok,
+        vector_index=index_probe_ok and not missing,
+        vector_index_missing=missing,
+        healthy=(falkordb_ok or arcade_ok) and can_create_indexes,
         cache=db.cache.stats(),
     )
 
@@ -80,6 +97,7 @@ def get_stats(db: FalkorDBClient, *, owner_id: str = "default") -> Dict:
         "total_entities": 0,
         "active_facts": 0,
         "outdated_facts": 0,
+        "archived_facts": 0,
     }
 
     for row in db.label_counts(owner_id):
@@ -98,6 +116,8 @@ def get_stats(db: FalkorDBClient, *, owner_id: str = "default") -> Dict:
             stats["active_facts"] = count
         elif status == "outdated":
             stats["outdated_facts"] = count
+        elif status == "archived":
+            stats["archived_facts"] = count
 
     rel_rows = db.relation_count(owner_id)
     stats["total_relations"] = rel_rows[0][0] if rel_rows else 0
@@ -155,6 +175,7 @@ def get_brief(
     stale_cutoff_ms = int(time.time() * 1000) - stale_days * 24 * 3600 * 1000
     stale_count = int(db.brief_stale_count(owner_id, stale_cutoff_ms))
     payload = {
+        "owner_id": owner_id,
         "about": about,
         "top_facts": top_facts,
         "contradictions": contradictions,

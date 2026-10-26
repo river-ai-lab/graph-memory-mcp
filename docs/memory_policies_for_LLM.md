@@ -11,6 +11,7 @@ You have access to **Graph Memory MCP** — a long-term knowledge base shared ac
 5. **No third paraphrase.** `create_node` returns `memory_duplicate` before write when a near-copy already exists. Update that node or `mark_outdated` it. Pass `check_duplicates=false` only when the new fact is different. A `possible_duplicates` list on a successful write is the same stop: do not create another wording of it.
 6. **GROW after meaningful work** — before the final reply: Ground → Record → Orient (if recurring) → Write. Do not defer to “end of session”.
 7. **Temporary facts carry `ttl_days`.** The server never sets it and does not infer it from `metadata.type`. A decision or durable outcome has no TTL. A run, pod, launch, or debug note uses `ttl_days` (typically 14–30). Do not store a pod lifecycle; store the decision and the outcome. A wrong prior fact is `mark_outdated` + `create_node`.
+8. **If a tool schema has no `owner_id`,** the server sets it from the API key. Do not pass it.
 
 ## After meaningful work (GROW)
 
@@ -24,6 +25,8 @@ Before the final user reply — not at “end of session” — run this binary 
 Do not invent noise to satisfy the checklist.
 
 ## Scoping (operator sets these constants in your rules — apply, never invent)
+
+Example AGENTS.md block with these constants: [`AGENTS_example.md`](./AGENTS_example.md). Put these operator constants in your own AGENTS.md.
 
 | Constant | Meaning | Usage |
 |----------|---------|-------|
@@ -59,7 +62,7 @@ Do not invent noise to satisfy the checklist.
 
 ## Relations
 
-Allowed types (default): `RELATED_TO` (generic), `MENTIONS`, `SUMMARIZES`, `FOLLOWS_FROM`, `CONTRADICTS`, plus team allowlist (`RUNS_ON`, `USES`, …). Do not invent types — the server may warn or reject. `create_relation` is idempotent per type. `auto_link` defaults to false. Pass `auto_link=true` only when a Fact should gain `MENTIONS` to similar Entities. Prefer `create_relation` or `links` for an edge you mean. `get_context` fills its node budget with `CONTRADICTS` and `FOLLOWS_FROM` before `MENTIONS`.
+Allowed types (default): `RELATED_TO` (generic), `MENTIONS`, `SUMMARIZES`, `FOLLOWS_FROM`, `CONTRADICTS`, `EXTRACTED_FROM`, `SIMILAR_TO`, `NEXT_STEP`, `EXPOSES`, `CROSS_REF`, `RUNS_ON`, `USES`, `SERVED_BY`. Do not invent types — the server may warn or reject. `create_relation` is idempotent per type. `auto_link` defaults to false. Pass `auto_link=true` only when a Fact should gain `MENTIONS` to similar Entities. Prefer `create_relation` or `links` for an edge you mean. `get_context` fills its node budget with `CONTRADICTS` and `FOLLOWS_FROM` before `MENTIONS`.
 
 ## Versioning & time
 

@@ -1,0 +1,357 @@
+{
+  "cases": {
+    "auth_default": {
+      "depth": 1,
+      "edges": [
+        {
+          "from_id": "auth0000000000000000000000000001",
+          "properties": {},
+          "relation_type": "RELATED_TO",
+          "to_id": "auth0000000000000000000000000002"
+        }
+      ],
+      "has_more": false,
+      "has_offset": false,
+      "max_nodes": 20,
+      "nodes": [
+        {
+          "node_id": "auth0000000000000000000000000001",
+          "node_type": "Fact",
+          "status": "active",
+          "text": "Auth project fact"
+        },
+        {
+          "node_id": "auth0000000000000000000000000002",
+          "node_type": "Fact",
+          "status": "active",
+          "text": "Auth project neighbor"
+        }
+      ],
+      "success": true
+    },
+    "hub_default": {
+      "depth": 1,
+      "edges": [
+        {
+          "from_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "properties": {},
+          "relation_type": "CONTRADICTS",
+          "to_id": "fffffffffffffffffffffff00000001"
+        },
+        {
+          "from_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "properties": {},
+          "relation_type": "MENTIONS",
+          "to_id": "11111111111111111111111111111111"
+        },
+        {
+          "from_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "properties": {},
+          "relation_type": "RELATED_TO",
+          "to_id": "00000000000000000000000000000001"
+        },
+        {
+          "from_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "properties": {},
+          "relation_type": "RELATED_TO",
+          "to_id": "00000000000000000000000000000002"
+        },
+        {
+          "from_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "properties": {},
+          "relation_type": "FOLLOWS_FROM",
+          "to_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "has_more": false,
+      "has_offset": false,
+      "max_nodes": 20,
+      "nodes": [
+        {
+          "metadata": {
+            "topic": "gateway",
+            "valid_from": "2026-01-01"
+          },
+          "node_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "node_type": "Fact",
+          "status": "active",
+          "text": "Hub fact for the gateway"
+        },
+        {
+          "node_id": "fffffffffffffffffffffff00000001",
+          "node_type": "Fact",
+          "status": "active",
+          "text": "Hub contradicts this neighbor"
+        },
+        {
+          "node_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "node_type": "Fact",
+          "status": "active",
+          "text": "This follows from the hub"
+        },
+        {
+          "node_id": "00000000000000000000000000000001",
+          "node_type": "Fact",
+          "status": "active",
+          "text": "Related neighbor one"
+        },
+        {
+          "node_id": "00000000000000000000000000000002",
+          "node_type": "Fact",
+          "status": "active",
+          "text": "Related neighbor two"
+        },
+        {
+          "node_id": "11111111111111111111111111111111",
+          "node_type": "Entity",
+          "status": "active",
+          "text": "Routing service"
+        }
+      ],
+      "success": true
+    },
+    "hub_explicit": {
+      "depth": 1,
+      "edges": [
+        {
+          "from_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "properties": {},
+          "relation_type": "CONTRADICTS",
+          "to_id": "fffffffffffffffffffffff00000001"
+        },
+        {
+          "from_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "properties": {},
+          "relation_type": "MENTIONS",
+          "to_id": "11111111111111111111111111111111"
+        },
+        {
+          "from_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "properties": {},
+          "relation_type": "RELATED_TO",
+          "to_id": "00000000000000000000000000000001"
+        },
+        {
+          "from_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "properties": {},
+          "relation_type": "RELATED_TO",
+          "to_id": "00000000000000000000000000000002"
+        },
+        {
+          "from_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "properties": {},
+          "relation_type": "FOLLOWS_FROM",
+          "to_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "has_more": false,
+      "has_offset": false,
+      "max_nodes": 20,
+      "nodes": [
+        {
+          "metadata": {
+            "topic": "gateway",
+            "valid_from": "2026-01-01"
+          },
+          "node_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "node_type": "Fact",
+          "status": "active",
+          "text": "Hub fact for the gateway"
+        },
+        {
+          "node_id": "fffffffffffffffffffffff00000001",
+          "node_type": "Fact",
+          "status": "active",
+          "text": "Hub contradicts this neighbor"
+        },
+        {
+          "node_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "node_type": "Fact",
+          "status": "active",
+          "text": "This follows from the hub"
+        },
+        {
+          "node_id": "00000000000000000000000000000001",
+          "node_type": "Fact",
+          "status": "active",
+          "text": "Related neighbor one"
+        },
+        {
+          "node_id": "00000000000000000000000000000002",
+          "node_type": "Fact",
+          "status": "active",
+          "text": "Related neighbor two"
+        },
+        {
+          "node_id": "11111111111111111111111111111111",
+          "node_type": "Entity",
+          "status": "active",
+          "text": "Routing service"
+        }
+      ],
+      "success": true
+    },
+    "hub_include_outdated": {
+      "depth": 1,
+      "edges": [
+        {
+          "from_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "properties": {},
+          "relation_type": "CONTRADICTS",
+          "to_id": "fffffffffffffffffffffff00000001"
+        },
+        {
+          "from_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "properties": {},
+          "relation_type": "MENTIONS",
+          "to_id": "11111111111111111111111111111111"
+        },
+        {
+          "from_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "properties": {},
+          "relation_type": "RELATED_TO",
+          "to_id": "00000000000000000000000000000001"
+        },
+        {
+          "from_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "properties": {},
+          "relation_type": "RELATED_TO",
+          "to_id": "00000000000000000000000000000002"
+        },
+        {
+          "from_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "properties": {},
+          "relation_type": "RELATED_TO",
+          "to_id": "dddddddddddddddddddddddddddddddd"
+        },
+        {
+          "from_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "properties": {},
+          "relation_type": "FOLLOWS_FROM",
+          "to_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "has_more": false,
+      "has_offset": false,
+      "max_nodes": 20,
+      "nodes": [
+        {
+          "metadata": {
+            "topic": "gateway",
+            "valid_from": "2026-01-01"
+          },
+          "node_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "node_type": "Fact",
+          "status": "active",
+          "text": "Hub fact for the gateway"
+        },
+        {
+          "node_id": "fffffffffffffffffffffff00000001",
+          "node_type": "Fact",
+          "status": "active",
+          "text": "Hub contradicts this neighbor"
+        },
+        {
+          "node_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "node_type": "Fact",
+          "status": "active",
+          "text": "This follows from the hub"
+        },
+        {
+          "node_id": "00000000000000000000000000000001",
+          "node_type": "Fact",
+          "status": "active",
+          "text": "Related neighbor one"
+        },
+        {
+          "node_id": "00000000000000000000000000000002",
+          "node_type": "Fact",
+          "status": "active",
+          "text": "Related neighbor two"
+        },
+        {
+          "node_id": "dddddddddddddddddddddddddddddddd",
+          "node_type": "Fact",
+          "status": "outdated",
+          "text": "Outdated neighbor kept in the store"
+        },
+        {
+          "node_id": "11111111111111111111111111111111",
+          "node_type": "Entity",
+          "status": "active",
+          "text": "Routing service"
+        }
+      ],
+      "success": true
+    },
+    "missing": {
+      "depth": 1,
+      "edges": [],
+      "has_more": false,
+      "has_offset": false,
+      "max_nodes": 20,
+      "nodes": [],
+      "success": true
+    },
+    "small_default": {
+      "depth": 1,
+      "edges": [
+        {
+          "from_id": "small000000000000000000000000001",
+          "properties": {},
+          "relation_type": "RELATED_TO",
+          "to_id": "small000000000000000000000000002"
+        }
+      ],
+      "has_more": false,
+      "has_offset": false,
+      "max_nodes": 20,
+      "nodes": [
+        {
+          "node_id": "small000000000000000000000000001",
+          "node_type": "Fact",
+          "status": "active",
+          "text": "A short fact"
+        },
+        {
+          "node_id": "small000000000000000000000000002",
+          "node_type": "Fact",
+          "status": "active",
+          "text": "One neighbor"
+        }
+      ],
+      "success": true
+    },
+    "small_leaf": {
+      "depth": 1,
+      "edges": [
+        {
+          "from_id": "small000000000000000000000000001",
+          "properties": {},
+          "relation_type": "RELATED_TO",
+          "to_id": "small000000000000000000000000002"
+        }
+      ],
+      "has_more": false,
+      "has_offset": false,
+      "max_nodes": 20,
+      "nodes": [
+        {
+          "node_id": "small000000000000000000000000002",
+          "node_type": "Fact",
+          "status": "active",
+          "text": "One neighbor"
+        },
+        {
+          "node_id": "small000000000000000000000000001",
+          "node_type": "Fact",
+          "status": "active",
+          "text": "A short fact"
+        }
+      ],
+      "success": true
+    }
+  },
+  "note": "Default get_context (page omitted, offset 0) on a FalkorDB graph seeded by that commit. created_at/updated_at are omitted. Edges are sorted so the fixture is stable across reseeds; the test still requires the live old and new edge lists to be identical.",
+  "old_commit": "fe5578de22145f9379fa5c3ddc3538e0dcc9459a"
+}

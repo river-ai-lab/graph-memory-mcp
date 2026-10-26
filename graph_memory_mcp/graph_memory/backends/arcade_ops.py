@@ -141,15 +141,13 @@ class ArcadeOps:
     def updated_at_assignment(self) -> str:
         return "n.updated_at = timestamp()"
 
-    def similarity_rows(self, **kwargs: Any) -> list:
-        from graph_memory_mcp.graph_memory.backends.arcade_search import neighbor_rows
-
-        return neighbor_rows(self, **kwargs)
-
     def ann_rows(self, **kwargs: Any) -> list:
         from graph_memory_mcp.graph_memory.backends.arcade_search import neighbor_rows
 
         return neighbor_rows(self, **kwargs)
+
+    def similarity_rows(self, **kwargs: Any) -> list:
+        return self.ann_rows(**kwargs)
 
     def fact_embedding(self, fact_id: str, owner_id: str) -> tuple[bool, Any]:
         _label, record = self._find(fact_id, owner_id, types=("Fact",))
@@ -179,9 +177,13 @@ class ArcadeOps:
                 or "does not exist" in message
                 or "not available" in message
             ):
+                with self._vector_index_lock:
+                    self._vector_indexes_ready.discard(name)
                 return True
             logger.error("Failed to delete owner database %s: %s", name, exc)
             return False
+        with self._vector_index_lock:
+            self._vector_indexes_ready.discard(name)
         logger.info("Deleted owner database %s", name)
         return True
 
@@ -264,6 +266,7 @@ class ArcadeOps:
         has_embedding: bool,
         entity_type: str | None,
     ) -> list[list[Any]]:
+        self.ensure_vector_indexes_if_missing(owner_id=str(params["owner_id"]))
         self._check_label(node_type)
         owner = self.owner_literal(str(params["owner_id"]))
         self.ensure_ready()
@@ -306,6 +309,7 @@ class ArcadeOps:
         return [_node_row(record, node_type)]
 
     def create_nodes_bulk(self, *, node_type: str, rows: list, owner_id: str) -> list:
+        self.ensure_vector_indexes_if_missing(owner_id=owner_id)
         self._check_label(node_type)
         owner = self.owner_literal(owner_id)
         self.ensure_ready()
@@ -398,6 +402,7 @@ class ArcadeOps:
         return version_uid
 
     def apply_node_update(self, *, set_clauses: list[str], params: dict) -> list:
+        self.ensure_vector_indexes_if_missing(owner_id=str(params["owner_id"]))
         owner_id = str(params["owner_id"])
         node_id = str(params["node_id"])
         label, record = self._find(node_id, owner_id)
@@ -537,6 +542,7 @@ class ArcadeOps:
         params: dict,
         prop_assignments: str,
     ) -> list:
+        self.ensure_vector_indexes_if_missing(owner_id=str(params["owner_id"]))
         owner_id = str(params["owner_id"])
         from_label, from_rec = self._find(str(params["from_id"]), owner_id)
         to_label, to_rec = self._find(str(params["to_id"]), owner_id)
@@ -574,6 +580,7 @@ class ArcadeOps:
         obj_emb_expr: str,
     ) -> list:
         del subj_emb_expr, obj_emb_expr
+        self.ensure_vector_indexes_if_missing(owner_id=str(params["owner_id"]))
         owner_id = str(params["owner_id"])
         owner = self.owner_literal(owner_id)
         self.ensure_ready()
@@ -758,6 +765,9 @@ class ArcadeOps:
                         else record.get("created_at")
                     ),
                     record.get("access_count") or 0,
+                    record.get("status"),
+                    record.get("created_at"),
+                    record.get("metadata_str"),
                 ]
             )
         return rows
@@ -820,6 +830,9 @@ class ArcadeOps:
                             ),
                             other_rec.get("access_count") or 0,
                             [],
+                            other_rec.get("status"),
+                            other_rec.get("created_at"),
+                            other_rec.get("metadata_str"),
                         ],
                     }
                     slot = collected[uid]
@@ -886,7 +899,14 @@ class ArcadeOps:
         ordered = sorted(visited.items(), key=lambda item: item[0])
         page = ordered[int(offset) : int(offset) + int(limit)]
         return [
-            [rec.get("uid"), rec_label, rec.get("text")]
+            [
+                rec.get("uid"),
+                rec_label,
+                rec.get("text"),
+                rec.get("status"),
+                rec.get("created_at"),
+                rec.get("metadata_str"),
+            ]
             for _rid, (rec_label, rec) in page
         ]
 
@@ -929,6 +949,10 @@ class ArcadeOps:
                     "node_id": record.get("uid"),
                     "node_type": label,
                     "text": record.get("text"),
+                    "status": record.get("status"),
+                    "created_at": record.get("created_at"),
+                    "updated_at": record.get("updated_at"),
+                    "metadata": record.get("metadata_str"),
                 }
             )
         relations = []
@@ -1136,6 +1160,7 @@ class ArcadeOps:
     def import_node_batch(
         self, *, label: str, has_emb: bool, rows: list, owner_id: str
     ) -> Any:
+        self.ensure_vector_indexes_if_missing(owner_id=owner_id)
         self._check_label(label)
         owner = self.owner_literal(owner_id)
         self.ensure_ready()
@@ -1168,6 +1193,7 @@ class ArcadeOps:
         return True
 
     def import_relation_batch(self, *, rel_type: str, rows: list, owner_id: str) -> Any:
+        self.ensure_vector_indexes_if_missing(owner_id=owner_id)
         self.ensure_edge_type(rel_type)
         for row in rows:
             from_label, from_rec = self._find(str(row.get("from_id")), owner_id)

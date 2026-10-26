@@ -9,8 +9,11 @@ const KNOWN_EDGE_TYPES = new Set([
   "EXTRACTED_FROM",
 ]);
 
+const L = window.ExplorerLogic;
 const state = {
   ownerId: new URLSearchParams(location.search).get("owner") || localStorage.getItem("gm_owner_id") || "default",
+  hideOwner: false,
+  previewMode: L.readPreviewMode(localStorage),
   anchorId: null,
   depth: 1,
   nodes: new Map(),
@@ -21,6 +24,7 @@ const state = {
   pathEdgeKeys: new Set(),
   generation: 0,
   pending: 0,
+  connection: "connecting",
 };
 
 const $ = (id) => document.getElementById(id);
@@ -48,7 +52,7 @@ function escapeHtml(value) {
 async function callTool(tool, arguments_) {
   const generation = state.generation;
   state.pending++;
-  notice(({ get_brief: "Loading project brief…", get_node: "Loading full node text…", get_context: "Loading connected context…", search: "Searching memory…", recall_context: "Recalling connected context…", get_trace: "Finding a path…", find_similar: "Finding similar facts…", get_node_change_history: "Loading version history…" })[tool] || "Loading memory…");
+  notice(({ get_brief: "Loading this memory…", get_node: "Loading the full text…", get_context: "Loading linked items…", search: "Searching…", recall_context: "Searching and drawing links…", get_trace: "Finding a path…", find_similar: "Looking for similar wording…", get_node_change_history: "Loading earlier versions…" })[tool] || "Loading…");
   try {
     const res = await fetch("/api/tool", {
       method: "POST",
@@ -70,8 +74,22 @@ async function callTool(tool, arguments_) {
 }
 
 function ownerArgs(extra = {}) {
+  if (!state.hideOwner && !$("owner-id").value.trim()) {
+    const message = "Enter a memory name, then click Load.";
+    notice(message, true);
+    throw new Error(message);
+  }
   syncOwner();
-  return { owner_id: state.ownerId, ...extra };
+  return L.toolArguments(state.hideOwner, { owner_id: state.ownerId, ...extra });
+}
+
+function contextArgs(nodeId, extra = {}) {
+  return ownerArgs({
+    node_id: nodeId,
+    include_outdated: true,
+    include_ttl: true,
+    ...extra,
+  });
 }
 
 function nodeText(n) {
@@ -80,15 +98,11 @@ function nodeText(n) {
 }
 
 function preview(text, n = 48) {
-  if (!text) return "(empty)";
-  const s = String(text).replace(/\s+/g, " ").trim();
-  return s.length <= n ? s : `${s.slice(0, n)}…`;
+  return L.preview(text, n);
 }
 
 function formatTime(value, includeSeconds = false) {
-  if (!value) return "—";
-  const date = new Date(value);
-  return Number.isFinite(date.getTime()) ? new Intl.DateTimeFormat("en-GB", { dateStyle: "medium", timeStyle: includeSeconds ? "medium" : "short", hour12: false }).format(date) : "—";
+  return L.formatTime(value, includeSeconds);
 }
 
 function nodeLabel(n) {
@@ -110,7 +124,7 @@ function nodeLabel(n) {
     ];
     for (const [pattern, label] of titles) if (pattern.test(text)) return label;
   }
-  return preview(text, 62);
+  return preview(text, L.previewChars(state.previewMode));
 }
 
 function setInspectorOpen(open) {
@@ -151,6 +165,7 @@ function nodeStyle(nodeType, status) {
 function edgeClass(relationType) {
   const t = relationType || "RELATED";
   if (t === "CONTRADICTS") return "edge-contradicts";
+  if (t === "FOLLOWS_FROM") return "edge-follows";
   if (t === "SUMMARIZES") return "edge-summarizes";
   if (!KNOWN_EDGE_TYPES.has(t)) return "edge-triplet";
   return "edge-default";
@@ -159,10 +174,7 @@ function edgeClass(relationType) {
 function searchFilters() {
   const extra = {};
   const status = $("search-status").value;
-  if (status) {
-    extra.status = status;
-    if (status !== "active") extra.include_outdated = true;
-  }
+  Object.assign(extra, L.searchFilterArgs(status));
   const fact = $("type-fact").checked;
   const entity = $("type-entity").checked;
   if (fact && !entity) extra.node_types = ["Fact"];
@@ -198,6 +210,11 @@ function mergeNodes(nodes, meta = {}) {
       source: n.source ?? prev.source,
       created_at: n.created_at ?? prev.created_at,
       updated_at: n.updated_at ?? prev.updated_at,
+      created_by: n.created_by ?? prev.created_by,
+      updated_by: n.updated_by ?? prev.updated_by,
+      ttl_days: n.ttl_days ?? prev.ttl_days,
+      expires_at: n.expires_at ?? prev.expires_at,
+      type: n.type ?? prev.type,
       status: n.status ?? prev.status,
       similarity: meta.similarity ?? n.similarity ?? n.score ?? prev.similarity,
       metadata: n.metadata ?? prev.metadata,
@@ -207,34 +224,13 @@ function mergeNodes(nodes, meta = {}) {
 }
 
 function mergeEdges(edges, { path = false } = {}) {
-  for (const e of edges || []) {
-    const from = e.from_id;
-    const to = e.to_id;
-    if (!from || !to) continue;
-    const key = `${from}|${e.relation_type || "?"}|${to}`;
-    state.edges.set(key, {
-      from_id: from,
-      to_id: to,
-      relation_type: e.relation_type || "RELATED",
-      properties: e.properties ?? state.edges.get(key)?.properties ?? {},
-    });
-    if (path) state.pathEdgeKeys.add(key);
-  }
-}
-
-function edgesFromTrace(nodes, relations) {
-  const edges = [];
-  for (let i = 0; i < (relations || []).length; i++) {
-    const a = nodes[i];
-    const b = nodes[i + 1];
-    if (!a?.node_id || !b?.node_id) continue;
-    edges.push({
-      from_id: a.node_id,
-      to_id: b.node_id,
-      relation_type: relations[i].relation_type || "RELATED",
-    });
-  }
-  return edges;
+  let store = {
+    edges: Object.fromEntries(state.edges),
+    pathKeys: [...state.pathEdgeKeys],
+  };
+  for (const edge of edges || []) store = L.placeEdge(store, edge, { path });
+  state.edges = new Map(Object.entries(store.edges));
+  state.pathEdgeKeys = new Set(store.pathKeys);
 }
 
 function clearPathHighlight() {
@@ -250,9 +246,10 @@ function mergeToolResult(data, meta = {}, syncOpts = {}) {
   mergeNodes(data.seeds, meta);
   if (data.node) mergeNodes([data.node], meta);
   mergeEdges(data.edges);
+  mergeEdges(L.contradictionEdges(data.contradiction_pairs));
   for (const p of data.paths || []) {
     mergeNodes(p.nodes, { fresh: true });
-    mergeEdges(edgesFromTrace(p.nodes || [], p.relations || []), { path: true });
+    mergeEdges(L.edgesFromTrace(p.nodes || [], p.relations || []), { path: true });
   }
   syncGraph(syncOpts);
   updateStats();
@@ -313,6 +310,12 @@ function placeNearNode(originId, index) {
   };
 }
 
+function mapFitPadding() {
+  if (window.innerWidth <= 600) return 150;
+  if (window.innerWidth <= 850) return 96;
+  return 60;
+}
+
 function syncGraph({ fullLayout = false, originNodeId = null } = {}) {
   if (typeof pausePhysics === "function") pausePhysics();
   const addedNodes = [];
@@ -347,31 +350,36 @@ function syncGraph({ fullLayout = false, originNodeId = null } = {}) {
     if (ele.empty()) {
       cy.add(def);
     } else {
-      ele.removeClass("edge-contradicts edge-summarizes edge-triplet edge-default edge-path");
+      ele.removeClass("edge-contradicts edge-follows edge-summarizes edge-triplet edge-default edge-path");
       ele.addClass(def.classes);
     }
   }
 
   applyNodeColors();
+  applyPreviewMode();
 
+  const labelLayout = L.shouldShowAlwaysLabels(state.previewMode, cy.zoom());
   if ((fullLayout || (!originNodeId && addedNodes.length > 0)) && cy.nodes().length > 1) {
     const connected = cy.edges().length > 0;
     cy.layout({
-      name: connected ? (cy.nodes().length <= 16 ? "concentric" : "cose") : "grid",
+      name: connected ? "concentric" : "grid",
       animate: false,
-      padding: 60,
-      concentric: node => node.data("nodeType") === "Entity" ? 2 : 1,
+      padding: Math.max(labelLayout ? 48 : 40, mapFitPadding()),
+      concentric: (node) => (node.data("nodeType") === "Entity" ? 2 : 1),
       levelWidth: () => 1,
-      minNodeSpacing: 65,
-      nodeDimensionsIncludeLabels: !connected || cy.nodes().length > 16,
+      minNodeSpacing: labelLayout ? 18 : 32,
+      nodeDimensionsIncludeLabels: Boolean(labelLayout),
       avoidOverlap: true,
-      spacingFactor: connected ? 1.1 : 1.15,
-      nodeRepulsion: () => 12000,
-      idealEdgeLength: () => 100,
-      componentSpacing: 180,
+      spacingFactor: labelLayout ? 1.15 : 1.05,
       fit: true,
     }).run();
-    if (cy.zoom() > 1.2) cy.zoom({ level: 1.2, renderedPosition: { x: cy.width()/2, y: cy.height()/2 } });
+    let level = cy.zoom();
+    if (level > 1.2) level = 1.2;
+    level = L.previewZoom(state.previewMode, level);
+    if (level !== cy.zoom()) {
+      cy.zoom({ level, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } });
+    }
+    applyPreviewMode();
   }
 
   for (const n of state.nodes.values()) n._fresh = false;
@@ -399,17 +407,19 @@ let cy = cytoscape({
     {
       selector: "node",
       style: {
-        label: "data(label)",
-        "font-size": 14,
-        "line-height": 1.4,
+        label: "",
+        "font-size": 11,
+        "line-height": 1.25,
         color: "#d6e5f3",
         "text-valign": "bottom",
-        "text-margin-y": 9,
-        "text-wrap": "wrap",
-        "text-max-width": 160,
+        "text-halign": "center",
+        "text-margin-y": 6,
+        "text-wrap": "ellipsis",
+        "text-max-width": 168,
         "text-background-color": "#0b111b",
-        "text-background-opacity": 0.85,
-        "text-background-padding": 3,
+        "text-background-opacity": 0.92,
+        "text-background-padding": "3px",
+        "min-zoomed-font-size": 8,
         width: 34,
         height: 34,
         "border-width": 2,
@@ -451,6 +461,16 @@ let cy = cytoscape({
       },
     },
     {
+      selector: "edge.edge-follows",
+      style: {
+        width: 2,
+        "line-color": "#c4a574",
+        "target-arrow-color": "#c4a574",
+        "line-style": "dashed",
+        color: "#e7d3a8",
+      },
+    },
+    {
       selector: "edge.edge-summarizes",
       style: {
         width: 2,
@@ -471,10 +491,10 @@ let cy = cytoscape({
     {
       selector: "edge.edge-path",
       style: {
-        width: 3.5,
-        "line-color": "#f0ce83",
-        "target-arrow-color": "#f0ce83",
-        "line-style": "solid",
+        width: 4,
+        "underlay-color": "#f0ce83",
+        "underlay-opacity": 0.55,
+        "underlay-padding": 5,
       },
     },
   ],
@@ -488,12 +508,35 @@ function applyNodeColors() {
   });
 }
 
+function paintEmpty() {
+  const title = $("empty-title");
+  const body = $("empty-body");
+  if (!title || !body) return;
+  if (state.connection === "offline") {
+    title.textContent = "Cannot reach the memory server";
+    body.textContent = "Start it, then reload this page.";
+    return;
+  }
+  if (state.connection === "connecting") {
+    title.textContent = "Connecting…";
+    body.textContent = "The map fills in when the memory is ready.";
+    return;
+  }
+  title.textContent = "Nothing on the map yet";
+  body.textContent = "Enter a memory name on the left, then click Load.";
+}
+
 function updateStats() {
   $("graph-empty").hidden = state.nodes.size > 0;
   $("tour-section").hidden = state.ownerId !== "luminaria";
   $("map-title").textContent = state.ownerId === "luminaria" ? "Luminaria" : state.ownerId;
-  $("stats-bar").textContent = `Map: ${cy.nodes().length} nodes · ${cy.edges().length} edges`;
-  $("map-caption").textContent = state.nodes.size ? "Select a node to read its full text." : "Search or choose a model to start.";
+  $("stats-bar").textContent = L.mapStats(cy.nodes().length, cy.edges().length);
+  $("map-caption").textContent = state.nodes.size
+    ? "Click an item to read it."
+    : state.connection === "offline"
+      ? "The memory server is not responding."
+      : "Enter a memory name, then click Load.";
+  paintEmpty();
   for (const id of ["btn-fit", "btn-layout", "btn-zoom-in", "btn-zoom-out"]) $(id).disabled = !cy.nodes().length;
 }
 
@@ -518,38 +561,56 @@ function showDetail(nodeId, nodeOverride) {
   $("detail-id").textContent = nodeId;
   $("detail-id").title = nodeId;
   $("btn-copy-id").textContent = "Copy ID";
-  $("detail-type").textContent = n.node_type || "Fact";
-  $("detail-type").dataset.value = n.node_type || "Fact";
-  $("detail-status").textContent = n.status || "active";
-  $("detail-status").dataset.value = n.status || "active";
+  const typeName = n.node_type || "Fact";
+  $("detail-type").textContent = typeName === "Entity" && n.type ? `Entity · ${n.type}` : typeName;
+  $("detail-type").dataset.value = typeName;
+  $("detail-type").title = typeName === "Entity" ? "A named thing" : "A stored statement";
+  const status = n.status || "active";
+  const statusLabel = { active: "Active", outdated: "Outdated", archived: "Archived" }[status] || status;
+  $("detail-status").textContent = statusLabel;
+  $("detail-status").dataset.value = status;
+  $("detail-status").title = status === "outdated"
+    ? "Replaced or no longer current"
+    : status === "archived"
+      ? "Kept, but hidden from normal search"
+      : "Current";
   $("detail-sim").textContent =
     n.similarity != null ? `Similarity ${Number(n.similarity).toFixed(3)}` : "";
   $("detail-sim").hidden = n.similarity == null;
   const hint = policyHint(nodeText(n));
   $("detail-policy").hidden = !hint;
-  $("detail-policy").textContent = hint ? `Review hints (heuristic): ${hint}` : "";
+  $("detail-policy").textContent = hint ? `Worth a look: ${hint}` : "";
   $("detail-text").textContent = nodeText(n) || "(no text)";
+  const validity = L.validityLabel(n);
+  $("detail-validity").hidden = !validity;
+  $("detail-validity").textContent = validity;
+  const when = L.detailWhen(n);
+  $("detail-when").hidden = !when;
+  $("detail-when").textContent = when;
 
   const related = [];
   for (const e of state.edges.values()) {
-    if (e.from_id === nodeId) related.push({ id: e.to_id, kind: `Outgoing · ${e.relation_type}` });
-    if (e.to_id === nodeId) related.push({ id: e.from_id, kind: `Incoming · ${e.relation_type}` });
+    if (e.from_id === nodeId) related.push({ id: e.to_id, kind: L.linkPhrase(false, e.relation_type) });
+    if (e.to_id === nodeId) related.push({ id: e.from_id, kind: L.linkPhrase(true, e.relation_type) });
   }
   $("detail-metadata").textContent = JSON.stringify({
     ...n.metadata, ...(n.source ? { source: n.source } : {}),
     ...(n.created_at ? { created_at: n.created_at } : {}),
+    ...(n.updated_at ? { updated_at: n.updated_at } : {}),
+    ...(n.ttl_days != null ? { ttl_days: n.ttl_days } : {}),
+    ...(n.expires_at ? { expires_at: n.expires_at } : {}),
   }, null, 2);
-  const provenance = [
-    ["Source", n.source?.ref], ["Created", n.created_at ? formatTime(n.created_at) : null],
-    ["Author", n.metadata?.created_by], ["Project", n.metadata?.project],
-    ["Tags", n.metadata?.tags?.join(", ")],
-  ].filter(([, value]) => value);
+  const timeKeys = new Set(["Created", "Updated", "Expires"]);
+  const provenance = L.provenanceRows(n).map(([label, value]) => [
+    label,
+    timeKeys.has(label) ? formatTime(value) : value,
+  ]);
   $("detail-provenance").innerHTML = provenance.length
     ? provenance.map(([label, value]) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd>`).join("")
     : "<dd>No source metadata available.</dd>";
   $("detail-edges").innerHTML = related.length
     ? related.map(r => `<li><button type="button" class="connection-button" data-node-id="${escapeHtml(r.id)}" title="${escapeHtml(r.id)}"><span class="connection-kind">${escapeHtml(r.kind)}</span>${escapeHtml(state.nodes.has(r.id) ? nodeLabel(state.nodes.get(r.id)) : `Node ${r.id.slice(0, 8)}`)}</button></li>`).join("")
-    : "<li class='muted'>No connections in this map. Expand neighbors to explore.</li>";
+    : "<li class='muted'>No links on this map yet. Click Show links.</li>";
   for (const el of document.querySelectorAll("#overview [data-id], #search-results [data-id]")) {
     el.classList.toggle("active", el.dataset.id === nodeId);
     el.setAttribute("aria-pressed", String(el.dataset.id === nodeId));
@@ -571,8 +632,7 @@ async function loadAnchor(nodeId) {
 async function loadContext(nodeId, opts = {}) {
   const depth = opts.depth ?? Number($("depth").value);
   const maxNodes = Number($("max-nodes").value) || 10;
-  const args = ownerArgs({
-    node_id: nodeId,
+  const args = contextArgs(nodeId, {
     depth,
     max_nodes: maxNodes,
   });
@@ -591,26 +651,30 @@ async function loadContext(nodeId, opts = {}) {
 }
 
 async function loadNeighbors(nodeId, pageSize = 10) {
+  // Stable pages (page=true), not the priority walk. Skip a page that only
+  // repeats nodes already on the map so one click still reveals new neighbors.
   let off = state.neighborOffset.get(nodeId) ?? 0;
-  const args = ownerArgs({
-    node_id: nodeId,
-    depth: 1,
-    max_nodes: pageSize,
-  });
-  if (off > 0) args.offset = off;
-
-  const data = await callTool("get_context", args);
-  mergeToolResult(data, { fresh: true }, { originNodeId: nodeId });
-  const returned = data.nodes?.length || 0;
-  if (off > 0) {
-    state.neighborOffset.set(
-      nodeId,
-      data.has_more ? off + pageSize : off + returned,
+  let data = null;
+  let added = 0;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const before = state.nodes.size;
+    data = await callTool(
+      "get_context",
+      contextArgs(nodeId, {
+        depth: 1,
+        max_nodes: pageSize,
+        offset: off,
+        page: true,
+      }),
     );
-  } else {
-    state.neighborOffset.set(nodeId, pageSize);
+    mergeToolResult(data, { fresh: true }, { originNodeId: nodeId });
+    added = state.nodes.size - before;
+    off += pageSize;
+    state.neighborOffset.set(nodeId, off);
+    if (added > 0 || !data.has_more) break;
   }
-  log(`neighbors ${nodeId} offset=${off} +${returned}`);
+  log(`neighbors ${nodeId} offset=${off - pageSize} +${added}`);
+  if (!added) notice("No further neighbors in this map.");
   return data;
 }
 
@@ -636,7 +700,7 @@ async function findSimilar() {
 
   const ctx = await callTool(
     "get_context",
-    ownerArgs({ node_id: anchor, depth: 2, max_nodes: 50 }),
+    contextArgs(anchor, { depth: 2, max_nodes: 50 }),
   );
   const filteredEdges = (ctx.edges || []).filter(
     (e) => ids.has(e.from_id) && ids.has(e.to_id),
@@ -700,14 +764,8 @@ function budgetNote(data) {
 
 function renderOverview(data) {
   const stats = data.stats || {};
-  const parts = [];
-  if (stats.total_facts != null) parts.push(`${stats.total_facts} facts`);
-  if (stats.total_entities != null) parts.push(`${stats.total_entities} entities`);
-  if (stats.total_relations != null) parts.push(`${stats.total_relations} rels`);
-  if (stats.active_facts != null) parts.push(`${stats.active_facts} active`);
-  $("overview-stats").textContent = parts.length
-    ? parts.join(" · ")
-    : "no stats";
+  const line = L.briefStatLine(stats);
+  $("overview-stats").textContent = line || "no stats";
 
   const blocks = [];
   const about = data.about;
@@ -762,7 +820,7 @@ function renderOverview(data) {
 
   $("overview").innerHTML = blocks.length
     ? blocks.join("")
-    : `<p class="muted">empty owner</p>`;
+    : `<p class="muted">Nothing stored under this name yet.</p>`;
 }
 
 async function loadBrief({ open = true, seedGraph = true } = {}) {
@@ -771,14 +829,20 @@ async function loadBrief({ open = true, seedGraph = true } = {}) {
   $("overview-section").open = open;
   if (!seedGraph) { updateStats(); log("project brief loaded"); return; }
   // seed graph with top + contradict endpoints for click targets
+  if (state.hideOwner && data.owner_id) {
+    state.ownerId = data.owner_id;
+    $("owner-id").value = data.owner_id;
+    localStorage.setItem("gm_owner_id", data.owner_id);
+  }
+  const asFact = (node) => ({ node_type: "Fact", status: "active", ...node });
   const seedNodes = [
-    ...(data.about ? [data.about] : []),
-    ...(data.top_facts || []),
+    ...(data.about ? [asFact(data.about)] : []),
+    ...(data.top_facts || []).map(asFact),
   ];
   for (const c of data.contradictions || []) {
     seedNodes.push(
-      { node_id: c.from_id, text: c.from_text },
-      { node_id: c.to_id, text: c.to_text },
+      asFact({ node_id: c.from_id, text: c.from_text }),
+      asFact({ node_id: c.to_id, text: c.to_text }),
     );
   }
   mergeNodes(seedNodes, { fresh: true });
@@ -820,7 +884,7 @@ async function runTrace() {
     return;
   }
   mergeNodes(nodes, { fresh: true });
-  mergeEdges(edgesFromTrace(nodes, data.relations || []), { path: true });
+  mergeEdges(L.edgesFromTrace(nodes, data.relations || []), { path: true });
   syncGraph({ fullLayout: true, originNodeId: fromId });
   if (cy.nodes().length === nodes.length) {
     const order = new Map(nodes.map((node, index) => [node.node_id, index]));
@@ -848,6 +912,7 @@ function clearGraph() {
   state.anchorId = null;
   state.hoverId = null;
   $("hover-plus").classList.remove("visible");
+  hideNodePreviewTip();
   $("node-id").value = "";
   updateStats();
   $("detail").hidden = true;
@@ -857,6 +922,7 @@ function clearGraph() {
 }
 
 const hoverPlus = $("hover-plus");
+const previewTip = $("node-preview-tip");
 let hidePlusTimer = null;
 
 function positionHoverPlus(node) {
@@ -868,10 +934,31 @@ function positionHoverPlus(node) {
   hoverPlus.style.top = `${bb.y1}px`;
 }
 
+function showNodePreviewTip(node) {
+  if (!node || node.empty()) return;
+  if (L.shouldShowAlwaysLabels(state.previewMode, cy.zoom())) {
+    hideNodePreviewTip();
+    return;
+  }
+  const n = state.nodes.get(node.id());
+  previewTip.textContent = preview(nodeText(n), L.HOVER_CHARS);
+  const bb = node.renderedBoundingBox({ includeLabels: false, includeOverlays: false });
+  previewTip.hidden = false;
+  previewTip.style.left = `${Math.max(8, Math.min(bb.x1, cy.width() - 228))}px`;
+  previewTip.style.top = `${Math.min(bb.y2 + 8, cy.height() - 48)}px`;
+}
+
+function hideNodePreviewTip() {
+  previewTip.hidden = true;
+  previewTip.textContent = "";
+}
+
 function refreshHoverPlusPosition() {
-  if (!state.hoverId || !hoverPlus.classList.contains("visible")) return;
+  if (!state.hoverId) return;
   const node = cy.getElementById(state.hoverId);
-  if (node.nonempty()) positionHoverPlus(node);
+  if (node.empty()) return;
+  if (hoverPlus.classList.contains("visible")) positionHoverPlus(node);
+  if (!previewTip.hidden) showNodePreviewTip(node);
 }
 
 function showHoverPlus(node) {
@@ -879,12 +966,14 @@ function showHoverPlus(node) {
   state.hoverId = node.id();
   positionHoverPlus(node);
   hoverPlus.classList.add("visible");
+  showNodePreviewTip(node);
 }
 
 function scheduleHideHoverPlus() {
   clearTimeout(hidePlusTimer);
   hidePlusTimer = setTimeout(() => {
     hoverPlus.classList.remove("visible");
+    hideNodePreviewTip();
     state.hoverId = null;
   }, 250);
 }
@@ -932,21 +1021,22 @@ hoverPlus.addEventListener("click", (e) => {
 
 $("owner-id").value = state.ownerId;
 function syncOwner() {
-  const owner = $("owner-id").value.trim() || "default";
-  if (owner === state.ownerId) return false;
+  if (state.hideOwner) return false;
+  const owner = $("owner-id").value.trim();
+  if (!owner || owner === state.ownerId) return false;
 
   if ($("evolution-dialog").open) $("evolution-dialog").close();
   state.generation++;
   clearGraph();
   $("overview").replaceChildren();
-  $("overview-stats").textContent = "Loading workspace…";
+  $("overview-stats").textContent = "Loading this memory…";
   $("results-section").hidden = true;
   $("search-results").replaceChildren();
   $("trace-from").value = "";
   $("trace-to").value = "";
   $("filter-project").value = "";
   $("filter-tags").value = "";
-  state.ownerId = $("owner-id").value.trim() || "default";
+  state.ownerId = $("owner-id").value.trim();
   $("owner-id").value = state.ownerId;
   localStorage.setItem("gm_owner_id", state.ownerId);
   updateStats();
@@ -960,7 +1050,7 @@ $("owner-id").addEventListener("blur", () => {
 });
 
 $("btn-brief").addEventListener("click", () => {
-  loadBrief().catch((e) => log(`brief error: ${e.message}`));
+  loadBrief().catch((e) => notice(e.message, true));
 });
 
 $("overview").addEventListener("click", (e) => {
@@ -1001,7 +1091,7 @@ $("btn-similar").addEventListener("click", () => {
 
 $("btn-context").addEventListener("click", () => {
   const id = state.anchorId || $("node-id").value.trim();
-  if (!id) { notice("Select an anchor node first.", true); return; }
+  if (!id) { notice("Click an item on the map first.", true); return; }
   loadContext(id, { originNodeId: id }).catch((e) => log(`context: ${e.message}`));
 });
 
@@ -1009,7 +1099,7 @@ $("btn-hop").addEventListener("click", () => {
   const d = Number($("depth").value) || 1;
   $("depth").value = String(Math.min(3, d + 1));
   const id = state.anchorId || $("node-id").value.trim();
-  if (!id) { notice("Select an anchor node first.", true); return; }
+  if (!id) { notice("Click an item on the map first.", true); return; }
   loadContext(id, { depth: Number($("depth").value), originNodeId: id }).catch((e) =>
     log(`hop: ${e.message}`),
   );
@@ -1041,34 +1131,65 @@ async function checkHealth() {
     const res = await fetch("/health");
     const data = await res.json();
     if (data.ready) {
-      badge.textContent = "Memory connected";
+      state.connection = "ready";
+      badge.textContent = "Connected";
       badge.className = "badge badge-ok";
-      if (generation === state.generation) loadBrief({ open: window.innerWidth > 600, seedGraph: false }).catch((e) => log(`brief error: ${e.message}`));
+      applyAuthMode(data);
+      if (generation === state.generation) loadBrief({ open: window.innerWidth > 600, seedGraph: true }).catch((e) => log(`brief error: ${e.message}`));
     } else {
-      badge.textContent = "Memory offline";
-      notice("MCP is unavailable. Check the port-forward and restart Explorer to reconnect.", true);
+      state.connection = "offline";
+      applyAuthMode(data);
+      badge.textContent = "Offline";
+      paintEmpty();
+      notice(data.error || "The memory server is not responding. Start it, then reload this page.", true);
       badge.className = "badge badge-err";
     }
   } catch {
-    badge.textContent = "Connection error";
-    notice("Explorer cannot reach its backend. Check the local server.", true);
+    state.connection = "offline";
+    badge.textContent = "Offline";
+    paintEmpty();
+    notice("Cannot reach the Explorer server. Check that it is running.", true);
     badge.className = "badge badge-err";
   }
+}
+
+function applyAuthMode(data) {
+  state.hideOwner = Boolean(data.hide_owner);
+  document.body.classList.toggle("auth-owner", state.hideOwner);
+  $("owner-id").disabled = state.hideOwner;
+  $("owner-bound").hidden = !state.hideOwner;
 }
 
 function renderResults(nodes, data) {
   $("results-section").hidden = false;
   $("overview-section").open = false;
-  $("result-summary").textContent = `${nodes.length} results${data.budget?.tokens_est != null ? ` · ≈${data.budget.tokens_est} tokens` : ""}. Open a result for full text.`;
+  $("result-summary").textContent = `${nodes.length} results${data.budget?.tokens_est != null ? ` · about ${data.budget.tokens_est} tokens` : ""}. Open one to read the full text.`;
+  const pairs = data.contradiction_pairs || [];
+  const pairBlock = pairs.length
+    ? `<div class="ov-block"><h3>Contradicts</h3><ul class="ov-list">${pairs.map((c) => {
+        const from = state.nodes.get(c.from_id);
+        const to = state.nodes.get(c.to_id);
+        return `<li class="contradict" data-from="${escapeHtml(c.from_id)}" data-to="${escapeHtml(c.to_id)}"><span data-id="${escapeHtml(c.from_id)}">${escapeHtml(preview(nodeText(from), 28))}</span><span class="sep">⚡</span><span data-id="${escapeHtml(c.to_id)}">${escapeHtml(preview(nodeText(to), 28))}</span></li>`;
+      }).join("")}</ul></div>`
+    : "";
   $("search-results").innerHTML = nodes.length
-    ? `<ul class="ov-list">${nodes.map(n => `<li data-id="${escapeHtml(n.node_id)}">${escapeHtml(preview(nodeText(n), 150))}<span class="result-meta">${escapeHtml(n.node_type || "Fact")}${n.similarity != null ? ` · similarity ${Number(n.similarity).toFixed(3)}` : ""}</span></li>`).join("")}</ul>`
-    : '<p class="muted">No matches. Try a broader question or adjust your filters.</p>';
-  if (!nodes.length) notice("No matches. Try a broader question or adjust your filters.");
+    ? `${pairBlock}<ul class="ov-list">${nodes.map(n => `<li data-id="${escapeHtml(n.node_id)}">${escapeHtml(preview(nodeText(n), 150))}<span class="result-meta">${escapeHtml(L.resultMeta(n))}</span></li>`).join("")}</ul>`
+    : '<p class="muted">No matches. Try a broader question, or change the filters under Narrow the search.</p>';
+  if (!nodes.length) notice("No matches. Try a broader question, or narrow the search.");
 }
 
 $("search-results").addEventListener("click", e => {
-  const id = e.target.closest("[data-id]")?.dataset.id;
-  if (id) loadAnchor(id).catch(error => notice(error.message, true));
+  const pair = e.target.closest("[data-from][data-to]");
+  const id = pair ? null : e.target.closest("[data-id]")?.dataset.id;
+  if (id) {
+    loadAnchor(id).catch(error => notice(error.message, true));
+    return;
+  }
+  if (pair) {
+    $("trace-from").value = pair.dataset.from;
+    $("trace-to").value = pair.dataset.to;
+    runTrace().catch((err) => log(`trace: ${err.message}`));
+  }
 });
 $("search-query").addEventListener("keydown", e => {
   if (e.key === "Enter") textSearch().catch(error => notice(error.message, true));
@@ -1076,23 +1197,60 @@ $("search-query").addEventListener("keydown", e => {
 $("node-id").addEventListener("keydown", e => {
   if (e.key === "Enter") $("btn-load-node").click();
 });
-$("btn-fit").addEventListener("click", () => cy.fit(undefined, 60));
+$("btn-fit").addEventListener("click", () => {
+  cy.fit(undefined, mapFitPadding());
+  const floor = L.previewZoom(state.previewMode, cy.zoom());
+  if (floor > cy.zoom()) {
+    cy.zoom({ level: floor, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } });
+  }
+});
 $("btn-layout").addEventListener("click", () => syncGraph({ fullLayout: true }));
 function zoomBy(factor) {
   cy.zoom({ level: Math.min(cy.maxZoom(), Math.max(cy.minZoom(), cy.zoom() * factor)), renderedPosition: { x: cy.width()/2, y: cy.height()/2 } });
 }
 $("btn-zoom-in").addEventListener("click", () => zoomBy(1.25));
 $("btn-zoom-out").addEventListener("click", () => zoomBy(.8));
-cy.on("zoom", () => { $("zoom-level").textContent = `${Math.round(cy.zoom()*100)}%`; });
+cy.on("zoom", () => {
+  $("zoom-level").textContent = `${Math.round(cy.zoom()*100)}%`;
+  applyPreviewMode();
+});
 $("edge-labels").addEventListener("change", () => {
   cy.style().selector("edge").style("label", $("edge-labels").checked ? "data(label)" : "").update();
 });
+let lastAlwaysLabels = null;
+let applyingPreview = false;
+function applyPreviewMode({ relayout = false } = {}) {
+  if (applyingPreview) return;
+  state.previewMode = L.normalizePreviewMode($("node-preview").value);
+  L.writePreviewMode(localStorage, state.previewMode);
+  const show = L.shouldShowAlwaysLabels(state.previewMode, cy.zoom());
+  applyingPreview = true;
+  try {
+    cy.batch(() => {
+      for (const n of state.nodes.values()) {
+        const ele = cy.getElementById(n.node_id);
+        if (ele.nonempty()) ele.data("label", nodeLabel(n).replace(" · ", "\n"));
+      }
+    });
+    if (lastAlwaysLabels !== show) {
+      lastAlwaysLabels = show;
+      cy.style().selector("node").style("label", show ? "data(label)" : "").update();
+    }
+  } finally {
+    applyingPreview = false;
+  }
+  if (!show && state.hoverId) showNodePreviewTip(cy.getElementById(state.hoverId));
+  else if (show) hideNodePreviewTip();
+  if (relayout && show && cy.nodes().length > 1) syncGraph({ fullLayout: true });
+}
+$("node-preview").value = state.previewMode;
+$("node-preview").addEventListener("change", () => applyPreviewMode({ relayout: true }));
 $("btn-present").addEventListener("click", () => {
   const active = document.body.classList.toggle("presenting");
   $("btn-present").setAttribute("aria-pressed", String(active));
-  $("btn-present").textContent = active ? "Exit present" : "Present";
+  $("btn-present").textContent = active ? "Exit focus" : "Focus";
   cy.resize();
-  cy.fit(undefined, 60);
+  cy.fit(undefined, mapFitPadding());
 });
 $("btn-inspector").addEventListener("click", () => setInspectorOpen($("inspector-panel").hidden));
 $("btn-dismiss-notice").addEventListener("click", () => { $("notice").hidden = true; });
@@ -1118,8 +1276,25 @@ for (const [id, field] of [["btn-trace-from", "trace-from"], ["btn-trace-to", "t
   });
 }
 cy.on("mouseover", "edge", event => { event.target.style("label", event.target.data("label")); });
-cy.on("mouseout", "edge", event => { event.target.removeStyle("label"); });
-new ResizeObserver(() => cy.resize()).observe($("cy"));
+cy.on("mouseout", "edge", event => {
+  if ($("edge-labels").checked) event.target.style("label", event.target.data("label"));
+  else event.target.removeStyle("label");
+});
+let lastCyWidth = 0;
+let cyResizeTimer = 0;
+new ResizeObserver(() => {
+  cy.resize();
+  clearTimeout(cyResizeTimer);
+  cyResizeTimer = setTimeout(() => {
+    const width = cy.width();
+    if (!width || width === lastCyWidth || !cy.nodes().length) {
+      lastCyWidth = width;
+      return;
+    }
+    lastCyWidth = width;
+    cy.fit(undefined, mapFitPadding());
+  }, 60);
+}).observe($("cy"));
 for (const el of document.querySelectorAll("input, select")) {
   if (!el.labels?.length) el.setAttribute("aria-label", el.placeholder || el.title || el.id.replaceAll("-", " "));
 }

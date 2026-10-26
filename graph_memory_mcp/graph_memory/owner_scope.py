@@ -11,8 +11,8 @@
 
 Jobs and in-process calls are not HTTP requests, so they keep the owner they
 were given. Header and token modes bind request state on the HTTP request
-task. FastMCP runs the tool in a child task started after that bind; the
-child copies the context.
+task. The server runs the tool after the bind. A child task copies the
+context, and a synchronous handler's worker thread copies it again.
 
 ``_SURFACE_AUTH`` is the only map from mode to credential. ``/mcp``,
 ``/admin``, and ``/internal/graph-size`` all go through ``authenticate``.

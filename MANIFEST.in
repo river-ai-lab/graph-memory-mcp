@@ -1,0 +1,4 @@
+include README_pypi.md
+include LICENSE
+recursive-include graph_memory_mcp/explorer/static *
+recursive-include graph_memory_mcp/resources *.md

@@ -295,10 +295,9 @@ def create_node(
     check_duplicates: bool = True,
 ) -> Dict:
     """Create a Fact or Entity node."""
+    owner_id = normalize_owner_id(owner_id)
     if error := validate_inputs(locals(), config):
         return error_response(error, code="memory_validation_error")
-
-    owner_id = normalize_owner_id(owner_id)
     created_by, updated_by = authors_for_write(metadata)
     _stored_meta, promoted, metadata_str = _write_metadata(
         metadata, created_by=created_by
@@ -544,12 +543,12 @@ def upsert_node(
         return error_response(
             "source is required for upsert_node", code="memory_validation_error"
         )
+    owner_id = normalize_owner_id(owner_id)
     if error := validate_inputs(locals(), config):
         return error_response(error, code="memory_validation_error")
 
     if versioning is None:
         versioning = bool(getattr(config, "versioning_default", False))
-    owner_id = normalize_owner_id(owner_id)
     source_props = _source_properties(source)
     source_ref = ensure_text((source_props["source"] or {}).get("ref"))
     if not source_ref:

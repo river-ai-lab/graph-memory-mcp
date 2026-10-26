@@ -35,14 +35,16 @@ jobs:
       FALKORDB_GRAPH: memory_ci
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: astral-sh/setup-uv@v5
       - name: Cache embedding model
         uses: actions/cache@v4
         with:
           path: ~/.cache/huggingface
-          key: hf-${{ runner.os }}-multilingual-e5-base
-      - run: uv sync
-      - run: uv run pytest -q -m "not arcade"
+          key: hf-${{ runner.os }}-multilingual-e5-base-onnx
+      - run: uv sync --extra torch
+      - run: uv run pytest -q -m "not arcade and not browser"
 
   arcade:
     runs-on: ubuntu-latest
@@ -64,4 +66,4 @@ jobs:
           done
           exit 1
       - run: uv sync
-      - run: uv run pytest -q -m arcade
+      - run: uv run pytest -q -m "arcade and not browser"

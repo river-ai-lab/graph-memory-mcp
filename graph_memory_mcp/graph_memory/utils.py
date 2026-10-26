@@ -4,7 +4,7 @@ import json
 import logging
 import re
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -249,7 +249,15 @@ def validate_inputs(inputs: dict[str, Any], config: Any) -> Optional[str]:
     Returns:
         Error message if validation fails, None otherwise
     """
+    from graph_memory_mcp.graph_memory.owner_scope import (
+        bound_key,
+        resolve_token_owner,
+    )
+
     for field, value in inputs.items():
+        if field == "owner_id" and bound_key() is not None:
+            requested = value if isinstance(value, str) and value.strip() else None
+            value = resolve_token_owner(requested)
         if value is not None and (validator := VALIDATORS.get(field)):
             if error := validator(value, config):
                 return error
@@ -286,16 +294,6 @@ def mcp_handler(func):
         return result
 
     return wrapper
-
-
-def execute_query(db: Any, query: str, params: Optional[Dict] = None) -> Any:
-    """Execute query (routed to the owner graph via params) and validate result."""
-    result = db.query(query, params=params)
-
-    if not result or not hasattr(result, "result_set") or not result.result_set:
-        return None
-
-    return result
 
 
 def touch_nodes(db: Any, node_ids: List[str], owner_id: str) -> None:

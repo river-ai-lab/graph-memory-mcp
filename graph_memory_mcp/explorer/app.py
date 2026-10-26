@@ -43,6 +43,7 @@ def create_app(mcp_client: McpToolClient) -> Starlette:
         try:
             await mcp_client.connect()
         except Exception as exc:  # noqa: BLE001
+            mcp_client.connect_error = str(exc)
             logger.warning("Could not connect to MCP at %s: %s", mcp_client.url, exc)
         yield
         await mcp_client.close()
@@ -55,9 +56,15 @@ def create_app(mcp_client: McpToolClient) -> Starlette:
             "ready": False,
             "mcp_url": mcp_client.url,
             "graph_diff_available": evolution.graphdiff_available(),
+            "hide_owner": bool(getattr(mcp_client, "hide_owner", False)),
+            "auth": bool(
+                (getattr(mcp_client, "headers", None) or {}).get("Authorization")
+            ),
         }
         if not mcp_client.connected:
-            payload["error"] = "MCP server not connected"
+            payload["error"] = getattr(mcp_client, "connect_error", None) or (
+                "MCP server not connected"
+            )
             return JSONResponse(payload)
 
         try:

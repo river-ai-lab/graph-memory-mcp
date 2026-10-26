@@ -1,6 +1,6 @@
 # Docs
 
-- [configuration.md](./configuration.md) — `OWNER_SCOPE` (`client`, `header`, `token`) and API keys
+- [configuration.md](./configuration.md) — `OWNER_SCOPE` (`client`, `header`, `token`), API keys, embeddings
 - [team-setup.md](./team-setup.md) — Admin: how to connect a team
 - [features.md](./features.md) — API contract
 - [admin.md](./admin.md) — `/admin/*`, `/internal/graph-size`, `/metrics`
@@ -10,5 +10,7 @@
 - [memory_faq.md](./memory_faq.md) — ops FAQ
 - [roadmap.md](./roadmap.md) — unfinished work
 - [comparison.md](./comparison.md) — vs other stacks
+- [releasing.md](./releasing.md) — PyPI trusted publisher and version tags
+- [demos.md](./demos.md) — demo recordings besides the README GIF
 
 Explorer: [README](../README.md).

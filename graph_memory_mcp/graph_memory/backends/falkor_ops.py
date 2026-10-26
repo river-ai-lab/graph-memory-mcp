@@ -59,6 +59,7 @@ class FalkorOps:
         has_embedding: bool,
         entity_type: str | None,
     ) -> list[list[Any]]:
+        self.ensure_vector_indexes_if_missing(owner_id=str(params["owner_id"]))
         type_prop = ""
         if node_type == "Entity":
             type_prop = ", name_norm: $name_norm"
@@ -98,6 +99,7 @@ class FalkorOps:
         return self.rows(query, params)
 
     def create_nodes_bulk(self, *, node_type: str, rows: list, owner_id: str) -> list:
+        self.ensure_vector_indexes_if_missing(owner_id=owner_id)
         query = f"""
     UNWIND $rows AS row
     CREATE (n:{node_type} {{
@@ -177,6 +179,7 @@ class FalkorOps:
         )
 
     def apply_node_update(self, *, set_clauses: list[str], params: dict) -> list:
+        self.ensure_vector_indexes_if_missing(owner_id=str(params["owner_id"]))
         query = f"""
     MATCH (n)
     WHERE n.uid = $node_id AND n.owner_id = $owner_id
@@ -297,6 +300,7 @@ class FalkorOps:
         params: dict,
         prop_assignments: str,
     ) -> list:
+        self.ensure_vector_indexes_if_missing(owner_id=str(params["owner_id"]))
         params = {
             **params,
             "created_by": params.get("created_by"),
@@ -320,6 +324,7 @@ class FalkorOps:
     def merge_triplet(
         self, *, rel_type: str, params: dict, subj_emb_expr: str, obj_emb_expr: str
     ) -> list:
+        self.ensure_vector_indexes_if_missing(owner_id=str(params["owner_id"]))
         query = f"""
     MERGE (s:Entity {{name_norm: $subject_norm, owner_id: $owner_id}})
     ON CREATE SET
@@ -443,7 +448,8 @@ class FalkorOps:
     MATCH (n)
     WHERE n.uid IN $ids AND n.owner_id = $owner_id
     RETURN n.uid, labels(n)[0], n.text,
-           coalesce(n.updated_at, n.created_at), coalesce(n.access_count, 0)
+           coalesce(n.updated_at, n.created_at), coalesce(n.access_count, 0),
+           n.status, n.created_at, n.metadata_str
 """,
             {"ids": ids, "owner_id": owner_id},
         )
@@ -490,7 +496,7 @@ class FalkorOps:
     {order_clause}
     RETURN m.uid, labels(m)[0], m.text,
            coalesce(m.updated_at, m.created_at), coalesce(m.access_count, 0),
-           parents
+           parents, m.status, m.created_at, m.metadata_str
     LIMIT {int(remaining)}
     """
         return self.rows(query, params)
@@ -538,7 +544,10 @@ class FalkorOps:
     RETURN
         connected.uid as node_id,
         labels(connected)[0] as node_type,
-        connected.text as text
+        connected.text as text,
+        connected.status as status,
+        connected.created_at as created_at,
+        connected.metadata_str as metadata_str
     """
         return self.rows(query, params)
 
@@ -560,7 +569,11 @@ class FalkorOps:
     RETURN [n in nodes(path) | {{
         node_id: n.uid,
         node_type: labels(n)[0],
-        text: n.text
+        text: n.text,
+        status: n.status,
+        created_at: n.created_at,
+        updated_at: n.updated_at,
+        metadata: n.metadata_str
     }}] as nodes,
     [r in relationships(path) | {{
         relation_type: type(r)
@@ -577,7 +590,11 @@ class FalkorOps:
     RETURN [n in nodes(path) | {{
         node_id: n.uid,
         node_type: labels(n)[0],
-        text: n.text
+        text: n.text,
+        status: n.status,
+        created_at: n.created_at,
+        updated_at: n.updated_at,
+        metadata: n.metadata_str
     }}] as nodes,
     [r in relationships(path) | {{
         relation_type: type(r)
@@ -737,6 +754,7 @@ class FalkorOps:
     def import_node_batch(
         self, *, label: str, has_emb: bool, rows: list, owner_id: str
     ) -> Any:
+        self.ensure_vector_indexes_if_missing(owner_id=owner_id)
         emb_clause = ", n.embedding = vecf32(row.emb)" if has_emb else ""
         # Full replace from the dump. Timestamps already in row.props stay;
         # missing ones are filled with the server clock.
@@ -752,6 +770,7 @@ class FalkorOps:
         )
 
     def import_relation_batch(self, *, rel_type: str, rows: list, owner_id: str) -> Any:
+        self.ensure_vector_indexes_if_missing(owner_id=owner_id)
         return self.query(
             f"""
                 UNWIND $rows AS row
