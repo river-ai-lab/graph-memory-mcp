@@ -159,7 +159,7 @@ search(query="API rate limit", owner_id="team_backend")
 
 **Before**: Cursor or Claude Code agents rediscover the same information session after session—re-reading config files, re-asking "what port does staging use?"—because memory resets with each new chat.
 
-**With Graph Memory MCP**: When the agent finds "staging database uses port 5433" in `config/staging.yaml`, it writes back with `create_node(text="The staging database uses port 5433.", metadata={"source": "config/staging.yaml"})` (rule 6 from the [cheatsheet](docs/memory_policy_cheatsheet.md)). Next session, `search("staging database port")` retrieves it. No file re-reads, no extraction cost.
+**With Graph Memory MCP**: When the agent finds "staging database uses port 5433" in `config/staging.yaml`, it writes back with `create_node(text="The staging database uses port 5433.", metadata={"source": "config/staging.yaml"})` (the write-back rule in the [cheatsheet](docs/memory_policy_cheatsheet.md)). Next session, `search("staging database port")` retrieves it. No file re-reads, no extraction cost.
 
 ### Multiple agents sharing memory
 

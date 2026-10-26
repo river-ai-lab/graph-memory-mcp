@@ -14,3 +14,5 @@
 - [demos.md](./demos.md) — demo recordings besides the README GIF
 
 Explorer: [README](../README.md).
+
+Editing the policy: change only `memory_policies_for_LLM.md`. Each rule has a `<!-- rule:<id> [scope:common] [tools:a,b] summary:"…" -->` marker; `scope:common` summaries become the MCP server instructions, `tools:` summaries are appended to those tool descriptions, and all summaries form the cheat sheet rules. Then run `python scripts/gen_policy.py` and commit the generated files (CI fails if they are stale).

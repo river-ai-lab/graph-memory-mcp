@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any, Callable
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
@@ -28,6 +29,7 @@ from graph_memory_mcp.graph_memory.owner_scope import (
     needs_loopback_peer_check,
 )
 from graph_memory_mcp.jobs.scheduler import shutdown_scheduler, start_scheduler
+from graph_memory_mcp.resources.policy_generated import COMMON_RULES, TOOL_RULES
 
 logger = logging.getLogger(__name__)
 
@@ -68,34 +70,31 @@ def _mcp_instructions(scope: str, *, hide_owner: bool = False) -> str:
 
     ``hide_owner`` is the ``--auth`` entry: the schema has no ``owner_id``.
     """
-    common = (
-        "Graph Memory is a long-term knowledge graph, not a chat log. "
-        "Search before create; store one durable declarative fact per node. "
-        "Never store chat logs, secrets, or ephemeral execution state. "
-        "For substantive changes: mark_outdated then create_node. "
-        "source_updated_at is the source document time in Unix milliseconds, "
-        "not the server-managed updated_at. "
-        f"Before the first memory write in a session, read MCP resource {_AGENT_POLICIES_URI}."
+    common = "\n".join(
+        (
+            *COMMON_RULES,
+            f"Before the first memory write in a session, read MCP resource {_AGENT_POLICIES_URI}.",
+        )
     )
     mode = str(scope or "client").strip().lower()
     if hide_owner:
         return (
-            f"{common} The server sets owner_id from the API key. Do not pass it. "
+            f"{common}\nThe server sets owner_id from the API key. Do not pass it. "
             "The server sets created_by and updated_by from the API key name."
         )
     if mode == "token":
         return (
-            f"{common} The server sets created_by and updated_by from the API key "
+            f"{common}\nThe server sets created_by and updated_by from the API key "
             "name. Pass owner_id only to choose among the key's projects; omit it "
             "to use the first project."
         )
     if mode == "header":
         return (
-            f"{common} Pass owner_id for compatibility (the server uses X-Owner-Id). "
+            f"{common}\nPass owner_id for compatibility (the server uses X-Owner-Id). "
             "Set metadata.created_by and metadata.updated_by for attribution."
         )
     return (
-        f"{common} Always pass owner_id explicitly on reads and writes "
+        f"{common}\nAlways pass owner_id explicitly on reads and writes "
         "(alphanumeric, _, -, @). Set metadata.created_by and "
         "metadata.updated_by for attribution."
     )
@@ -169,7 +168,28 @@ class BaseGraphMemoryMCP:
             version=__version__,
         )
         self._register_resources()
-        self._register_tools()
+        self._register_tools_with_policy()
+
+    def _register_tools_with_policy(self) -> None:
+        """Register tools, appending generated policy rules to their descriptions."""
+        mcp = self.mcp
+        original = mcp.tool
+
+        def tool(*args: Any, **kwargs: Any):
+            def register(fn: Callable[..., Any]) -> Callable[..., Any]:
+                rule = TOOL_RULES.get(kwargs.get("name") or fn.__name__)
+                if rule:
+                    desc = kwargs.get("description") or ""
+                    kwargs["description"] = f"{desc} Policy: {rule}".strip()
+                return original(*args, **kwargs)(fn)
+
+            return register
+
+        mcp.tool = tool  # type: ignore[method-assign]
+        try:
+            self._register_tools()
+        finally:
+            mcp.tool = original  # type: ignore[method-assign]
 
     def _register_resources(self) -> None:
         """Expose agent policy docs as an MCP resource."""

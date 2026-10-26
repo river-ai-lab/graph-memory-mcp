@@ -48,7 +48,7 @@ def test_instructions_differ_by_mode():
     header = _mcp_instructions("header")
     token = _mcp_instructions("token")
     assert "source_updated_at" in client
-    assert "server-managed updated_at" in client
+    assert "server-managed `updated_at`" in client
     assert "metadata.created_by" in client
     assert "metadata.updated_by" in client
     assert "author" not in client.lower()

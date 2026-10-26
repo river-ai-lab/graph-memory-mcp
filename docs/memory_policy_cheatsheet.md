@@ -4,33 +4,36 @@ Constants from your operator (apply, never invent): `<OWNER_ID>` required — pa
 
 `client`/`header`: pass `owner_id`; put attribution in `metadata.created_by` and `metadata.updated_by`. `token`: pass `owner_id` only to pick among the key's projects; the server sets `created_by` / `updated_by` from the key name.
 
-Node `updated_at` is the server clock. The source document time is `source_updated_at` (`source.source_updated_at`, or the flat argument on `--simple`).
-
 ## Rules
 
-1. `search` before `create_node`; one durable fact per node; no chat logs / secrets / scratchpad; no metric tables in `text`.
-2. Fact became wrong → `mark_outdated` + `create_node`. Typo/metadata → `update_node`.
-3. `memory_duplicate` or `possible_duplicates`: do not write a third paraphrase. Update, `mark_outdated` + `create_node`, or `check_duplicates=false` only if the fact is different.
-4. After meaningful work — GROW before final reply (Ground → Record → Orient? → Write); skip if nothing durable.
-5. Temporary note → `ttl_days` (14–30). Decision or durable outcome → no TTL. Server never sets TTL from `type`. Do not store a pod lifecycle. Default search and brief hide facts that have a TTL; `include_ttl=true` shows ones that have not expired.
-6. If a tool schema has no `owner_id`, the server sets it from the key. Do not pass it.
-7. Write back what you had to find:
-   - If `search` returned nothing useful and you later found/figured out/did the answer (code, docs, user, debugging), write it as a Fact phrased close to the original question so the same query finds it next time
-   - Put the source in `metadata` (file, URL, `"source": "user"`)
-   - If it contradicts an existing fact, `mark_outdated` the old one and link new `FOLLOWS_FROM` old instead of creating a duplicate
-   - Don't store things cheap to re-read (file contents, transient values)
+Generated from [`memory_policies_for_LLM.md`](./memory_policies_for_LLM.md); edit the rules there.
+
+<!-- BEGIN GENERATED rules (scripts/gen_policy.py) -->
+1. Graph Memory is a long-term knowledge graph, not a chat log.
+2. Session start: `get_brief` (project state, not the task), then `search(query=<task>, compact=true)`. `suggested_next` is a hint.
+3. Search before `create_node`.
+4. One durable declarative fact per node; no metric tables or dumps in `text`.
+5. Never store chat logs, scratchpad reasoning, secrets/PII, transient execution state, or unlabeled guesses.
+6. Substantive change: `mark_outdated` + `create_node`. Typos or metadata: `update_node`.
+7. On `memory_duplicate` or `possible_duplicates`, do not write another paraphrase; update or `mark_outdated` instead.
+8. After meaningful work, before the final reply: GROW (Ground → Record → Orient? → Write); skip if nothing durable.
+9. Temporary note → `ttl_days` (14–30); decisions and durable outcomes have no TTL.
+10. If a tool schema has no `owner_id`, the server sets it from the API key. Do not pass it.
+11. Write back what you had to find: if `search` missed and you found the answer, store it phrased close to the question, with its source in `metadata`.
+12. Default reads hide TTL and outdated facts; pass `include_ttl=true` or `include_outdated=true` to see them.
+13. Use the allowed relation types; do not invent new ones.
+14. `source_updated_at` is the source document time in Unix milliseconds, not the server-managed `updated_at`.
+<!-- END GENERATED rules -->
 
 ## Situation → tool
 
 | Situation | Call |
 |-----------|------|
-| After meaningful work | GROW: Ground → Record → Orient? → Write (`project`+`created_by`); skip if nothing durable |
-| Session start | `get_brief(owner_id)` (about + recent facts without TTL + `CONTRADICTS` + `stale_count`; not the task; no `include_stale`) → `search(query=<task>, compact=true)`. `suggested_next` hints at a possible next call; you decide. |
-| "What do we know about X?" | `search(query="X", compact=true)`. `suggested_next` is a hint; choose the next call yourself. |
-| Opinion changed | `mark_outdated` + `create_node` (no separate supersede tool) |
+| "What do we know about X?" | `search(query="X", compact=true)` |
 | Path between two known IDs | `get_trace(from_id, to_id)` (directed; retry `directed=false`) |
 | Quick one-call recall | `recall_context(query, depth=1, compact=true)` |
 | Store a fact | `create_node(text, owner_id, metadata)`; temporary → also `ttl_days` |
+| Sync from an external system | `upsert_node(text, source={"ref": <stable key>})` |
 | Document/conversation → knowledge | extract → `ingest_knowledge(document={"ref": ...}, facts=[{text, ref?, ...}, ...], triplets=[...])` — prefer `facts[].ref`; re-ingest updates in place |
 | Link nodes | `create_relation(from_id, to_id, relation_type)` — default allowlist: `RELATED_TO`, `MENTIONS`, `SUMMARIZES`, `FOLLOWS_FROM`, `CONTRADICTS`, `EXTRACTED_FROM`, `SIMILAR_TO`, `NEXT_STEP`, `EXPOSES`, `CROSS_REF`, `RUNS_ON`, `USES`, `SERVED_BY` |
 

@@ -6,6 +6,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 - Security: where `/mcp` has no credential (`client`, `header` without `ADMIN_TOKEN`), a loopback `Host` from a non-loopback peer gets HTTP 421 instead of passing the Host allowlist.
 - Security: `OWNER_SCOPE=client` refuses to start on a non-loopback bind (`0.0.0.0`, `::`, LAN IP), since `/mcp` has no authentication there. `ALLOW_INSECURE_CLIENT=1` warns and starts anyway. The Docker image needs `OWNER_SCOPE=token` or that opt-in.
+- Agent policy has one source, `docs/memory_policies_for_LLM.md`: `scripts/gen_policy.py` generates the server instructions, per-tool policy lines in tool descriptions, the cheat sheet rules, and the packaged copy. A test fails when they are stale.
 
 ## [0.2.1] - 2026-10-26
 
