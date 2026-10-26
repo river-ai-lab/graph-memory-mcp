@@ -7,6 +7,7 @@
 - [background_jobs.md](./background_jobs.md) — archive and dedup (`JOBS_ENABLED`)
 - [memory_policies_for_LLM.md](./memory_policies_for_LLM.md) — full agent policy
 - [memory_policy_cheatsheet.md](./memory_policy_cheatsheet.md) — short agent sheet
+- [hooks.md](./hooks.md) — client hooks that remind the agent to save memory
 - [memory_faq.md](./memory_faq.md) — ops FAQ
 - [roadmap.md](./roadmap.md) — unfinished work
 - [comparison.md](./comparison.md) — vs other stacks
