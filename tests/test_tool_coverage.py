@@ -67,19 +67,38 @@ def _tool_names(server) -> set[str]:
     return {tool.name for tool in server.mcp._tool_manager.list_tools()}
 
 
-@pytest.mark.parametrize("variant", VARIANTS, ids=lambda cls: cls.__name__)
-@pytest.mark.parametrize("admin", [False, True], ids=["default", "admin"])
-def test_variant_registers_exactly_the_known_tools(variant, admin, tmp_path):
+def _server(variant, admin: bool, tmp_path):
     update = {"mcp_expose_admin_tools": admin}
     if variant is GraphMemoryAuthMCP:
         keys = tmp_path / "keys.json"
         create_key(keys, "alice", ["p1"])
         update.update(admin_token="admin-secret", api_keys_file=str(keys))
     try:
-        server = variant(_config(**update))
+        return variant(_config(**update))
     finally:
         configure_owner_scope("client")
+
+
+@pytest.mark.parametrize("variant", VARIANTS, ids=lambda cls: cls.__name__)
+@pytest.mark.parametrize("admin", [False, True], ids=["default", "admin"])
+def test_variant_registers_exactly_the_known_tools(variant, admin, tmp_path):
+    server = _server(variant, admin, tmp_path)
     assert _tool_names(server) == (ALL_TOOLS if admin else DEFAULT_TOOLS)
+
+
+HINTS = ("readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint")
+
+
+@pytest.mark.parametrize("variant", VARIANTS, ids=lambda cls: cls.__name__)
+def test_every_tool_declares_all_four_hints(variant, tmp_path):
+    server = _server(variant, True, tmp_path)
+    for tool in server.mcp._tool_manager.list_tools():
+        hints = tool.annotations.model_dump(by_alias=True) if tool.annotations else {}
+        missing = [h for h in HINTS if not isinstance(hints.get(h), bool)]
+        assert not missing, (tool.name, missing)
+        assert hints["openWorldHint"] is False, tool.name
+        if hints["readOnlyHint"]:
+            assert hints["destructiveHint"] is False, tool.name
 
 
 def _payload(result) -> dict:
