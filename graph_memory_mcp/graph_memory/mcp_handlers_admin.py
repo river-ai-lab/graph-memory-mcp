@@ -246,7 +246,11 @@ def export_owner(
 
     nodes = []
     if section in ("all", "nodes"):
-        for row in _page(db.export_node_rows(owner_id, page_clause)):
+        for row in _page(
+            db.export_node_rows(
+                owner_id, page_clause, include_versions=include_versions
+            )
+        ):
             label = str(row[0])
             if label == "FactVersion" and not include_versions:
                 continue
