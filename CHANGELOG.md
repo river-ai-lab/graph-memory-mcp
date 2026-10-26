@@ -2,7 +2,7 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [Unreleased]
+## [0.2.1] - 2026-10-26
 
 - `get_context` paging: `has_more` is true only when the next page has visible nodes. Hidden outdated neighbors no longer produce an empty next page. A last full page now reports `has_more` false. Default calls (no `page`, `offset=0`) are unchanged.
 - `export_owner` paging: `has_more` is true only when another row exists. An exactly full last page now reports `has_more` false. Unpaged exports are unchanged.
