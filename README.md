@@ -11,8 +11,6 @@
 
 Self-hosted MCP server for agent developers, teams running agents, and heavy agent users. Agents decide what facts to write; the server keeps memory orderly—deduplicates on insert, marks outdated facts, surfaces contradictions, and enforces physical per-owner isolation. Your data stays with you. No LLM calls on the server, no external APIs. Embeddings computed locally.
 
-Install from PyPI: `pip install graph-memory-mcp` or `uvx graph-memory-mcp`.
-
 <!-- Demo GIF: assets/demo/demo.gif (readme scenario). Seed first: assets/demo/seed.py -->
 
 <p align="center">
@@ -210,9 +208,18 @@ This starts ArcadeDB (port 2480, default backend). To use FalkorDB instead, set 
 
 **3. Install and run**
 
+From this repository:
+
 ```bash
 uv sync
 uv run graph-memory-mcp --host 127.0.0.1 --port 8000
+```
+
+Without a clone, the same long-running process comes from PyPI:
+
+```bash
+pip install graph-memory-mcp
+graph-memory-mcp --host 127.0.0.1 --port 8000
 ```
 
 The default install embeds with ONNX Runtime (`EMBEDDING_BACKEND=onnx`). To use the previous sentence-transformers path: `uv sync --extra torch` and set `EMBEDDING_BACKEND=torch`.
