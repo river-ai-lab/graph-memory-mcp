@@ -545,3 +545,99 @@ def test_graph_size_payload_counts_labels():
     assert payload["relation_count"] == 4
     assert payload["bytes"] == 100
     assert payload["nodes"] == {"Fact": 2, "Entity": 1}
+
+
+def _host_app(peer):
+    from starlette.applications import Starlette
+    from starlette.responses import PlainTextResponse
+    from starlette.routing import Route
+
+    from graph_memory_mcp.graph_memory.owner_scope import LoopbackPeerMiddleware
+
+    inner = Starlette(
+        routes=[
+            Route("/mcp", lambda r: PlainTextResponse("ok"), methods=["POST"]),
+            Route("/metrics", lambda r: PlainTextResponse("ok")),
+        ]
+    )
+    app = LoopbackPeerMiddleware(inner)
+
+    async def with_peer(scope, receive, send):
+        if scope["type"] == "http":
+            scope = dict(scope, client=(peer, 50123))
+        await app(scope, receive, send)
+
+    return with_peer
+
+
+async def _status(app, host, path="/mcp", method="POST"):
+    import httpx
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://srv"
+    ) as client:
+        response = await client.request(method, path, headers={"Host": host})
+        return response.status_code
+
+
+@pytest.mark.parametrize(
+    "host", ["127.0.0.1:8000", "localhost:8000", "[::1]:8000", "127.0.0.1"]
+)
+def test_loopback_host_from_lan_peer_is_rejected(host):
+    assert asyncio.run(_status(_host_app("192.168.68.20"), host)) == 421
+    assert asyncio.run(_status(_host_app("2001:db8::5"), host)) == 421
+
+
+@pytest.mark.parametrize("peer", ["127.0.0.1", "::1", "testclient"])
+def test_loopback_host_from_loopback_peer_passes(peer):
+    assert asyncio.run(_status(_host_app(peer), "127.0.0.1:8000")) == 200
+
+
+def test_loopback_peer_check_only_covers_mcp():
+    app = _host_app("192.168.68.20")
+    assert asyncio.run(_status(app, "127.0.0.1:8000", "/metrics", "GET")) == 200
+
+
+def test_loopback_peer_check_applies_where_mcp_is_open():
+    from graph_memory_mcp.graph_memory.owner_scope import needs_loopback_peer_check
+
+    assert needs_loopback_peer_check(scope="client", admin_token="")
+    assert needs_loopback_peer_check(scope="client", admin_token="secret")
+    assert not needs_loopback_peer_check(
+        scope="client", admin_token="", allow_insecure_client=True
+    )
+    assert needs_loopback_peer_check(scope="header", admin_token="")
+    assert not needs_loopback_peer_check(scope="header", admin_token="secret")
+    assert not needs_loopback_peer_check(
+        scope="header", admin_token="", allow_insecure_header=True
+    )
+    assert not needs_loopback_peer_check(scope="token", admin_token="secret")
+
+
+def test_client_mode_app_rejects_spoofed_loopback_host(memory_backend):
+    """GMMCP-18: Host 127.0.0.1 from a LAN peer does not reach /mcp."""
+    import httpx
+
+    from graph_memory_mcp.server import GraphMemoryMCP
+
+    cfg = memory_backend.config.model_copy(
+        update={"owner_scope": "client", "allow_insecure_client": False}
+    )
+    server = GraphMemoryMCP(cfg)
+    app = server.get_mcp_app()
+
+    async def statuses():
+        out = []
+        async with server.mcp.session_manager.run():
+            for peer in ("192.168.68.20", "127.0.0.1"):
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app, client=(peer, 50123)),
+                    base_url="http://127.0.0.1:8000",
+                ) as client:
+                    response = await client.post("/mcp", json={})
+                    out.append(response.status_code)
+        return out
+
+    lan, local = asyncio.run(statuses())
+    assert lan == 421
+    assert local != 421

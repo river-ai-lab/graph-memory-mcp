@@ -20,17 +20,21 @@ from graph_memory_mcp.graph_memory.api_keys import validate_token_mode
 from graph_memory_mcp.graph_memory.database import open_store
 from graph_memory_mcp.graph_memory.embedding_service import EmbeddingService
 from graph_memory_mcp.graph_memory.owner_scope import (
+    LoopbackPeerMiddleware,
     OwnerHeaderMiddleware,
     OwnerTokenMiddleware,
     authenticate,
     configure_owner_scope,
+    needs_loopback_peer_check,
 )
 from graph_memory_mcp.jobs.scheduler import shutdown_scheduler, start_scheduler
 
 logger = logging.getLogger(__name__)
 
 # DNS-rebinding allowlist for the /mcp session. The uvicorn bind address is
-# separate and does not change this list.
+# separate and does not change this list. Host is client-controlled, so this is
+# not access control: LoopbackPeerMiddleware also rejects a loopback Host from a
+# non-loopback peer where /mcp has no credential.
 _TRANSPORT_SECURITY = TransportSecuritySettings(
     enable_dns_rebinding_protection=True,
     allowed_hosts=["127.0.0.1:*", "localhost:*", "[::1]:*"],
@@ -205,6 +209,14 @@ class BaseGraphMemoryMCP:
                     OwnerHeaderMiddleware,
                     admin_token=self.server_config.admin_token,
                 )
+            cfg = self.server_config
+            if needs_loopback_peer_check(
+                scope=cfg.owner_scope,
+                admin_token=cfg.admin_token,
+                allow_insecure_header=cfg.allow_insecure_header,
+                allow_insecure_client=cfg.allow_insecure_client,
+            ):
+                app.add_middleware(LoopbackPeerMiddleware)
             app.state._owner_scope_wrapped = True
 
         from starlette.routing import Route

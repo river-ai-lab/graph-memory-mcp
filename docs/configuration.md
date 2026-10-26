@@ -18,6 +18,10 @@ Settings load from the environment and from `.env`. Defaults live in `graph_memo
 
 `/mcp` has no authentication in `client` mode, and `ADMIN_TOKEN` does not change that. A non-loopback bind (`0.0.0.0`, `::`, a LAN IP) refuses to start: anyone who can reach the port could read, write, and delete any owner's memory. Bind `127.0.0.1` (also `::1` or `localhost`) or use `OWNER_SCOPE=token`. `ALLOW_INSECURE_CLIENT=1` logs a warning and starts anyway, for a trusted network or a container whose port is published only on the host's loopback (`-p 127.0.0.1:8000:8000`).
 
+### Host check
+
+`/mcp` accepts only `Host` and `Origin` `127.0.0.1`, `localhost`, and `[::1]` (DNS-rebinding protection). The `Host` header is set by the client, so this is not access control; authentication is (`OWNER_SCOPE=token`). Where `/mcp` has no credential (`client`, or `header` without `ADMIN_TOKEN`), a request with a loopback `Host` from a non-loopback TCP peer also gets HTTP 421. `ALLOW_INSECURE_CLIENT=1` / `ALLOW_INSECURE_HEADER=1` turn that check off, since the operator has accepted network access (a Docker published port arrives from the bridge address).
+
 ### Header
 
 Bind the server to `127.0.0.1` (also `::1` or `localhost`). The gateway is the only client: it sets `X-Owner-Id` and sends `Authorization: Bearer $ADMIN_TOKEN`.
