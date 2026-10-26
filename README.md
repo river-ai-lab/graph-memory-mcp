@@ -2,7 +2,7 @@
 
 <p align="center">
   <a href="https://github.com/river-ai-lab/graph-memory-mcp"><img src="https://img.shields.io/badge/status-active%20development-informational" alt="Status"></a>
-  <a href="https://github.com/river-ai-lab/graph-memory-mcp/commits/main"><img src="https://img.shields.io/github/last-commit/river-ai-lab/graph-memory-mcp" alt="Last commit"></a>
+  <a href="https://github.com/river-ai-lab/graph-memory-mcp/actions/workflows/ci.yml"><img src="https://github.com/river-ai-lab/graph-memory-mcp/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11+-blue.svg" alt="Python 3.11+"></a>
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
 </p>
