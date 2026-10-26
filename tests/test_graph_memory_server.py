@@ -1004,6 +1004,80 @@ async def test_get_context_tool_forwards_page(memory_backend):
 
 
 @pytest.mark.integration
+def test_get_context_page_has_more_ignores_hidden_outdated(memory_backend):
+    """A hidden outdated neighbor must not make has_more true."""
+    cfg = memory_backend.config
+    db = memory_backend.db
+    owner_id = f"pytest_ctx_hidden_{uuid.uuid4().hex[:8]}"
+    seed = create_node(
+        db,
+        cfg,
+        text="Hidden paging seed",
+        node_type="Fact",
+        owner_id=owner_id,
+        auto_link=False,
+        check_duplicates=False,
+    )
+    seed_id = seed["node"]["node_id"]
+    old = create_node(
+        db,
+        cfg,
+        text="Hidden paging outdated neighbor",
+        node_type="Fact",
+        owner_id=owner_id,
+        auto_link=False,
+        check_duplicates=False,
+    )
+    old_id = old["node"]["node_id"]
+    create_relation(
+        db,
+        from_id=seed_id,
+        to_id=old_id,
+        relation_type="RELATED_TO",
+        owner_id=owner_id,
+        config=cfg,
+    )
+    assert update_node(db, node_id=old_id, owner_id=owner_id, status="outdated")[
+        "success"
+    ]
+
+    first = get_context(
+        db, cfg, node_id=seed_id, owner_id=owner_id, depth=1, max_nodes=1, page=True
+    )
+    assert [node["node_id"] for node in first["nodes"]] == [seed_id]
+    assert first["has_more"] is False
+    nxt = get_context(
+        db, cfg, node_id=seed_id, owner_id=owner_id, depth=1, max_nodes=1, offset=1
+    )
+    assert nxt["nodes"] == []
+    assert nxt["has_more"] is False
+
+    shown = get_context(
+        db,
+        cfg,
+        node_id=seed_id,
+        owner_id=owner_id,
+        depth=1,
+        max_nodes=1,
+        page=True,
+        include_outdated=True,
+    )
+    assert shown["has_more"] is True
+    rest = get_context(
+        db,
+        cfg,
+        node_id=seed_id,
+        owner_id=owner_id,
+        depth=1,
+        max_nodes=1,
+        offset=1,
+        include_outdated=True,
+    )
+    assert [node["node_id"] for node in rest["nodes"]] == [old_id]
+    assert rest["has_more"] is False
+
+
+@pytest.mark.integration
 def test_get_context_page_range_and_owner_isolation(memory_backend):
     """Last page, a page past the end, a negative offset, and a foreign owner."""
     cfg = memory_backend.config
@@ -1051,7 +1125,7 @@ def test_get_context_page_range_and_owner_isolation(memory_backend):
     )
     foreign_id = foreign["node"]["node_id"]
 
-    # 4 nodes, page size 2: the second page is full, so has_more stays true.
+    # 4 nodes, page size 2: the second page is the last one, so has_more is false.
     second = get_context(
         db,
         cfg,
@@ -1064,7 +1138,7 @@ def test_get_context_page_range_and_owner_isolation(memory_backend):
     )
     assert second["success"] is True
     assert len(second["nodes"]) == 2
-    assert second["has_more"] is True
+    assert second["has_more"] is False
     assert second["offset"] == 2
 
     empty = get_context(
@@ -1437,6 +1511,7 @@ def test_get_context_pagination_uses_offset_and_max_nodes():
                 [
                     [124, "Fact", "neighbor a"],
                     [125, "Entity", "neighbor b"],
+                    [126, "Fact", "next page probe"],
                 ]
             ),
             _FakeResult([]),
@@ -1466,7 +1541,8 @@ def test_get_context_pagination_uses_offset_and_max_nodes():
     nodes_query, _ = db.graph.calls[0]
     assert "ORDER BY id(connected)" in nodes_query
     assert "SKIP 10" in nodes_query
-    assert "LIMIT 2" in nodes_query
+    # One extra row tells whether a next page exists; it is not returned.
+    assert "LIMIT 3" in nodes_query
     assert "WITH DISTINCT connected\n    LIMIT" not in nodes_query
 
 
