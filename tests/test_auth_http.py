@@ -13,6 +13,7 @@ from mcp.types import PaginatedRequestParams
 
 from graph_memory_mcp import __version__
 from graph_memory_mcp.graph_memory.api_keys import create_key
+from graph_memory_mcp.graph_memory.mcp_handlers_graph import get_context
 from graph_memory_mcp.server import GraphMemoryMCP
 from graph_memory_mcp.server_auth import GraphMemoryAuthMCP
 
@@ -139,6 +140,7 @@ async def test_auth_http_tools_use_the_key_without_owner_id(tmp_path, memory_bac
                         "update_node",
                         "create_relation",
                         "search",
+                        "get_context",
                         "get_node_change_history",
                         "get_stats",
                         "test_connection",
@@ -202,6 +204,33 @@ async def test_auth_http_tools_use_the_key_without_owner_id(tmp_path, memory_bac
                             "relation_type": "RELATED_TO",
                         },
                     )
+                    # Same get_context as client mode. The key supplies owner_id.
+                    context = await call("get_context", {"node_id": fact_id})
+                    assert "offset" not in context
+                    assert "has_more" not in context
+                    assert {node["node_id"] for node in context["nodes"]} >= {
+                        fact_id,
+                        entity_id,
+                    }
+                    plain = get_context(
+                        server.db_client,
+                        server.config,
+                        node_id=fact_id,
+                        owner_id=primary,
+                    )
+                    assert plain.get("success") is True, plain
+
+                    def _ids(body: dict) -> list[str]:
+                        return [node["node_id"] for node in body["nodes"]]
+
+                    def _edges(body: dict) -> set[tuple[str, str, str]]:
+                        return {
+                            (edge["from_id"], edge["relation_type"], edge["to_id"])
+                            for edge in body["edges"]
+                        }
+
+                    assert _ids(context) == _ids(plain)
+                    assert _edges(context) == _edges(plain)
                     found = await call(
                         "search",
                         {"query": moved, "limit": 5, "node_types": ["Fact"]},

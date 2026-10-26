@@ -340,7 +340,4 @@ def test_get_context_default_matches_old_code_on_same_falkordb(tmp_path):
             }
         )
 
-    artifact = Path("/opt/cursor/artifacts/get_context_page_delta.json")
-    artifact.parent.mkdir(parents=True, exist_ok=True)
-    artifact.write_text(json.dumps(page_report, indent=2) + "\n")
     assert page_report
