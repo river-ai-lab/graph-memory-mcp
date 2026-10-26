@@ -280,16 +280,19 @@ def get_context(
         paginated = False
     else:
         # Paginated (operator/explorer) path: full expansion with stable order.
-        for row in db.context_page_rows(
+        # Read one extra row: has_more is true only if a next page has nodes.
+        page_rows = db.context_page_rows(
             depth=depth,
             offset=offset,
-            limit=effective_max_nodes,
+            limit=effective_max_nodes + 1,
             include_outdated=include_outdated,
             node_id=node_id,
             owner_id=owner_id,
             include_ttl=include_ttl,
             exclude_types=exclude_types,
-        ):
+        )
+        page_has_more = len(page_rows) > effective_max_nodes
+        for row in page_rows[:effective_max_nodes]:
             current_id = str(row[0])
             node = {
                 "node_id": current_id,
@@ -342,9 +345,8 @@ def get_context(
         max_nodes=effective_max_nodes,
     )
     if paginated:
-        node_count = len(response["nodes"])
         response["offset"] = offset
-        response["has_more"] = node_count >= effective_max_nodes
+        response["has_more"] = page_has_more
     return response
 
 

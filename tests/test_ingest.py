@@ -501,3 +501,56 @@ def test_versioning_default_config(db_client, monkeypatch):
     history = nodes.get_node_change_history(db, node_id=node_id, owner_id=owner)
     assert history["count"] >= 1
     assert history["versions"][0]["text"] == "versioned by default"
+
+
+@pytest.mark.integration
+def test_export_pages_match_full_export_with_versions(memory_backend):
+    """Paged node export equals the unpaged export, with and without versions."""
+    cfg = memory_backend.config
+    db_client = memory_backend.db
+    owner = f"pytest_verpage_{uuid.uuid4().hex[:8]}"
+    ids = [
+        nodes.create_node(
+            db_client,
+            cfg,
+            text=f"paged version fact {i}",
+            owner_id=owner,
+            auto_link=False,
+            check_duplicates=False,
+        )["node"]["node_id"]
+        for i in range(3)
+    ]
+    for node_id in ids:
+        for rev in range(2):
+            time.sleep(0.01)
+            nodes.update_node(
+                db_client,
+                node_id=node_id,
+                owner_id=owner,
+                text=f"paged version fact {node_id} rev {rev}",
+                versioning=True,
+            )
+
+    for include_versions in (False, True):
+        full = admin.export_owner(
+            db_client, owner_id=owner, include_versions=include_versions
+        )
+        expected = [n["properties"]["uid"] for n in full["nodes"]]
+        assert len(expected) == (9 if include_versions else 3)
+        paged = []
+        offset = 0
+        while True:
+            page = admin.export_owner(
+                db_client,
+                owner_id=owner,
+                include_versions=include_versions,
+                limit=2,
+                offset=offset,
+                section="nodes",
+            )
+            paged.extend(n["properties"]["uid"] for n in page["nodes"])
+            if not page["has_more"]:
+                break
+            offset = page["next_offset"]
+        assert paged == expected
+        assert len(set(paged)) == len(paged)
