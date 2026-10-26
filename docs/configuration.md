@@ -14,6 +14,10 @@ Settings load from the environment and from `.env`. Defaults live in `graph_memo
 
 `client` is the simple install. `header` runs on `127.0.0.1` behind a gateway you control. `token` is the multi-user mode that stays in this process: one config line, no second server.
 
+### Client
+
+`/mcp` has no authentication in `client` mode, and `ADMIN_TOKEN` does not change that. A non-loopback bind (`0.0.0.0`, `::`, a LAN IP) refuses to start: anyone who can reach the port could read, write, and delete any owner's memory. Bind `127.0.0.1` (also `::1` or `localhost`) or use `OWNER_SCOPE=token`. `ALLOW_INSECURE_CLIENT=1` logs a warning and starts anyway, for a trusted network or a container whose port is published only on the host's loopback (`-p 127.0.0.1:8000:8000`).
+
 ### Header
 
 Bind the server to `127.0.0.1` (also `::1` or `localhost`). The gateway is the only client: it sets `X-Owner-Id` and sends `Authorization: Bearer $ADMIN_TOKEN`.

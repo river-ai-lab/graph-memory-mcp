@@ -20,6 +20,7 @@ context, and a synchronous handler's worker thread copies it again.
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -56,7 +57,8 @@ _SURFACE_AUTH: dict[str, dict[str, str]] = {
 
 
 class HeaderModeConfigError(RuntimeError):
-    """Header mode is reachable on the network without ADMIN_TOKEN."""
+    """An unauthenticated /mcp (client, or header without ADMIN_TOKEN) is
+    bound to a non-loopback address."""
 
 
 class ProjectDenied(Exception):
@@ -123,24 +125,51 @@ def authenticate(
     return AuthResult(status=401)
 
 
+def is_loopback_host(host: str) -> bool:
+    """True for ``localhost`` and loopback IPs (``127.0.0.0/8``, ``::1``)."""
+    value = str(host or "").strip().lower().strip("[]")
+    if value in _LOOPBACK_HOSTS:
+        return True
+    try:
+        return ipaddress.ip_address(value).is_loopback
+    except ValueError:
+        return False
+
+
 def validate_header_bind(
     *,
     scope: str,
     admin_token: str,
     host: str,
     allow_insecure: bool = False,
+    allow_insecure_client: bool = False,
 ) -> None:
-    """Refuse a non-loopback header bind when ADMIN_TOKEN is unset.
+    """Refuse an unauthenticated ``/mcp`` on a non-loopback bind.
 
-    Loopback (``127.0.0.1``, ``::1``, ``localhost``) without a token starts
-    quietly. Other modes return immediately. ``allow_insecure`` is
-    ``ALLOW_INSECURE_HEADER=1``: log the risk and continue.
+    ``header`` without ``ADMIN_TOKEN`` and ``client`` (``/mcp`` never checks a
+    credential there) refuse a non-loopback host. Loopback starts quietly.
+    ``token`` returns immediately. ``allow_insecure`` is
+    ``ALLOW_INSECURE_HEADER=1`` and ``allow_insecure_client`` is
+    ``ALLOW_INSECURE_CLIENT=1``: log the risk and continue.
     """
-    if str(scope or "client").strip().lower() != "header":
+    mode = str(scope or "client").strip().lower()
+    if mode not in ("client", "header"):
         return
+    if is_loopback_host(host):
+        return
+    if mode == "client":
+        message = (
+            f"OWNER_SCOPE=client is bound to {host}. /mcp has no authentication "
+            "in this mode: anyone on the network can read, write, and delete "
+            "any owner's memory. Bind 127.0.0.1 or use OWNER_SCOPE=token."
+        )
+        if allow_insecure_client:
+            logger.warning(
+                "%s ALLOW_INSECURE_CLIENT=1 is set; starting anyway.", message
+            )
+            return
+        raise HeaderModeConfigError(message)
     if str(admin_token or "").strip():
-        return
-    if str(host or "").strip().lower() in _LOOPBACK_HOSTS:
         return
     message = (
         f"OWNER_SCOPE=header is bound to {host} without ADMIN_TOKEN. "
