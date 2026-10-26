@@ -32,7 +32,7 @@ services:
       start_period: 5s
 
   arcadedb:
-    image: arcadedata/arcadedb:latest
+    image: arcadedata/arcadedb:26.10.2
     container_name: graph-memory-arcadedb
     ports:
       - "2480:2480"

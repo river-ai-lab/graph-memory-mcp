@@ -271,6 +271,8 @@ See [examples/mcp_servers_config.json](examples/mcp_servers_config.json) for cli
 uv run python examples/http_client_usage.py
 ```
 
+With `mcp>=2.3` the Python client is `mcp.client.streamable_http.streamable_http_client` (the old `streamablehttp_client` name is gone). Pass headers such as `Authorization` through an `httpx.AsyncClient`: `streamable_http_client(url, http_client=httpx.AsyncClient(headers=...))`.
+
 ## Features
 
 - **`create_node`** / **`upsert_node`** with deduplication (embeddings-based refusal at threshold 0.92, no LLM call)
@@ -334,7 +336,7 @@ API_KEYS_FILE=./keys.json
 
 A missing, unknown, or revoked key is HTTP 401. An `owner_id` that is not in the key's projects is HTTP 403 (or a tool error with `memory_forbidden`). `graph-memory-mcp keys set-projects <id> p1,p3` replaces the list. `keys list` prints id, name, projects, and created time, never the key. `keys revoke <id>` revokes by id. In token mode every write stores the key's `name` as `created_by` / `updated_by`. In `client` and `header` those fields come from `metadata.created_by` / `metadata.updated_by`. Jobs keep the owner they were started with.
 
-`graph-memory-mcp --auth` is the token entry point (`server_auth.py`). It forces `OWNER_SCOPE=token`. Tool schemas omit `owner_id`; the server uses the key's first project. Issue keys with `keys create`, inspect them with `keys list`, and revoke with `keys revoke`. The default server is unchanged: set `OWNER_SCOPE=token` there when the agent must pass `owner_id` to choose among a key's projects.
+`graph-memory-mcp --auth` is the token entry point (`server_auth.py`). It forces `OWNER_SCOPE=token` and refuses to start without `ADMIN_TOKEN`. Tool schemas omit `owner_id`; the server uses the key's first project. Issue keys with `keys create`, inspect them with `keys list`, and revoke with `keys revoke`. The default server is unchanged: set `OWNER_SCOPE=token` there when the agent must pass `owner_id` to choose among a key's projects.
 
 Token mode does not start without `ADMIN_TOKEN` and a readable keys file. `/admin` takes the owner from the path, so in this mode it always requires that token. `client` and `header` still leave `/admin` open when `ADMIN_TOKEN` is empty.
 
@@ -351,7 +353,7 @@ cp env.example .env
 docker compose up -d arcadedb
 ```
 
-ArcadeDB runs on port 2480. Default credentials: `root` / `playwithdata`.
+ArcadeDB runs on port 2480. Default credentials: `root` / `playwithdata`. Minimum version: 26.10 (the compose file pins `26.10.2`). 25.10.1 fails with `Index type 'LSM_VECTOR' is not supported`.
 
 Test with ArcadeDB:
 
