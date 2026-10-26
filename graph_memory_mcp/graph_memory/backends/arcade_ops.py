@@ -1123,10 +1123,18 @@ class ArcadeOps:
             return rows
         return rows[: int(limit)]
 
-    def export_node_rows(self, owner_id: str, page_clause: str) -> list:
+    def export_node_rows(
+        self, owner_id: str, page_clause: str, include_versions: bool = True
+    ) -> list:
         owner = self.owner_literal(owner_id)
         rows = []
-        for label in ("Fact", "Entity", "FactVersion"):
+        # Filter versions before slicing so pages neither repeat nor skip rows.
+        labels = (
+            ("Fact", "Entity", "FactVersion")
+            if include_versions
+            else ("Fact", "Entity")
+        )
+        for label in labels:
             records = self.query(f"SELECT FROM {label} WHERE owner_id = '{owner}'")
             for record in records:
                 rows.append([label, _plain(record)])

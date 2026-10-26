@@ -729,11 +729,15 @@ class FalkorOps:
             {"owner_id": owner_id, "cutoff_ms": cutoff_ms},
         )
 
-    def export_node_rows(self, owner_id: str, page_clause: str) -> list:
+    def export_node_rows(
+        self, owner_id: str, page_clause: str, include_versions: bool = True
+    ) -> list:
+        # Filter versions before SKIP/LIMIT so pages neither repeat nor skip rows.
+        versions = " OR n:FactVersion" if include_versions else ""
         return self.rows(
             f"""
             MATCH (n)
-            WHERE n.owner_id = $owner_id AND (n:Fact OR n:Entity OR n:FactVersion)
+            WHERE n.owner_id = $owner_id AND (n:Fact OR n:Entity{versions})
             RETURN labels(n)[0], properties(n)
             ORDER BY n.uid{page_clause}
             """,
