@@ -222,13 +222,19 @@ uv run python tests/benchmarks/run_graph.py
 
 Output: Markdown table with metrics per adapter, plus a narrative summary of where each system wins and loses.
 
+## Scenario B: small local models
+
+Scenario A stops at retrieval. Scenario B is a separate micro-benchmark that asks a small local model (Ollama or any OpenAI-compatible endpoint) to answer from memory. Dataset, runner, scoring, and the comparison adapters live in `tests/benchmarks/llm/`. How to run it, and what is measured, is in `tests/benchmarks/llm/README.md`.
+
+Modes are no memory, plain vector RAG, and Graph Memory MCP, on one shared dataset and one shared prompt. Question types that need retrieval are marked in the dataset; abstention does not. The judge is optional and off unless you pass `--judge`. Scenario A numbers are unchanged.
+
 ## What this benchmark does NOT measure
 
 1. **Production reliability**: Permissions, deletion, crash recovery, concurrent writes, backup/restore.
 2. **Latency and throughput**: Query latency, writes per second, index build time.
 3. **Cost**: Embedding API costs, storage costs, LLM extraction costs (where applicable).
 4. **Scalability**: Performance on 1M+ facts, 100+ owners, large graphs.
-5. **End-to-end QA accuracy**: Answer correctness with an LLM in the loop (unless explicitly added as optional Scenario B extension with clear labeling).
+5. **End-to-end QA accuracy**: Scenario A does not score an LLM answer. Scenario B does, and it labels that split (match, abstention, stale-fact errors, recall@k, latency, tokens).
 
 These are important for production deployments but are out of scope for this benchmark plan. Measure them separately with integration tests, load tests, and cost analysis.
 

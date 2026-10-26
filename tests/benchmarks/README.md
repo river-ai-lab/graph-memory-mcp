@@ -2,6 +2,8 @@
 
 Implements Scenario A (synthetic architecture-decisions corpus) and fairness cases from `docs/benchmarks.md`.
 
+Scenario B, a small local-model QA harness (no memory, plain RAG, Graph Memory), is in [`llm/README.md`](llm/README.md).
+
 ## What is measured
 
 **Metrics (no LLM judge)**:
@@ -86,7 +88,7 @@ Results: `results_graph.json`
 
 ## Caveats
 
-- **Not end-to-end QA**: This measures retrieval, not answer correctness with an LLM.
+- **Not end-to-end QA**: Scenario A measures retrieval, not answer correctness with an LLM. Scenario B (`llm/`) is the labeled QA run.
 - **Synthetic corpus**: Real production memory has different characteristics.
 - **No production concerns**: Does not measure latency, throughput, permissions, deletion, cost, or crash recovery.
 - **Small corpus**: 39 facts is tiny. Full-context baseline is competitive at this size.
