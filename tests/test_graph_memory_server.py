@@ -2381,3 +2381,48 @@ def test_recall_context_ranking_prefers_direct_seed_match():
     assert hop_direct == 0
     assert score_direct > score_two_hops
     assert hop_two == 2
+
+
+@pytest.mark.integration
+def test_export_owner_has_more_on_exact_last_page(memory_backend):
+    """An exactly full last export page has has_more false."""
+    from graph_memory_mcp.graph_memory.mcp_handlers_admin import export_owner
+
+    cfg = memory_backend.config
+    db = memory_backend.db
+    owner_id = f"pytest_export_page_{uuid.uuid4().hex[:8]}"
+    ids = [
+        create_node(
+            db,
+            cfg,
+            text=f"Export page fact {i}",
+            node_type="Fact",
+            owner_id=owner_id,
+            auto_link=False,
+            check_duplicates=False,
+        )["node"]["node_id"]
+        for i in range(4)
+    ]
+    create_relation(
+        db,
+        from_id=ids[0],
+        to_id=ids[1],
+        relation_type="RELATED_TO",
+        owner_id=owner_id,
+        config=cfg,
+    )
+
+    first = export_owner(db, owner_id=owner_id, limit=2, section="nodes")
+    assert first["node_count"] == 2
+    assert first["has_more"] is True
+    last = export_owner(
+        db, owner_id=owner_id, limit=2, offset=first["next_offset"], section="nodes"
+    )
+    assert last["node_count"] == 2
+    assert last["has_more"] is False
+    exported = {n["properties"]["uid"] for n in first["nodes"] + last["nodes"]}
+    assert exported == set(ids)
+
+    rels = export_owner(db, owner_id=owner_id, limit=1, section="relations")
+    assert rels["relation_count"] == 1
+    assert rels["has_more"] is False

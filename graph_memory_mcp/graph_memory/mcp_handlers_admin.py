@@ -231,12 +231,22 @@ def export_owner(
         section = "nodes"
     offset = max(0, int(offset))
     page_clause = ""
+    page_has_more = False
     if limit is not None:
-        page_clause = f" SKIP {offset} LIMIT {int(limit)}"
+        # Read one extra row: has_more is true only if a next page has rows.
+        page_clause = f" SKIP {offset} LIMIT {int(limit) + 1}"
+
+    def _page(rows: list) -> list:
+        nonlocal page_has_more
+        if limit is None:
+            return rows
+        rows = list(rows)
+        page_has_more = len(rows) > int(limit)
+        return rows[: int(limit)]
 
     nodes = []
     if section in ("all", "nodes"):
-        for row in db.export_node_rows(owner_id, page_clause):
+        for row in _page(db.export_node_rows(owner_id, page_clause)):
             label = str(row[0])
             if label == "FactVersion" and not include_versions:
                 continue
@@ -258,7 +268,7 @@ def export_owner(
 
     relations = []
     if section in ("all", "relations"):
-        for row in db.export_relation_rows(owner_id, page_clause):
+        for row in _page(db.export_relation_rows(owner_id, page_clause)):
             relations.append(
                 {
                     "from_id": str(row[0]),
@@ -279,7 +289,7 @@ def export_owner(
         page_size = len(nodes) if section == "nodes" else len(relations)
         response["section"] = section
         response["offset"] = offset
-        response["has_more"] = page_size >= int(limit)
+        response["has_more"] = page_has_more
         response["next_offset"] = offset + page_size
     return response
 
