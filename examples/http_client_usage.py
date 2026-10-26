@@ -23,15 +23,16 @@ def dump_tool_result(res):
 
 
 async def main():
-    async with streamable_http_client(SERVER_URL) as (read, write, get_session_id):
+    async with streamable_http_client(SERVER_URL) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
-            print("Connected. Session ID:", get_session_id())
+            print("Connected.")
 
             tools = await session.list_tools()
             print("Tools:", [t.name for t in tools.tools])
 
-            # Indexes are created automatically on first search/write if missing.
+            # The first write for an owner creates Fact and Entity indexes.
+            # Search creates them if they are still missing.
             # Admin ensure-indexes lives on HTTP /admin/ensure-indexes (or MCP when
             # MCP_EXPOSE_ADMIN_TOOLS=true).
             res = await session.call_tool("health_check", arguments={})

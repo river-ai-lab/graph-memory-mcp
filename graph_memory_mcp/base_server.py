@@ -11,8 +11,10 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
+from mcp.server.transport_security import TransportSecuritySettings
 
+from graph_memory_mcp import __version__
 from graph_memory_mcp.config import MCPServerConfig
 from graph_memory_mcp.graph_memory.api_keys import validate_token_mode
 from graph_memory_mcp.graph_memory.database import open_store
@@ -27,16 +29,41 @@ from graph_memory_mcp.jobs.scheduler import shutdown_scheduler, start_scheduler
 
 logger = logging.getLogger(__name__)
 
+# DNS-rebinding allowlist for the /mcp session. The uvicorn bind address is
+# separate and does not change this list.
+_TRANSPORT_SECURITY = TransportSecuritySettings(
+    enable_dns_rebinding_protection=True,
+    allowed_hosts=["127.0.0.1:*", "localhost:*", "[::1]:*"],
+    allowed_origins=[
+        "http://127.0.0.1:*",
+        "http://localhost:*",
+        "http://[::1]:*",
+    ],
+)
+
 _AGENT_POLICIES_URI = "graph-memory://agent-policies"
 # Canonical copy lives in repo docs/ (clone + uv). MCP resource is optional;
 # put these operator constants in your own AGENTS.md (docs/AGENTS_example.md).
-_AGENT_POLICIES_PATH = (
+# The wheel ships the same file under resources/ for an installed server.
+_AGENT_POLICIES_CHECKOUT = (
     Path(__file__).resolve().parent.parent / "docs" / "memory_policies_for_LLM.md"
+)
+_AGENT_POLICIES_PACKAGED = (
+    Path(__file__).resolve().parent / "resources" / "memory_policies_for_LLM.md"
 )
 
 
-def _mcp_instructions(scope: str) -> str:
-    """Mode-specific text shown to MCP clients at connect."""
+def _agent_policies_path() -> Path:
+    if _AGENT_POLICIES_CHECKOUT.is_file():
+        return _AGENT_POLICIES_CHECKOUT
+    return _AGENT_POLICIES_PACKAGED
+
+
+def _mcp_instructions(scope: str, *, hide_owner: bool = False) -> str:
+    """Mode-specific text shown to MCP clients at connect.
+
+    ``hide_owner`` is the ``--auth`` entry: the schema has no ``owner_id``.
+    """
     common = (
         "Graph Memory is a long-term knowledge graph, not a chat log. "
         "Search before create; store one durable declarative fact per node. "
@@ -47,6 +74,11 @@ def _mcp_instructions(scope: str) -> str:
         f"Before the first memory write in a session, read MCP resource {_AGENT_POLICIES_URI}."
     )
     mode = str(scope or "client").strip().lower()
+    if hide_owner:
+        return (
+            f"{common} The server sets owner_id from the API key. Do not pass it. "
+            "The server sets created_by and updated_by from the API key name."
+        )
     if mode == "token":
         return (
             f"{common} The server sets created_by and updated_by from the API key "
@@ -92,13 +124,22 @@ class BaseGraphMemoryMCP:
         self.db_client = open_store(server_config)
         self._db_connected = self.db_client.connect()
         if not self._db_connected:
-            logger.warning(
-                "Failed to connect to FalkorDB (host=%s, port=%s, graph=%s). "
-                "Memory tools will operate in degraded mode.",
-                server_config.falkordb_host,
-                server_config.falkordb_port,
-                server_config.falkordb_graph,
-            )
+            if str(server_config.graph_backend or "") == "arcadedb":
+                logger.warning(
+                    "Failed to connect to ArcadeDB (host=%s, port=%s, database=%s). "
+                    "Memory tools will operate in degraded mode.",
+                    server_config.arcade_host,
+                    server_config.arcade_port,
+                    server_config.arcade_database,
+                )
+            else:
+                logger.warning(
+                    "Failed to connect to FalkorDB (host=%s, port=%s, graph=%s). "
+                    "Memory tools will operate in degraded mode.",
+                    server_config.falkordb_host,
+                    server_config.falkordb_port,
+                    server_config.falkordb_graph,
+                )
         else:
             # Legacy backfills (uid, Entity name_norm) across all owner graphs.
             try:
@@ -118,11 +159,10 @@ class BaseGraphMemoryMCP:
 
         self.db_client.set_embedding_service(self.embedding_service)
 
-        self.mcp = FastMCP(
+        self.mcp = MCPServer(
             name=self.server_config.description or self.server_config.name,
-            instructions=_mcp_instructions(server_config.owner_scope),
-            stateless_http=True,
-            json_response=True,
+            instructions=self._instructions(),
+            version=__version__,
         )
         self._register_resources()
         self._register_tools()
@@ -130,7 +170,7 @@ class BaseGraphMemoryMCP:
     def _register_resources(self) -> None:
         """Expose agent policy docs as an MCP resource."""
         mcp = self.mcp
-        policies_path = _AGENT_POLICIES_PATH
+        policies_path = _agent_policies_path()
 
         @mcp.resource(
             _AGENT_POLICIES_URI,
@@ -149,7 +189,11 @@ class BaseGraphMemoryMCP:
 
     def get_mcp_app(self):
         """Get MCP app with /metrics, /admin/* and optional scheduler support."""
-        app = self.mcp.streamable_http_app()
+        app = self.mcp.streamable_http_app(
+            stateless_http=True,
+            json_response=True,
+            transport_security=_TRANSPORT_SECURITY,
+        )
         if not getattr(app.state, "_owner_scope_wrapped", False):
             if self.server_config.owner_scope == "token":
                 app.add_middleware(
@@ -204,6 +248,10 @@ class BaseGraphMemoryMCP:
 
             app.router.lifespan_context = _lifespan  # type: ignore[attr-defined]
         return app
+
+    def _instructions(self) -> str:
+        """MCP connect text. The auth entry overrides this."""
+        return _mcp_instructions(self.server_config.owner_scope)
 
     def _tool_owner_default(self) -> str:
         """Empty in token mode so an omitted owner_id uses the key's first project."""

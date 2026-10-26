@@ -58,10 +58,15 @@ class McpHttpClient:
         *,
         timeout: float = 60.0,
         http_client: httpx.AsyncClient | None = None,
+        headers: dict[str, str] | None = None,
+        hide_owner: bool | None = None,
     ) -> None:
         self.url = url.rstrip("/")
         self.timeout = timeout
+        self.headers = dict(headers or {})
+        self.hide_owner = hide_owner
         self.connected = False
+        self.connect_error: str | None = None
         self._external_http_client = http_client
         self._http_client: httpx.AsyncClient | None = None
         self._owns_http_client = False
@@ -72,24 +77,36 @@ class McpHttpClient:
     async def connect(self) -> None:
         if self.connected:
             return
+        self.connect_error = None
         if self._external_http_client is not None:
             self._http_client = self._external_http_client
             self._owns_http_client = False
         else:
-            self._http_client = httpx.AsyncClient(timeout=self.timeout)
+            self._http_client = httpx.AsyncClient(
+                timeout=self.timeout, headers=self.headers or None
+            )
             self._owns_http_client = True
         self._transport_cm = streamable_http_client(
             self.url, http_client=self._http_client
         )
-        read, write, _get_session_id = await self._transport_cm.__aenter__()
+        read, write = await self._transport_cm.__aenter__()
         self._session_cm = ClientSession(read, write)
         session = await self._session_cm.__aenter__()
         if session is None:
             raise RuntimeError("Failed to open MCP client session")
         await session.initialize()
         self._session = session
+        if self.hide_owner is None:
+            self.hide_owner = await _tools_hide_owner(session)
         self.connected = True
         logger.info("Connected to MCP at %s", self.url)
+
+    def prepare_arguments(self, arguments: dict[str, Any] | None) -> dict[str, Any]:
+        """Drop owner_id when the MCP schema hides it (``--auth``)."""
+        payload = dict(arguments or {})
+        if self.hide_owner:
+            payload.pop("owner_id", None)
+        return payload
 
     async def close(self) -> None:
         if self._session_cm is not None:
@@ -109,5 +126,27 @@ class McpHttpClient:
     ) -> dict[str, Any]:
         if not self._session:
             raise RuntimeError("MCP client is not connected")
-        result = await self._session.call_tool(name, arguments=arguments or {})
+        result = await self._session.call_tool(
+            name, arguments=self.prepare_arguments(arguments)
+        )
         return extract_tool_json(result)
+
+
+async def _tools_hide_owner(session: ClientSession) -> bool:
+    """True when listed tools exist and none accept ``owner_id``."""
+    try:
+        listed = await session.list_tools()
+    except Exception:  # noqa: BLE001
+        logger.warning("Could not list MCP tools to detect --auth")
+        return False
+    tools = getattr(listed, "tools", None) or []
+    if not tools:
+        return False
+    for tool in tools:
+        schema = getattr(tool, "inputSchema", None) or getattr(
+            tool, "input_schema", None
+        )
+        props = (schema or {}).get("properties") or {}
+        if "owner_id" in props:
+            return False
+    return True

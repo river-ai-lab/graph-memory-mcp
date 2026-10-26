@@ -16,12 +16,47 @@ from graph_memory_mcp.graph_memory.relation_policy import (
 )
 from graph_memory_mcp.graph_memory.utils import (
     ensure_text,
+    load_json,
     mcp_handler,
     normalize_owner_id,
     require_node_id,
     success_response,
     touch_nodes,
 )
+
+
+def _walk_node_fields(
+    *,
+    status: Any = None,
+    created_at: Any = None,
+    metadata: Any = None,
+) -> Dict[str, Any]:
+    extra: Dict[str, Any] = {}
+    if status:
+        extra["status"] = ensure_text(status)
+    if created_at is not None:
+        extra["created_at"] = created_at
+    meta = metadata if isinstance(metadata, dict) else load_json(metadata, None)
+    if meta:
+        extra["metadata"] = meta
+    return extra
+
+
+def _public_walk_node(record: Dict[str, Any]) -> Dict[str, Any]:
+    node = {
+        "node_id": record["node_id"],
+        "node_type": record["node_type"],
+        "text": record["text"],
+    }
+    node.update(
+        _walk_node_fields(
+            status=record.get("status"),
+            created_at=record.get("created_at"),
+            metadata=record.get("metadata"),
+        )
+    )
+    return node
+
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +120,9 @@ def _bfs_expand(
             "text": ensure_text(row[2]),
             "touched_at": row[3],
             "access_count": row[4],
+            "status": row[5] if len(row) > 5 else None,
+            "created_at": row[6] if len(row) > 6 else None,
+            "metadata": row[7] if len(row) > 7 else None,
             "seed_hops": dict(seed_labels.get(uid, {uid: 0})),
         }
 
@@ -118,6 +156,9 @@ def _bfs_expand(
                 "text": ensure_text(row[2]),
                 "touched_at": row[3],
                 "access_count": row[4],
+                "status": row[6] if len(row) > 6 else None,
+                "created_at": row[7] if len(row) > 7 else None,
+                "metadata": row[8] if len(row) > 8 else None,
                 "seed_hops": seed_hops,
             }
             new_frontier.append(uid)
@@ -193,12 +234,17 @@ def get_context(
     depth: Optional[int] = None,
     max_nodes: Optional[int] = None,
     offset: int = 0,
+    page: bool = False,
     include_outdated: bool = False,
     include_ttl: bool = False,
     relation_priority: Optional[List[str]] = None,
     exclude_relation_types: Optional[List[str]] = None,
 ) -> Dict:
-    """Get subgraph context around a node."""
+    """Get subgraph context around a node.
+
+    ``offset=0`` is the priority walk. ``page=true`` reads stable pages from
+    ``offset``, including the first page, so later pages do not skip neighbors.
+    """
     owner_id = normalize_owner_id(owner_id)
     node_id = require_node_id(node_id)
     depth = max(
@@ -214,7 +260,9 @@ def get_context(
 
     nodes: Dict[str, Dict[str, Any]] = {}
     edges: List[Dict] = []
-    if offset == 0:
+    # offset 0 is the priority walk. page=True is the stable id order, including
+    # the first page, so a client can ask for the next neighbors without gaps.
+    if offset == 0 and not page:
         # Iterative BFS with a node budget — no [*0..depth] path explosion.
         visited = _bfs_expand(
             db,
@@ -228,11 +276,7 @@ def get_context(
             exclude_types=exclude_types,
         )
         for uid, record in visited.items():
-            nodes[uid] = {
-                "node_id": uid,
-                "node_type": record["node_type"],
-                "text": record["text"],
-            }
+            nodes[uid] = _public_walk_node(record)
         paginated = False
     else:
         # Paginated (operator/explorer) path: full expansion with stable order.
@@ -247,15 +291,49 @@ def get_context(
             exclude_types=exclude_types,
         ):
             current_id = str(row[0])
-            nodes[current_id] = {
+            node = {
                 "node_id": current_id,
                 "node_type": row[1],
                 "text": ensure_text(row[2]),
             }
+            node.update(
+                _walk_node_fields(
+                    status=row[3] if len(row) > 3 else None,
+                    created_at=row[4] if len(row) > 4 else None,
+                    metadata=row[5] if len(row) > 5 else None,
+                )
+            )
+            nodes[current_id] = node
         paginated = True
 
     if nodes:
-        edges = _load_edges_between_nodes(db, list(nodes), owner_id)
+        if paginated:
+            # A page often omits the seed and splits a FOLLOWS_FROM pair.
+            # Load edges that touch this page and stay inside the same context.
+            closure_ids = [node_id]
+            if offset > 0 or len(nodes) >= effective_max_nodes:
+                closure_limit = max(
+                    effective_max_nodes, int(config.subgraph_max_nodes_limit)
+                )
+                for row in db.context_page_rows(
+                    depth=depth,
+                    offset=0,
+                    limit=closure_limit,
+                    include_outdated=include_outdated,
+                    node_id=node_id,
+                    owner_id=owner_id,
+                    include_ttl=include_ttl,
+                    exclude_types=exclude_types,
+                ):
+                    closure_ids.append(str(row[0]))
+            edge_ids = list(dict.fromkeys([*nodes, *closure_ids]))
+            edges = [
+                edge
+                for edge in _load_edges_between_nodes(db, edge_ids, owner_id)
+                if edge["from_id"] in nodes or edge["to_id"] in nodes
+            ]
+        else:
+            edges = _load_edges_between_nodes(db, list(nodes), owner_id)
 
     response = success_response(
         nodes=list(nodes.values()),
@@ -300,7 +378,33 @@ def get_trace(
     relations = row[1] if len(row) > 1 and row[1] else []
     if not nodes:
         return success_response(nodes=[], relations=[], message="No path found")
-    return success_response(nodes=nodes, relations=relations)
+    return success_response(
+        nodes=[_public_trace_node(node) for node in nodes], relations=relations
+    )
+
+
+def _public_trace_node(raw: Any) -> Dict[str, Any]:
+    """Path nodes carry the same status, time, and metadata as a context walk."""
+    if not isinstance(raw, dict):
+        return {"node_id": "", "node_type": None, "text": ""}
+    node = {
+        "node_id": str(raw.get("node_id") or ""),
+        "node_type": raw.get("node_type"),
+        "text": ensure_text(raw.get("text")),
+    }
+    metadata = raw.get("metadata")
+    if metadata is None and "metadata_str" in raw:
+        metadata = raw.get("metadata_str")
+    node.update(
+        _walk_node_fields(
+            status=raw.get("status"),
+            created_at=raw.get("created_at"),
+            metadata=metadata,
+        )
+    )
+    if raw.get("updated_at") is not None:
+        node["updated_at"] = raw["updated_at"]
+    return node
 
 
 @mcp_handler
@@ -414,15 +518,21 @@ def recall_context(
             touched_at_ms=record["touched_at"],
             access_count=record["access_count"],
         )
-        expanded.append(
-            {
-                "node_id": record["node_id"],
-                "node_type": record["node_type"],
-                "text": record["text"],
-                "score": round(score, 6),
-                "min_hop": min_hop,
-            }
+        item = {
+            "node_id": record["node_id"],
+            "node_type": record["node_type"],
+            "text": record["text"],
+            "score": round(score, 6),
+            "min_hop": min_hop,
+        }
+        item.update(
+            _walk_node_fields(
+                status=record.get("status"),
+                created_at=record.get("created_at"),
+                metadata=record.get("metadata"),
+            )
         )
+        expanded.append(item)
 
     expanded.sort(
         key=lambda node: (-node["score"], node["node_id"]),

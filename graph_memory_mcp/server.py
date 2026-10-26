@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 
 class GraphMemoryMCP(BaseGraphMemoryMCP):
-    """Graph Memory MCP Server: builds FastMCP app and registers tools."""
+    """Graph Memory MCP Server: builds the MCP server app and registers tools."""
 
     def __init__(self, server_config: MCPServerConfig):
         super().__init__(server_config)
@@ -47,7 +47,8 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
     def _ensure_indexes_if_needed(self) -> None:
         """Create vector indexes in every existing owner graph.
 
-        New owner graphs get their indexes lazily on first search/auto_link.
+        New owner graphs get their indexes on the first write.
+        Search and auto_link still create them when missing.
         """
         dim = int(getattr(self.embedding_service, "dimension", 0) or 0)
         owners = self.db_client.list_owners() or ["default"]
@@ -96,7 +97,12 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
 
         @mcp.tool(
             title="Health check",
-            description="Check server health (graph backend, embeddings, vector index).",
+            description=(
+                "Check server health. healthy follows the graph backend and embeddings. "
+                "vector_index_missing lists sampled owners that have no vector index yet; "
+                "that does not clear healthy. The first write creates both indexes. "
+                "Search creates them if they are still missing."
+            ),
             annotations=ToolAnnotations(readOnlyHint=True),
         )
         def health_check() -> dict:
@@ -137,8 +143,9 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
                 description=(
                     "Create or verify Fact and Entity vector indexes for semantic search. "
                     "Idempotent — safe to call multiple times. "
-                    "Indexes are also created automatically on first search or auto_link "
-                    "when missing; set AUTO_CREATE_INDEXES=true to create them at server startup."
+                    "The first write for an owner creates them too, and search or "
+                    "auto_link creates them when missing. Set "
+                    "AUTO_CREATE_INDEXES=true to create them at server startup."
                 ),
             )
             def ensure_vector_indexes() -> dict:
@@ -726,6 +733,8 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
                 "Get subgraph context around a node. "
                 "Returns nodes and edges within specified depth. "
                 "Pass offset (with max_nodes as page size) for paginated neighbor loading. "
+                "page=true reads stable id-ordered pages from that offset, including the first page. "
+                "offset=0 without page is the priority walk. "
                 "Useful for building agent context from related facts and entities. "
                 "Depth defaults to config (SUBGRAPH_DEFAULT_DEPTH, default 1). "
                 "Neighbors that have ttl_days are omitted unless include_ttl=true. "
@@ -740,6 +749,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
             depth: int | None = None,
             max_nodes: int | None = None,
             offset: int = 0,
+            page: bool = False,
             include_outdated: bool = False,
             include_ttl: bool = False,
             relation_priority: list[str] | None = None,
@@ -753,6 +763,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
                 depth=depth,
                 max_nodes=max_nodes,
                 offset=offset,
+                page=page,
                 include_outdated=include_outdated,
                 include_ttl=include_ttl,
                 relation_priority=relation_priority,

@@ -1,22 +1,46 @@
 #!/bin/bash
 #
-# Record demo GIF with real ArcadeDB server.
-# Checks prerequisites, starts database, runs demo, generates GIF, cleans up.
+# Record demo GIFs of a real MCP client session against a live server.
+# session.sh types the client command at a shell prompt; generate_demo.py
+# prints initialize, list_tools, and each tool call. Pass a scenario name
+# to record just that one.
+#
+#   ./assets/demo/record.sh
+#   ./assets/demo/record.sh readme
 #
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-DEMO_GIF="$SCRIPT_DIR/demo.gif"
-DEMO_CAST="$SCRIPT_DIR/demo.cast"
+SERVER_PORT="${GRAPH_MEMORY_PORT:-8000}"
+STARTED_SERVER=0
+SERVER_LOG="${TMPDIR:-/tmp}/graph-memory-demo-server.log"
+SERVER_PID_FILE="${TMPDIR:-/tmp}/graph-memory-demo-server.pid"
+STATUS_FILE="${TMPDIR:-/tmp}/graph-memory-demo-status"
+MAX_BYTES=$((2 * 1024 * 1024))
+
+# name gif cols rows font last_frame seed(no/yes/readme) fps
+# Rows fit the shell prompt plus the client transcript, except dense, which scrolls.
+# readme runs assets/demo/seed.py before the cast. That script is not recorded.
+TAKES=(
+  "readme demo.gif 108 40 20 2.0 readme 10"
+  "dense demo_dense.gif 104 28 18 1.6 no 6"
+  "contradictions demo_contradictions.gif 108 18 20 2.2 yes 10"
+  "lifecycle demo_lifecycle.gif 108 30 20 1.3 yes 10"
+  "retrieval demo_retrieval.gif 108 23 20 1.8 yes 10"
+)
+
+ONLY="${1:-all}"
+
+# A previous shell can export zero pauses and shrink every GIF. Recording uses
+# the paces in generate_demo.py and the typing delay in session.sh.
+unset DEMO_PAUSE_STEP DEMO_PAUSE_BEAT DEMO_PAUSE_END DEMO_PAUSE_HEADER DEMO_TYPE_DELAY
 
 echo "=== Graph Memory Demo Recorder ==="
 echo ""
 
-# 1. Check prerequisites
-echo "[1/7] Checking prerequisites..."
+echo "[1/5] Checking prerequisites..."
 
-# Check uv
 if ! command -v uv &> /dev/null; then
     echo "❌ uv not found"
     echo "Install: curl -LsSf https://astral.sh/uv/install.sh | sh"
@@ -24,7 +48,6 @@ if ! command -v uv &> /dev/null; then
 fi
 echo "✓ uv found"
 
-# Check docker
 if ! command -v docker &> /dev/null; then
     echo "❌ docker not found"
     echo "Install: https://docs.docker.com/get-docker/"
@@ -32,7 +55,6 @@ if ! command -v docker &> /dev/null; then
 fi
 echo "✓ docker found"
 
-# Check docker compose
 if ! docker compose version &> /dev/null; then
     echo "❌ docker compose not found"
     echo "Install: https://docs.docker.com/compose/install/"
@@ -40,7 +62,6 @@ if ! docker compose version &> /dev/null; then
 fi
 echo "✓ docker compose found"
 
-# Check asciinema
 if ! command -v asciinema &> /dev/null; then
     echo "❌ asciinema not found"
     if [[ "$OSTYPE" == "darwin"* ]]; then
@@ -52,7 +73,6 @@ if ! command -v asciinema &> /dev/null; then
 fi
 echo "✓ asciinema found"
 
-# Check agg
 if ! command -v agg &> /dev/null; then
     echo "❌ agg not found"
     echo "Install:"
@@ -65,126 +85,217 @@ if ! command -v agg &> /dev/null; then
     exit 1
 fi
 echo "✓ agg found"
-
 echo ""
 
-# 2. Start ArcadeDB
-echo "[2/7] Starting ArcadeDB..."
+echo "[2/5] Starting ArcadeDB and the MCP server..."
 cd "$PROJECT_ROOT"
 
-# Ensure .env exists
 if [ ! -f .env ]; then
     cp env.example .env
     echo "Created .env from env.example"
 fi
 
-# Start ArcadeDB only (or both, compose starts both)
 docker compose up -d arcadedb
 
-# Wait for ArcadeDB to be healthy (max 30s)
 echo "Waiting for ArcadeDB to be ready..."
-TIMEOUT=30
+TIMEOUT=60
 ELAPSED=0
-while [ $ELAPSED -lt $TIMEOUT ]; do
-    # Check Docker healthcheck first
+while [ "$ELAPSED" -lt "$TIMEOUT" ]; do
     if docker compose ps arcadedb 2>/dev/null | grep -q "healthy"; then
-        echo "✓ ArcadeDB is healthy (Docker healthcheck)"
+        echo "✓ ArcadeDB is healthy"
         break
     fi
-    # Fallback: HTTP readiness check (no auth on /ready endpoint)
     if curl -sf http://localhost:2480/api/v1/ready >/dev/null 2>&1; then
-        echo "✓ ArcadeDB is ready (HTTP check)"
+        echo "✓ ArcadeDB is ready"
         break
     fi
     sleep 1
     ELAPSED=$((ELAPSED + 1))
 done
 
-if [ $ELAPSED -ge $TIMEOUT ]; then
+if [ "$ELAPSED" -ge "$TIMEOUT" ]; then
     echo "❌ ArcadeDB did not become ready in ${TIMEOUT}s"
     docker compose logs arcadedb
     exit 1
 fi
-
-# Additional wait for API to be fully ready
 sleep 2
 
 echo ""
-
-# 3. Install dependencies
-echo "[3/7] Installing Python dependencies..."
-cd "$PROJECT_ROOT"
+echo "[3/5] Installing Python dependencies..."
 uv sync --quiet
 echo "✓ Dependencies installed"
 echo ""
 
-# 4. Record demo
-echo "[4/7] Recording demo (this takes ~20s)..."
-cd "$PROJECT_ROOT"
+start_server() {
+    if curl -sf "http://127.0.0.1:${SERVER_PORT}/admin/health" >/dev/null 2>&1; then
+        echo "✓ MCP server already listening on :${SERVER_PORT}"
+        return
+    fi
+    echo "Starting MCP server on 127.0.0.1:${SERVER_PORT}..."
+    uv run graph-memory-mcp --host 127.0.0.1 --port "$SERVER_PORT" --log-level WARNING \
+        >"$SERVER_LOG" 2>&1 &
+    echo $! >"$SERVER_PID_FILE"
+    STARTED_SERVER=1
+    local timeout=240
+    local elapsed=0
+    while [ "$elapsed" -lt "$timeout" ]; do
+        if curl -sf "http://127.0.0.1:${SERVER_PORT}/admin/health" >/dev/null 2>&1; then
+            echo "✓ MCP server is ready"
+            return
+        fi
+        if ! kill -0 "$(cat "$SERVER_PID_FILE")" 2>/dev/null; then
+            echo "❌ MCP server exited"
+            cat "$SERVER_LOG"
+            exit 1
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    echo "❌ MCP server did not become ready in ${timeout}s"
+    cat "$SERVER_LOG"
+    exit 1
+}
 
-# Fixed terminal size (100 columns x 28 rows, no mid-word wrapping)
-export COLUMNS=100
-export LINES=28
+start_server
 
-# Record with asciinema (run from project root so .env is found)
-asciinema rec "$DEMO_CAST" \
-    --overwrite \
-    --cols 100 \
-    --rows 28 \
-    --command "uv run python assets/demo/generate_demo.py" \
-    --quiet
-
-echo "✓ Demo recorded to demo.cast"
+echo "Warming embeddings..."
+uv run python "$SCRIPT_DIR/generate_demo.py" --prepare
+curl -sf -X DELETE "http://127.0.0.1:${SERVER_PORT}/admin/owners/demo_warm" >/dev/null || true
+echo "✓ Server ready"
 echo ""
 
-# 5. Convert to GIF
-echo "[5/7] Converting to GIF..."
-agg "$DEMO_CAST" "$DEMO_GIF" \
-    --theme monokai \
-    --font-size 18 \
-    --line-height 1.4 \
-    --speed 1.2 \
-    --fps 10
+gif_duration() {
+    python3 - "$1" <<'PY'
+import struct, sys
+data = open(sys.argv[1], "rb").read()
+total = 0
+i = 0
+while True:
+    j = data.find(b"\x21\xf9\x04", i)
+    if j < 0 or j + 8 > len(data):
+        break
+    total += struct.unpack_from("<H", data, j + 4)[0]
+    i = j + 8
+print(f"{total / 100:.1f}s")
+PY
+}
 
-echo "✓ GIF created"
-echo ""
+record_one() {
+    local name="$1"
+    local gif_name="$2"
+    local cols="$3"
+    local rows="$4"
+    local font="$5"
+    local last_frame="$6"
+    local seeded="$7"
+    local fps="$8"
+    local gif="$SCRIPT_DIR/$gif_name"
+    local cast="$SCRIPT_DIR/${name}.cast"
 
-# 6. Cleanup
-echo "[6/7] Cleaning up demo data..."
+    echo "--- ${name} ---"
+    if [ "$seeded" = "readme" ]; then
+        uv run python "$SCRIPT_DIR/seed.py"
+    else
+        curl -sf -X DELETE "http://127.0.0.1:${SERVER_PORT}/admin/owners/demo_team" >/dev/null || true
+        if [ "$seeded" = "yes" ]; then
+            uv run python "$SCRIPT_DIR/generate_demo.py" --scenario seed
+        fi
+    fi
 
-# The demo creates owner_id="demo_team". Data persists in ./data-arcade (ArcadeDB volume).
-# To fully clean: docker compose down && rm -rf ./data-arcade
-echo "Note: Demo data in ./data-arcade persists across runs"
-echo "      To clean: docker compose down && rm -rf ./data-arcade"
+    rm -f "$STATUS_FILE"
+    export COLUMNS="$cols"
+    export LINES="$rows"
+    export DEMO_STATUS_FILE="$STATUS_FILE"
+    asciinema rec "$cast" \
+        --overwrite \
+        --cols "$cols" \
+        --rows "$rows" \
+        --command "bash assets/demo/session.sh ${name}" \
+        --quiet
 
-# Clean up cast file
-rm -f "$DEMO_CAST"
-echo "✓ Temporary files removed"
-echo ""
+    if [ ! -f "$STATUS_FILE" ] || ! grep -qx "ok" "$STATUS_FILE"; then
+        echo "❌ ${name} failed checks"
+        cat "$STATUS_FILE" 2>/dev/null || true
+        rm -f "$cast"
+        exit 1
+    fi
 
-# 7. Report
-echo "[7/7] Done!"
-echo ""
-echo "📹 Demo GIF: $DEMO_GIF"
+    agg "$cast" "$gif" \
+        --theme monokai \
+        --font-family "JetBrains Mono" \
+        --font-size "$font" \
+        --line-height 1.32 \
+        --speed 1.0 \
+        --fps-cap "$fps" \
+        --last-frame-duration "$last_frame"
 
-# Get file size
-if [[ "$OSTYPE" == "darwin"* ]]; then
-    SIZE=$(stat -f%z "$DEMO_GIF")
-else
-    SIZE=$(stat -c%s "$DEMO_GIF")
+    if command -v gifsicle >/dev/null 2>&1; then
+        gifsicle -O3 -o "${gif}.opt" "$gif"
+        mv "${gif}.opt" "$gif"
+    fi
+    rm -f "$cast"
+
+    local size
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        size=$(stat -f%z "$gif")
+    else
+        size=$(stat -c%s "$gif")
+    fi
+    local pretty
+    if [ "$size" -lt 1048576 ]; then
+        pretty="$((size / 1024)) KB"
+    else
+        pretty="$(awk -v bytes="$size" 'BEGIN { printf "%.1f MB", bytes / 1048576 }')"
+    fi
+    local duration
+    duration="$(gif_duration "$gif")"
+    echo "✓ ${gif_name}  ${pretty}  ${duration}"
+    if [ "$size" -ge "$MAX_BYTES" ]; then
+        echo "❌ ${gif_name} is over 2 MB"
+        exit 1
+    fi
+    python3 - "$name" "${duration%s}" <<'PY'
+import sys
+name, raw = sys.argv[1], sys.argv[2]
+value = float(raw)
+bounds = {
+    "readme": (10.0, 16.0),
+    "contradictions": (10.0, 15.0),
+    "lifecycle": (10.0, 15.0),
+    "retrieval": (10.0, 15.0),
+}
+lo, hi = bounds.get(name, (0.0, 1000.0))
+if not lo <= value <= hi:
+    sys.exit(f"❌ {name} duration {value:.1f}s is outside {lo:.0f}–{hi:.0f}s")
+PY
+    echo ""
+}
+
+echo "[4/5] Recording..."
+found=0
+for spec in "${TAKES[@]}"; do
+    read -r name gif_name cols rows font last_frame seeded fps <<<"$spec"
+    if [ "$ONLY" != "all" ] && [ "$ONLY" != "$name" ]; then
+        continue
+    fi
+    found=1
+    record_one "$name" "$gif_name" "$cols" "$rows" "$font" "$last_frame" "$seeded" "$fps"
+done
+
+if [ "$found" -ne 1 ]; then
+    echo "❌ Unknown scenario: ${ONLY}"
+    echo "Choose: readme dense contradictions lifecycle retrieval"
+    exit 1
 fi
 
-# Convert to KB or MB
-if [ "$SIZE" -lt 1048576 ]; then
-    SIZE_HUMAN="$((SIZE / 1024)) KB"
-else
-    SIZE_HUMAN="$((SIZE / 1048576)) MB"
+echo "[5/5] Done."
+echo "README GIF: assets/demo/demo.gif"
+echo "Dense take: assets/demo/demo_dense.gif"
+echo "Landing: assets/demo/demo_contradictions.gif assets/demo/demo_lifecycle.gif assets/demo/demo_retrieval.gif"
+echo ""
+echo "Note: ArcadeDB data persists in the docker volume arcade-data"
+echo "      To clean: docker compose down -v"
+if [ "$STARTED_SERVER" = 1 ]; then
+    echo "To stop the server started by this script, kill the pid in $SERVER_PID_FILE"
 fi
-
-echo "📊 Size: $SIZE_HUMAN"
-echo ""
-echo "Embed in README.md:"
-echo '![Demo](assets/demo/demo.gif)'
-echo ""
-echo "To stop database: docker compose down"
-echo "To clean data: docker compose down && rm -rf ./data-arcade"
+echo "To stop the database: docker compose down"

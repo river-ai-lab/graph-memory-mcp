@@ -26,6 +26,11 @@ from typing import Any, Dict, Iterator, List, Optional
 
 from graph_memory_mcp import __version__
 from graph_memory_mcp.graph_memory.backends.arcade_ops import VERTEX_TYPES, ArcadeOps
+from graph_memory_mcp.graph_memory.backends.embedding_cache import (
+    attach_embedding_service,
+    cached_embedding,
+    cached_embeddings_batch,
+)
 from graph_memory_mcp.graph_memory.cache import CacheManager
 
 logger = logging.getLogger(__name__)
@@ -50,6 +55,10 @@ class ArcadeDBClient(ArcadeOps):
         self.start_time = time.time()
         self._lock = threading.Lock()
         self._ready: set[str] = set()
+        self._vector_indexes_ready: set[str] = set()
+        # Covers the cache check, index creation, and the add. Delete discards
+        # the owner under this same lock after the database is gone.
+        self._vector_index_lock = threading.RLock()
         self._vector_dim: Dict[str, int] = {}
         self._model_dim: int | None = None
         self._edge_types: Dict[str, set[str]] = {}
@@ -131,44 +140,15 @@ class ArcadeDBClient(ArcadeOps):
         return None
 
     def set_embedding_service(self, service: Any) -> None:
-        self._embedding_service = service
-        logger.info(
-            "Embedding service attached (dimension=%s)",
-            getattr(service, "dimension", 0),
-        )
+        attach_embedding_service(self, service)
 
     def get_embedding(self, text: str, kind: str = "passage") -> List[float]:
-        if self._embedding_service is None:
-            logger.warning("Embedding service not available")
-            return []
-        cache_key = f"{kind}:{text}"
-        cached = self.cache.get_embedding(cache_key)
-        if cached is not None:
-            return cached
-        try:
-            embedding = self._embedding_service.get_embedding(text, kind=kind)
-        except TypeError:
-            embedding = self._embedding_service.get_embedding(text)
-        except Exception as exc:  # noqa: BLE001
-            logger.error("Failed to get embedding: %s", exc)
-            return []
-        if embedding:
-            self.cache.set_embedding(cache_key, embedding)
-        return embedding
+        return cached_embedding(self, text, kind)
 
     def get_embeddings_batch(
         self, texts: List[str], kind: str = "passage"
     ) -> List[List[float]]:
-        if self._embedding_service is None:
-            logger.warning("Embedding service not available")
-            return [[] for _ in texts]
-        try:
-            return self._embedding_service.get_embeddings_batch(texts, kind=kind)
-        except TypeError:
-            return self._embedding_service.get_embeddings_batch(texts)
-        except Exception as exc:  # noqa: BLE001
-            logger.error("Failed to get batch embeddings: %s", exc)
-            return [[] for _ in texts]
+        return cached_embeddings_batch(self, texts, kind)
 
     def ensure_ready(self) -> None:
         name = self._require_db()
@@ -196,6 +176,8 @@ class ArcadeDBClient(ArcadeOps):
         self._ready.clear()
         self._edge_types.clear()
         self._vector_dim.clear()
+        with self._vector_index_lock:
+            self._vector_indexes_ready.clear()
 
     def list_database_names(self) -> List[str]:
         body = self._request("GET", "/api/v1/databases")
@@ -266,14 +248,26 @@ class ArcadeDBClient(ArcadeOps):
         dim = int(dimension)
         if dim <= 0:
             raise ValueError("Embedding dimension must be positive")
-        self.ensure_ready()
-        if self._model_dim is not None and self._model_dim != dim:
-            raise ValueError(
-                f"Embedding dimension {dim} does not match index dimension {self._model_dim}"
-            )
-        for vector_label in VECTOR_TYPES:
-            self._ensure_one_vector_index(vector_label, dim)
-        self._model_dim = dim
+        with self._vector_index_lock:
+            active = _ACTIVE_DB.get()
+            if active and active in self._vector_indexes_ready:
+                if self._model_dim is not None and dim != self._model_dim:
+                    raise ValueError(
+                        f"Embedding dimension {dim} does not match index dimension "
+                        f"{self._model_dim}"
+                    )
+                return
+            self.ensure_ready()
+            if self._model_dim is not None and self._model_dim != dim:
+                raise ValueError(
+                    f"Embedding dimension {dim} does not match index dimension "
+                    f"{self._model_dim}"
+                )
+            for vector_label in VECTOR_TYPES:
+                self._ensure_one_vector_index(vector_label, dim)
+            self._model_dim = dim
+            if active:
+                self._vector_indexes_ready.add(active)
 
     def _ensure_one_vector_index(self, label: str, dimension: int) -> None:
         key = f"{self._require_db()}:{label}"
@@ -316,18 +310,26 @@ class ArcadeDBClient(ArcadeOps):
         dimension: int | None = None,
         similarity_function: str = "cosine",
     ) -> Dict[str, bool]:
+        """Create Fact/Entity vector indexes when absent (idempotent, cached per owner)."""
         del similarity_function
-        with self.owner_scope(owner_id):
-            dim = int(
-                dimension or getattr(self._embedding_service, "dimension", 0) or 0
-            )
-            if dim <= 0:
-                return self._vector_status_here()
-            status = self._vector_status_here()
-            for label in VECTOR_TYPES:
-                if not status.get(label):
-                    self.ensure_vector_index(label, dim)
-            return self._vector_status_here()
+        name = self.database_name(owner_id)
+        with self._vector_index_lock:
+            if name in self._vector_indexes_ready:
+                return {"Fact": True, "Entity": True}
+            with self.owner_scope(owner_id):
+                dim = int(
+                    dimension or getattr(self._embedding_service, "dimension", 0) or 0
+                )
+                if dim <= 0:
+                    return self._vector_status_here()
+                status = self._vector_status_here()
+                for label in VECTOR_TYPES:
+                    if not status.get(label):
+                        self.ensure_vector_index(label, dim)
+                status = self._vector_status_here()
+                if all(status.values()):
+                    self._vector_indexes_ready.add(name)
+                return status
 
     def ensure_search_indexes_if_missing(
         self,

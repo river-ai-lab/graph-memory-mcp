@@ -8,6 +8,7 @@ graph (`{FALKORDB_GRAPH}_{owner_id}`).
 """
 
 import logging
+import threading
 import time
 from typing import Any, Dict, List, Optional
 
@@ -15,6 +16,11 @@ import redis
 from falkordb import FalkorDB
 
 from graph_memory_mcp import __version__
+from graph_memory_mcp.graph_memory.backends.embedding_cache import (
+    attach_embedding_service,
+    cached_embedding,
+    cached_embeddings_batch,
+)
 from graph_memory_mcp.graph_memory.backends.falkor_ops import FalkorOps
 from graph_memory_mcp.graph_memory.cache import CacheManager
 from graph_memory_mcp.graph_memory.utils import new_uid
@@ -37,6 +43,11 @@ class FalkorDBClient(FalkorOps):
         self.graph = self.db.select_graph(config.falkordb_graph)
         self._graphs: Dict[str, Any] = {}
         self._search_indexes_ready: set[str] = set()
+        # Owners whose Fact and Entity vector indexes were created in this process.
+        self._vector_indexes_ready: set[str] = set()
+        # Covers the cache check, index creation, and the add. Delete discards
+        # the owner under this same lock after the graph is gone.
+        self._vector_index_lock = threading.RLock()
         self._embedding_service: Any | None = None
         self.start_time = time.time()  # Retain start_time for health check
         self.cache = CacheManager(config)
@@ -121,8 +132,10 @@ class FalkorDBClient(FalkorOps):
             if "empty key" not in str(exc).lower():
                 logger.error("Failed to delete graph %s: %s", name, exc)
                 return False
-        self._graphs.pop(name, None)
-        self._search_indexes_ready.discard(name)
+        with self._vector_index_lock:
+            self._graphs.pop(name, None)
+            self._search_indexes_ready.discard(name)
+            self._vector_indexes_ready.discard(name)
         logger.info("Deleted owner graph %s", name)
         return True
 
@@ -165,11 +178,7 @@ class FalkorDBClient(FalkorOps):
 
     def set_embedding_service(self, service: Any) -> None:
         """Attach embedding service instance."""
-        self._embedding_service = service
-        logger.info(
-            "Embedding service attached (dimension=%s)",
-            getattr(service, "dimension", 0),
-        )
+        attach_embedding_service(self, service)
 
     def connect(self) -> bool:
         """Test connection to FalkorDB."""
@@ -201,39 +210,13 @@ class FalkorDBClient(FalkorOps):
 
     def get_embedding(self, text: str, kind: str = "passage") -> List[float]:
         """Get embedding from service (with config-driven LRU cache)."""
-        if self._embedding_service is None:
-            logger.warning("Embedding service not available")
-            return []
-        cache_key = f"{kind}:{text}"
-        cached = self.cache.get_embedding(cache_key)
-        if cached is not None:
-            return cached
-        try:
-            embedding = self._embedding_service.get_embedding(text, kind=kind)
-        except TypeError:
-            # Custom embedding services may not accept `kind`.
-            embedding = self._embedding_service.get_embedding(text)
-        except Exception as e:
-            logger.error("Failed to get embedding: %s", e)
-            return []
-        if embedding:
-            self.cache.set_embedding(cache_key, embedding)
-        return embedding
+        return cached_embedding(self, text, kind)
 
     def get_embeddings_batch(
         self, texts: List[str], kind: str = "passage"
     ) -> List[List[float]]:
         """Get embeddings for batch of texts."""
-        if self._embedding_service is None:
-            logger.warning("Embedding service not available")
-            return [[] for _ in texts]
-        try:
-            return self._embedding_service.get_embeddings_batch(texts, kind=kind)
-        except TypeError:
-            return self._embedding_service.get_embeddings_batch(texts)
-        except Exception as e:
-            logger.error("Failed to get batch embeddings: %s", e)
-            return [[] for _ in texts]
+        return cached_embeddings_batch(self, texts, kind)
 
     # ====================
     # Index Management (per owner graph)
@@ -331,28 +314,37 @@ class FalkorDBClient(FalkorOps):
         dimension: int | None = None,
         similarity_function: str = "cosine",
     ) -> Dict[str, bool]:
-        """Create Fact/Entity vector indexes when absent (idempotent)."""
-        dim = int(dimension or getattr(self._embedding_service, "dimension", 0) or 0)
-        if dim <= 0:
-            logger.warning(
-                "Cannot ensure vector indexes: embedding dimension is %s", dim
+        """Create Fact/Entity vector indexes when absent (idempotent, cached per owner)."""
+        key = self.graph_name(owner_id)
+        with self._vector_index_lock:
+            if key in self._vector_indexes_ready:
+                return {"Fact": True, "Entity": True}
+            dim = int(
+                dimension or getattr(self._embedding_service, "dimension", 0) or 0
             )
-            return self.get_vector_index_status(owner_id=owner_id)
+            if dim <= 0:
+                logger.warning(
+                    "Cannot ensure vector indexes: embedding dimension is %s", dim
+                )
+                return self.get_vector_index_status(owner_id=owner_id)
 
-        status = self.get_vector_index_status(owner_id=owner_id)
-        if not status.get("Fact"):
-            self.create_vector_index(
-                dimension=dim,
-                similarity_function=similarity_function,
-                owner_id=owner_id,
-            )
-        if not status.get("Entity"):
-            self.create_entity_vector_index(
-                dimension=dim,
-                similarity_function=similarity_function,
-                owner_id=owner_id,
-            )
-        return self.get_vector_index_status(owner_id=owner_id)
+            status = self.get_vector_index_status(owner_id=owner_id)
+            if not status.get("Fact"):
+                self.create_vector_index(
+                    dimension=dim,
+                    similarity_function=similarity_function,
+                    owner_id=owner_id,
+                )
+            if not status.get("Entity"):
+                self.create_entity_vector_index(
+                    dimension=dim,
+                    similarity_function=similarity_function,
+                    owner_id=owner_id,
+                )
+            status = self.get_vector_index_status(owner_id=owner_id)
+            if all(status.values()):
+                self._vector_indexes_ready.add(key)
+            return status
 
     def _indexed_props_by_label(
         self, owner_id: str, wanted_type: str

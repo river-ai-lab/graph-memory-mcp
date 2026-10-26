@@ -9,7 +9,7 @@ from pathlib import Path
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="graph-memory-mcp",
-        description="Run MCP Graph Memory server (FastMCP HTTP).",
+        description="Run MCP Graph Memory server (streamable HTTP).",
     )
     parser.add_argument(
         "--backend",
@@ -39,6 +39,14 @@ def main(argv: list[str] | None = None) -> None:
         help=(
             "Use graph_memory_mcp.server_extended: same tools as the default server, "
             "plus description, shared_with_ids, and collection_id on writes."
+        ),
+    )
+    profile.add_argument(
+        "--auth",
+        action="store_true",
+        help=(
+            "Use graph_memory_mcp.server_auth: OWNER_SCOPE=token. "
+            "Tool schemas omit owner_id; the server sets it from the API key."
         ),
     )
     keys = parser.add_subparsers(dest="command")
@@ -85,6 +93,8 @@ def main(argv: list[str] | None = None) -> None:
     memory_cfg = load_mcp_server_config()
     if args.backend:
         memory_cfg.graph_backend = args.backend
+    if args.auth:
+        memory_cfg.owner_scope = "token"
 
     from graph_memory_mcp.graph_memory.api_keys import TokenModeConfigError
     from graph_memory_mcp.graph_memory.owner_scope import (
@@ -107,6 +117,10 @@ def main(argv: list[str] | None = None) -> None:
             from graph_memory_mcp.server_extended import GraphMemoryExtendedMCP
 
             server = GraphMemoryExtendedMCP(memory_cfg)
+        elif args.auth:
+            from graph_memory_mcp.server_auth import GraphMemoryAuthMCP
+
+            server = GraphMemoryAuthMCP(memory_cfg)
         else:
             from graph_memory_mcp.server import GraphMemoryMCP
 
