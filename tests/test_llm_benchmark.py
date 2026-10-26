@@ -217,3 +217,22 @@ def test_run_mode_none_and_rag_without_a_model():
     assert "Skipped `mem0`" in markdown
     assert parse_judge('```json\n{"correct": true, "reason": "same"}\n```') is True
     assert parse_judge("no") is None
+
+
+def test_dataset_integrity_and_balance():
+    dataset = load_dataset()
+    facts = dataset.fact_map()
+    episodes = {episode.id for episode in dataset.episodes}
+    for fact in dataset.facts:
+        assert fact.episode_id in episodes
+    counts: dict[str, int] = {}
+    for question in dataset.questions:
+        counts[question.type] = counts.get(question.type, 0) + 1
+        for fact_id in question.gold_fact_ids:
+            assert fact_id in facts
+        if question.type == "temporal":
+            assert question.stale_answers
+    assert len(dataset.questions) >= 40
+    assert max(counts.values()) - min(counts.values()) <= 2
+    by_difficulty = {question.difficulty for question in dataset.questions}
+    assert by_difficulty == {"easy", "medium", "hard"}

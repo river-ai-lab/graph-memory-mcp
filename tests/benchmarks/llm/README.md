@@ -51,7 +51,14 @@ Output: `out/report.json` and `out/report.md`.
 
 `dataset.json` is the open corpus: short conversations (`episodes`) and the facts taken from them. Adapters ingest the fact records so gold ids stay stable. Episodes are the dialogue those facts came from.
 
-Updates: coffee machine (Breville, then Moccamaster), spare key (red drawer, then blue locker), Nora's shift (morning, then evening). The lathe oil notes (SAE 30 and SAE 10W) both stay active. Multi-hop: evening supervisor to Priya's desk, and Project Lark to the north wall. Distractors: parking, lunch, radio.
+Size: 12 episodes, 56 facts (6 distractors, 8 outdated), 48 questions: 8 per type (single_fact, updated_fact, contradiction, multi_hop, temporal, abstention); 13 easy, 17 medium, 18 hard. Facts and gold answers are short so a 3B model can answer.
+
+- Updates (old value outdated): coffee machine, spare key, Nora's shift, safety officer, forklift charger, compressor pressure, first-aid kit, steel delivery day. Temporal questions ask for the old value.
+- Contradictions (both sides active): lathe oil, band saw blade, glue cure time, welder gas, fire assembly point, Wren deadline, paint booth filter, drill press speed.
+- Multi-hop: two-fact chains such as supervisor to desk, project to bay to wall, project lead to desk, safety officer to extension, supplier to delivery day.
+- Distractors are near-duplicates that pull vector search: Omar's badge 4421 (Nora's is 4412), the morning supervisor, Project Heron's bay, plus parking, lunch, radio.
+
+Retrieval-only check (no model, k=4, FalkorDB, mean gold-fact recall): RAG 0.90 overall but returns an outdated fact for 8 of 8 update questions; Graph Memory 1.00 on single, updated and contradiction, 0.75 on multi-hop, 0.00 on temporal by default (outdated facts are hidden), 0.93 overall with `--include-outdated`.
 
 ## Run locally
 
