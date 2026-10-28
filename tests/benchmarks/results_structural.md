@@ -1,4 +1,4 @@
-# Structural retrieval benchmark
+# Structural retrieval benchmark (Scenario 1)
 
 Run: `GRAPH_BACKEND=falkordb python tests/benchmarks/structural/run.py`, then `report.py`. Opt-in test: `STRUCTURAL_BENCH=1 pytest -m structural_bench`. FalkorDB.
 
