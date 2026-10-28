@@ -22,6 +22,7 @@ def create_app():
             admin_token=config.admin_token,
             host=_HOST,
             allow_insecure=config.allow_insecure_header,
+            allow_insecure_client=config.allow_insecure_client,
         )
         mcp_server = GraphMemoryMCP(config)
     except (TokenModeConfigError, HeaderModeConfigError) as exc:

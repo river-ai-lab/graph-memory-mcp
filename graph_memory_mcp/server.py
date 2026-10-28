@@ -12,8 +12,6 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Literal
 
-from mcp.types import ToolAnnotations
-
 from graph_memory_mcp.base_server import BaseGraphMemoryMCP
 from graph_memory_mcp.config import MCPServerConfig
 from graph_memory_mcp.graph_memory import (
@@ -23,6 +21,12 @@ from graph_memory_mcp.graph_memory import (
     mcp_handlers_nodes,
     mcp_handlers_relations,
     mcp_handlers_search,
+)
+from graph_memory_mcp.tool_annotations import (
+    ADDITIVE,
+    ADDITIVE_IDEMPOTENT,
+    DESTRUCTIVE,
+    READ_ONLY,
 )
 
 logger = logging.getLogger(__name__)
@@ -79,8 +83,8 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
 
             @mcp.tool(
                 title="Test connection",
+                annotations=READ_ONLY,
                 description="Simple ping to verify MCP server availability.",
-                annotations=ToolAnnotations(readOnlyHint=True),
             )
             def test_connection() -> dict:
                 return mcp_handlers_admin.test_connection(db)
@@ -89,27 +93,28 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
 
         @mcp.tool(
             title="Get stats",
+            annotations=READ_ONLY,
             description="Get graph statistics (node counts, etc.).",
-            annotations=ToolAnnotations(readOnlyHint=True),
         )
         def get_stats(owner_id: str = default_owner) -> dict:
             return mcp_handlers_admin.get_stats(db, owner_id=owner_id)
 
         @mcp.tool(
             title="Health check",
+            annotations=READ_ONLY,
             description=(
                 "Check server health. healthy follows the graph backend and embeddings. "
                 "vector_index_missing lists sampled owners that have no vector index yet; "
                 "that does not clear healthy. The first write creates both indexes. "
                 "Search creates them if they are still missing."
             ),
-            annotations=ToolAnnotations(readOnlyHint=True),
         )
         def health_check() -> dict:
             return mcp_handlers_admin.health_check(db, self.embedding_service)
 
         @mcp.tool(
             title="Get brief",
+            annotations=READ_ONLY,
             description=(
                 "Session warm-up: optional project anchor (source.ref=about), "
                 "recent active facts without TTL (by time, not connectivity), "
@@ -122,7 +127,6 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
                 "After it, search(..., compact=true) for the task topic. "
                 "Keep the about fact current via upsert_node(source.ref='about')."
             ),
-            annotations=ToolAnnotations(readOnlyHint=True),
         )
         def get_brief(
             owner_id: str = default_owner,
@@ -140,6 +144,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
 
             @mcp.tool(
                 title="Ensure vector indexes",
+                annotations=ADDITIVE_IDEMPOTENT,
                 description=(
                     "Create or verify Fact and Entity vector indexes for semantic search. "
                     "Idempotent — safe to call multiple times. "
@@ -191,6 +196,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
 
         @mcp.tool(
             title="Create node",
+            annotations=ADDITIVE,
             description=(
                 "Create a node (Fact or Entity). "
                 "Required: `text`, "
@@ -243,6 +249,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
 
         @mcp.tool(
             title="Upsert node",
+            annotations=DESTRUCTIVE,
             description=(
                 "Create or update a node using `source.ref` as a stable sync key. "
                 "Required: `text`, `source.ref`. "
@@ -286,6 +293,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
 
         @mcp.tool(
             title="Update node",
+            annotations=DESTRUCTIVE,
             description=(
                 "Update a node (Fact or Entity). "
                 "You can update text, metadata, source, status, or ttl_days. "
@@ -333,6 +341,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
 
         @mcp.tool(
             title="Ingest knowledge",
+            annotations=ADDITIVE,
             description=(
                 "Persist knowledge you extracted from one document/conversation in a "
                 "single call: creates a source node (document.ref required), facts "
@@ -365,6 +374,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
 
         @mcp.tool(
             title="Create nodes (bulk)",
+            annotations=ADDITIVE,
             description=(
                 "Bulk create up to 200 nodes of one type in a single call with "
                 "batched embeddings. Each item: {text, description?, metadata?, "
@@ -390,12 +400,12 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
 
             @mcp.tool(
                 title="Export owner",
+                annotations=READ_ONLY,
                 description=(
                     "Export all nodes and relations of an owner as JSON "
                     "(one object per node/relation; write items as lines for JSONL). "
                     "include_embeddings=true makes re-import lossless and cheap."
                 ),
-                annotations=ToolAnnotations(readOnlyHint=True),
             )
             def export_owner(
                 owner_id: str = default_owner,
@@ -417,6 +427,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
 
             @mcp.tool(
                 title="Import owner",
+                annotations=DESTRUCTIVE,
                 description=(
                     "Import an export_owner payload into an owner scope. "
                     "Nodes merge by uid (idempotent). Embeddings are taken from the "
@@ -456,6 +467,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
 
         @mcp.tool(
             title="Search",
+            annotations=READ_ONLY,
             description=(
                 "Semantic search using embedding similarity (cosine distance). "
                 "Returns active durable nodes by default. "
@@ -474,7 +486,6 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
                 "Always includes suggested_next / do_not guidance. "
                 "Set compact=true for snippets under a token budget (expand via get_node / get_context)."
             ),
-            annotations=ToolAnnotations(readOnlyHint=True),
         )
         def search(
             query: str,
@@ -507,12 +518,12 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
 
         @mcp.tool(
             title="Get node",
+            annotations=READ_ONLY,
             description=(
                 "Retrieve a single node (Fact or Entity) by its ID. "
                 "Optional as_of (unix ms): read the state at that time via version "
                 "snapshots (requires updates made with versioning=true)."
             ),
-            annotations=ToolAnnotations(readOnlyHint=True),
         )
         def get_node(
             node_id: str, owner_id: str = default_owner, as_of: int | None = None
@@ -523,6 +534,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
 
         @mcp.tool(
             title="Delete node",
+            annotations=DESTRUCTIVE,
             description=(
                 "PERMANENT: Irreversibly delete a node (Fact or Entity) and all its relations. "
                 "This operation cannot be undone. "
@@ -536,6 +548,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
 
         @mcp.tool(
             title="Mark fact as outdated",
+            annotations=DESTRUCTIVE,
             description=(
                 "Soft-delete a Fact by setting status='outdated'. "
                 "Fact remains in graph but excluded from default searches. "
@@ -558,12 +571,12 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
 
         @mcp.tool(
             title="Get node change history",
+            annotations=READ_ONLY,
             description=(
                 "Retrieve version history for a node. "
                 "Returns a list of previous versions with timestamps. "
                 "Currently only supported for Fact nodes."
             ),
-            annotations=ToolAnnotations(readOnlyHint=True),
         )
         def get_node_change_history(
             node_id: str, owner_id: str = default_owner
@@ -590,6 +603,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
 
         @mcp.tool(
             title="Create triplet",
+            annotations=ADDITIVE_IDEMPOTENT,
             description=(
                 "Create a subject-predicate-object triplet. "
                 "Entities are created if they don't exist. "
@@ -618,11 +632,11 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
 
         @mcp.tool(
             title="Search triplets",
+            annotations=READ_ONLY,
             description=(
                 "Search for triplets matching a pattern. "
                 "All parameters are optional; omit to match any value."
             ),
-            annotations=ToolAnnotations(readOnlyHint=True),
         )
         def search_triplets(
             subject: str | None = None,
@@ -654,6 +668,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
 
         @mcp.tool(
             title="Create relation",
+            annotations=ADDITIVE_IDEMPOTENT,
             description=(
                 "Create a direct relation between two nodes. "
                 "Both nodes must exist. "
@@ -683,11 +698,11 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
 
         @mcp.tool(
             title="Get trace",
+            annotations=READ_ONLY,
             description=(
                 "Find shortest path between two nodes. "
                 "Returns the path as a sequence of nodes and relations."
             ),
-            annotations=ToolAnnotations(readOnlyHint=True),
         )
         def get_trace(
             from_id: str,
@@ -707,6 +722,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
 
         @mcp.tool(
             title="Delete relation",
+            annotations=DESTRUCTIVE,
             description=(
                 "Remove relations between two nodes. "
                 "Optionally specify relation_type to remove only specific relations. "
@@ -729,6 +745,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
 
         @mcp.tool(
             title="Get context",
+            annotations=READ_ONLY,
             description=(
                 "Get subgraph context around a node. "
                 "Returns nodes and edges within specified depth. "
@@ -741,7 +758,6 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
                 "The node budget is filled with CONTRADICTS, then FOLLOWS_FROM, then other allowlist edges; MENTIONS last. "
                 "relation_priority overrides that order. exclude_relation_types drops those edges."
             ),
-            annotations=ToolAnnotations(readOnlyHint=True),
         )
         def get_context(
             node_id: str,
@@ -772,6 +788,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
 
         @mcp.tool(
             title="Recall context",
+            annotations=READ_ONLY,
             description=(
                 "Optional shortcut: semantic search + graph expansion in one call. "
                 "Default recall workflow is search → get_context → get_trace (see memory policies). "
@@ -783,7 +800,6 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
                 "Facts with ttl_days are omitted unless include_ttl=true. "
                 "Expansion fills the node budget with CONTRADICTS and FOLLOWS_FROM before MENTIONS."
             ),
-            annotations=ToolAnnotations(readOnlyHint=True),
         )
         def recall_context(
             query: str,
@@ -822,12 +838,12 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
 
         @mcp.tool(
             title="Find similar",
+            annotations=READ_ONLY,
             description=(
                 "Find facts similar to a given fact using embedding similarity. "
                 "Returns facts ranked by semantic similarity (excludes the query fact itself). "
                 "Useful for discovering related knowledge or identifying potential duplicates."
             ),
-            annotations=ToolAnnotations(readOnlyHint=True),
         )
         def find_similar(
             fact_id: str,
@@ -846,6 +862,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
 
         @mcp.tool(
             title="Create summary fact",
+            annotations=ADDITIVE,
             description=(
                 "Create a summary fact from multiple source facts. "
                 "Links the summary to all source facts."

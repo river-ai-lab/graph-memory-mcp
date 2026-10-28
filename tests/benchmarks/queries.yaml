@@ -1,0 +1,148 @@
+# Benchmark queries for architecture-decisions corpus
+# ~20 queries covering: current facts, outdated exclusion, contradictions, multi-hop, dedup, tokens, fairness
+
+queries:
+  # Current fact recall (single-hop)
+  - id: q01_cache_current
+    category: current_fact
+    text: "What caching system do we use?"
+    expect_keys: [store_cache_redis_v2]
+    forbid_keys: [store_cache_pg_v1]  # Should be outdated
+    expect_contradictions: false
+
+  - id: q02_api_protocol
+    category: current_fact
+    text: "What protocol does the public API use?"
+    expect_keys: [svc_api_rest]
+    forbid_keys: []
+    expect_contradictions: false
+
+  - id: q03_queue_current
+    category: current_fact
+    text: "What job queue system are we using?"
+    expect_keys: [queue_sqs_v2]
+    forbid_keys: [queue_rabbitmq_v1]  # Should be outdated
+    expect_contradictions: false
+
+  # Outdated fact exclusion
+  - id: q04_db_migration_current
+    category: outdated_exclusion
+    text: "How do we run database migrations?"
+    expect_keys: [db_migrate_v2]
+    forbid_keys: [db_migrate_v1]  # Outdated
+    expect_contradictions: false
+
+  # Contradiction detection
+  - id: q05_jwt_expiry
+    category: contradiction
+    text: "How long are JWT tokens valid?"
+    expect_keys: [auth_jwt_shortlived, auth_jwt_longlived]
+    forbid_keys: []
+    expect_contradictions: true  # Should surface contradiction
+
+  - id: q06_logging_format
+    category: contradiction
+    text: "What logging format do we use?"
+    expect_keys: [log_json_structured, log_plaintext_legacy]
+    forbid_keys: []
+    expect_contradictions: true
+
+  # Multi-hop traversal (2-3 hops)
+  - id: q07_monitoring_why
+    category: multihop
+    text: "Why did we implement monitoring?"
+    expect_keys: [monitor_why_slo, monitor_metrics_prom, monitor_alerts_slack]
+    forbid_keys: []
+    max_hops: 2
+
+  - id: q08_backup_chain
+    category: multihop
+    text: "Why do we backup to S3?"
+    expect_keys: [backup_why_compliance, backup_s3_daily]
+    forbid_keys: []
+    max_hops: 1
+
+  # Who/ownership queries
+  - id: q09_backend_owner
+    category: who
+    text: "Who owns the backend architecture?"
+    expect_keys: [team_backend_alice]
+    forbid_keys: []
+
+  - id: q10_infra_owner
+    category: who
+    text: "Who is responsible for infrastructure?"
+    expect_keys: [team_infra_bob]
+    forbid_keys: []
+
+  # Historical/as_of query (if versioning enabled)
+  - id: q11_cache_before_march
+    category: as_of
+    text: "What caching system did we use before March 2026?"
+    expect_keys: [store_cache_pg_v1]
+    forbid_keys: [store_cache_redis_v2]
+    as_of_date: "2026-02-15"
+
+  # Deduplication effectiveness (near-duplicates should be refused)
+  - id: q12_dedup_rest_api
+    category: dedup
+    text: "How many facts about REST API should be stored?"
+    expect_count: 1  # Only svc_api_rest, duplicates refused
+    test_writes: [svc_api_rest, svc_api_rest_dup1, svc_api_rest_dup2]
+
+  - id: q13_dedup_redis_cache
+    category: dedup
+    text: "How many facts about Redis caching should be stored?"
+    expect_count: 1  # Only store_cache_redis_v2, duplicates refused
+    test_writes: [store_cache_redis_v2, cache_redis_dup1, cache_redis_dup2]
+
+  # Token budget / compact recall
+  - id: q14_api_summary
+    category: compact
+    text: "Summarize the API design decisions"
+    expect_keys: [svc_api_rest, svc_protocol_grpc, sec_https_only, sec_rate_limit]
+    token_budget: 800
+    compact: true
+
+  # Exact identifier search (grep should win)
+  - id: q15_exact_key_grep
+    category: fairness_grep
+    text: "Find REDACTED_prod_key_12345"
+    expect_keys: [config_secret_key]
+    forbid_keys: []
+    note: "Exact identifier - grep baseline should win"
+
+  # Multi-region deployment
+  - id: q16_deployment
+    category: current_fact
+    text: "What are our deployment regions?"
+    expect_keys: [deploy_regions]
+    forbid_keys: []
+
+  # Security policies
+  - id: q17_https
+    category: current_fact
+    text: "What is our HTTPS policy?"
+    expect_keys: [sec_https_only]
+    forbid_keys: []
+
+  # Testing strategy
+  - id: q18_coverage
+    category: current_fact
+    text: "What is our test coverage target?"
+    expect_keys: [test_coverage_target]
+    forbid_keys: []
+
+  # Database sharding (linked to main DB decision)
+  - id: q19_db_sharding
+    category: current_fact
+    text: "How is the database scaled?"
+    expect_keys: [store_db_sharding, store_db_pg]
+    forbid_keys: []
+
+  # Full context comparison (tiny corpus)
+  - id: q20_full_context_fairness
+    category: fairness_full_context
+    text: "List all architecture decisions"
+    expect_keys: []  # Should retrieve everything
+    note: "With 39 facts, full-context might win on tiny corpus"

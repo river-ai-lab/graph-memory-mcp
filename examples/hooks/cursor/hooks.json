@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      { "command": "python3 .cursor/hooks/memory_reminder.py cursor session-start" }
+    ],
+    "stop": [
+      {
+        "command": "python3 .cursor/hooks/memory_reminder.py cursor stop",
+        "loop_limit": 1
+      }
+    ]
+  }
+}

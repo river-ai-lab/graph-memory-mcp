@@ -82,6 +82,7 @@ asyncio_mode = "auto"
 markers = [
   "integration: requires running FalkorDB (docker compose up -d)",
   "arcade: requires a running ArcadeDB server",
+  "structural_bench: structural retrieval benchmark; skipped unless STRUCTURAL_BENCH=1",
   "browser: headless Playwright UI smoke; skipped unless EXPLORER_BROWSER=1",
 ]
 

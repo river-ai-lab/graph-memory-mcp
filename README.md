@@ -159,7 +159,7 @@ search(query="API rate limit", owner_id="team_backend")
 
 **Before**: Cursor or Claude Code agents rediscover the same information session after session—re-reading config files, re-asking "what port does staging use?"—because memory resets with each new chat.
 
-**With Graph Memory MCP**: When the agent finds "staging database uses port 5433" in `config/staging.yaml`, it writes back with `create_node(text="The staging database uses port 5433.", metadata={"source": "config/staging.yaml"})` (rule 6 from the [cheatsheet](docs/memory_policy_cheatsheet.md)). Next session, `search("staging database port")` retrieves it. No file re-reads, no extraction cost.
+**With Graph Memory MCP**: When the agent finds "staging database uses port 5433" in `config/staging.yaml`, it writes back with `create_node(text="The staging database uses port 5433.", metadata={"source": "config/staging.yaml"})` (the write-back rule in the [cheatsheet](docs/memory_policy_cheatsheet.md)). Next session, `search("staging database port")` retrieves it. No file re-reads, no extraction cost.
 
 ### Multiple agents sharing memory
 
@@ -341,6 +341,8 @@ A missing, unknown, or revoked key is HTTP 401. An `owner_id` that is not in the
 Token mode does not start without `ADMIN_TOKEN` and a readable keys file. `/admin` takes the owner from the path, so in this mode it always requires that token. `client` and `header` still leave `/admin` open when `ADMIN_TOKEN` is empty.
 
 Header mode belongs on `127.0.0.1`, with the gateway as the only client. The gateway sends `Authorization: Bearer $ADMIN_TOKEN` and `X-Owner-Id`. `/mcp` returns HTTP 401 when that token is set and the bearer is missing or wrong. Without `ADMIN_TOKEN`, the process starts on `127.0.0.1`, `::1`, or `localhost` only. Any other bind address exits. `ALLOW_INSECURE_HEADER=1` logs a warning and starts anyway.
+
+`client` mode has no `/mcp` authentication, so it starts on loopback only. A bind such as `0.0.0.0` exits unless `ALLOW_INSECURE_CLIENT=1` is set (it logs a warning). For network access use `OWNER_SCOPE=token`.
 
 `/internal/graph-size` in `client` and `header` requires `ADMIN_TOKEN` plus `X-Owner-Id`. `token` requires the API key; `X-Owner-Id` must be one of the key's projects, or the first project is used. `/metrics` stays open in every mode: handler, cache, and job counters, plus totals summed across owners. It does not name an owner.
 

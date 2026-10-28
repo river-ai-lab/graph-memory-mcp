@@ -17,3 +17,12 @@ repos:
       - id: ruff-check
         args: [--fix]
       - id: ruff-format
+
+  - repo: local
+    hooks:
+      - id: gen-policy
+        name: policy artifacts up to date
+        entry: python3 scripts/gen_policy.py --check
+        language: system
+        pass_filenames: false
+        files: ^(docs/memory_polic|graph_memory_mcp/resources/|scripts/gen_policy\.py)
