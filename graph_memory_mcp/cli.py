@@ -108,6 +108,7 @@ def main(argv: list[str] | None = None) -> None:
             admin_token=memory_cfg.admin_token,
             host=args.host,
             allow_insecure=memory_cfg.allow_insecure_header,
+            allow_insecure_client=memory_cfg.allow_insecure_client,
         )
         if args.simple:
             from graph_memory_mcp.server_simple import GraphMemorySimpleMCP

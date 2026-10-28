@@ -185,3 +185,27 @@ def test_cli_auth_is_exclusive_with_simple():
     with pytest.raises(SystemExit) as exc:
         main(["--auth", "--simple"])
     assert exc.value.code == 2
+
+
+@pytest.mark.parametrize(
+    "cls_path", ["server", "server_simple", "server_extended", "server_auth"]
+)
+def test_tool_descriptions_carry_generated_policy(cls_path, tmp_path, monkeypatch):
+    import importlib
+
+    from graph_memory_mcp.resources.policy_generated import TOOL_RULES
+
+    module = importlib.import_module(f"graph_memory_mcp.{cls_path}")
+    cls = {
+        "server": "GraphMemoryMCP",
+        "server_simple": "GraphMemorySimpleMCP",
+        "server_extended": "GraphMemoryExtendedMCP",
+        "server_auth": "GraphMemoryAuthMCP",
+    }[cls_path]
+    server, _record = _open(getattr(module, cls), tmp_path, monkeypatch)
+    tools = {t.name: t.description for t in server.mcp._tool_manager.list_tools()}
+    present = [name for name in TOOL_RULES if name in tools]
+    assert "create_node" in present
+    for name in present:
+        assert tools[name].endswith(f"Policy: {TOOL_RULES[name]}")
+        assert tools[name].count("Policy:") == 1

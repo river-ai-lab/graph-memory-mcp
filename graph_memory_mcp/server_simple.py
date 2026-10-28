@@ -15,6 +15,7 @@ from typing import Any, Dict, Literal
 from graph_memory_mcp.config import MCPServerConfig
 from graph_memory_mcp.graph_memory import mcp_handlers_nodes
 from graph_memory_mcp.server import GraphMemoryMCP
+from graph_memory_mcp.tool_annotations import ADDITIVE, DESTRUCTIVE
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +70,7 @@ class GraphMemorySimpleMCP(GraphMemoryMCP):
 
         @mcp.tool(
             title="Create node",
+            annotations=ADDITIVE,
             description=(
                 "Create a node (Fact or Entity). "
                 "Required: `text`, "
@@ -136,6 +138,7 @@ class GraphMemorySimpleMCP(GraphMemoryMCP):
 
         @mcp.tool(
             title="Upsert node",
+            annotations=DESTRUCTIVE,
             description=(
                 "Create or update a node using `ref` as a stable sync key. "
                 "Required: `text`, `ref`. "
@@ -193,6 +196,7 @@ class GraphMemorySimpleMCP(GraphMemoryMCP):
 
         @mcp.tool(
             title="Update node",
+            annotations=DESTRUCTIVE,
             description=(
                 "Update a node (Fact or Entity). "
                 "You can update text, metadata, status, or ttl_days. "

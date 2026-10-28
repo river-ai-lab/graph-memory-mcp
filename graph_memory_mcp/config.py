@@ -49,6 +49,11 @@ class MCPServerConfig(BaseSettings):
     allow_insecure_header: bool = Field(
         default=False, validation_alias="ALLOW_INSECURE_HEADER"
     )
+    # Client mode only. True logs a warning and allows a non-loopback bind.
+    # /mcp has no authentication in client mode.
+    allow_insecure_client: bool = Field(
+        default=False, validation_alias="ALLOW_INSECURE_CLIENT"
+    )
     name: str = Field(default="memory", validation_alias="MCP_SERVER_NAME")
     description: str = Field(
         default="Memory MCP server for knowledge graph (FalkorDB)",

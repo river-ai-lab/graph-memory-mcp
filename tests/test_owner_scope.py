@@ -373,7 +373,6 @@ def test_header_bind_allows_loopback_and_refuses_the_network(caplog):
     for host in ("127.0.0.1", "::1", "localhost", "LocalHost"):
         validate_header_bind(scope="header", admin_token="", host=host)
     validate_header_bind(scope="header", admin_token="secret", host="0.0.0.0")
-    validate_header_bind(scope="client", admin_token="", host="0.0.0.0")
     validate_header_bind(scope="token", admin_token="", host="0.0.0.0")
     assert not caplog.records
 
@@ -431,17 +430,73 @@ def _patch_server_start(monkeypatch, started):
     monkeypatch.setattr(uvicorn, "run", _run)
 
 
-def test_cli_client_mode_starts_on_any_host_without_a_warning(monkeypatch, caplog):
+@pytest.mark.parametrize("host", ["0.0.0.0", "::", "192.168.1.10", "[::]"])
+def test_client_mode_refuses_a_non_loopback_bind(host):
+    with pytest.raises(HeaderModeConfigError, match="OWNER_SCOPE=client"):
+        validate_header_bind(scope="client", admin_token="", host=host)
+    # ADMIN_TOKEN does not protect /mcp in client mode.
+    with pytest.raises(HeaderModeConfigError, match="ALLOW_INSECURE_CLIENT|token"):
+        validate_header_bind(scope="client", admin_token="secret", host=host)
+
+
+@pytest.mark.parametrize(
+    "host", ["127.0.0.1", "127.0.0.2", "::1", "[::1]", "localhost"]
+)
+def test_client_mode_loopback_bind_starts(host):
+    validate_header_bind(scope="client", admin_token="", host=host)
+
+
+def test_client_mode_opt_in_warns_and_starts(caplog):
+    with caplog.at_level(logging.WARNING):
+        validate_header_bind(
+            scope="client",
+            admin_token="",
+            host="0.0.0.0",
+            allow_insecure_client=True,
+        )
+    assert any("ALLOW_INSECURE_CLIENT=1" in r.message for r in caplog.records)
+
+
+def test_cli_refuses_client_mode_on_a_reachable_host(monkeypatch):
     from graph_memory_mcp.cli import main
 
     monkeypatch.setenv("OWNER_SCOPE", "client")
     monkeypatch.setenv("ADMIN_TOKEN", "")
+    monkeypatch.delenv("ALLOW_INSECURE_CLIENT", raising=False)
+    started = {}
+    _patch_server_start(monkeypatch, started)
+    with pytest.raises(SystemExit) as exc:
+        main(["--host", "0.0.0.0"])
+    assert "OWNER_SCOPE=client" in str(exc.value)
+    assert started == {}
+
+
+def test_cli_client_mode_opt_in_starts_on_any_host(monkeypatch, caplog):
+    from graph_memory_mcp.cli import main
+
+    monkeypatch.setenv("OWNER_SCOPE", "client")
+    monkeypatch.setenv("ADMIN_TOKEN", "")
+    monkeypatch.setenv("ALLOW_INSECURE_CLIENT", "1")
+    started = {}
+    _patch_server_start(monkeypatch, started)
+    with caplog.at_level(logging.WARNING):
+        main(["--host", "0.0.0.0"])
+    assert started == {"scope": "client", "app": "app", "host": "0.0.0.0"}
+    assert any("ALLOW_INSECURE_CLIENT=1" in r.message for r in caplog.records)
+
+
+def test_cli_client_mode_loopback_starts_without_a_warning(monkeypatch, caplog):
+    from graph_memory_mcp.cli import main
+
+    monkeypatch.setenv("OWNER_SCOPE", "client")
+    monkeypatch.setenv("ADMIN_TOKEN", "")
+    monkeypatch.delenv("ALLOW_INSECURE_CLIENT", raising=False)
     started = {}
     _patch_server_start(monkeypatch, started)
     with caplog.at_level(logging.DEBUG):
-        main(["--host", "0.0.0.0"])
-    assert started == {"scope": "client", "app": "app", "host": "0.0.0.0"}
-    assert not any("X-Owner-Id" in record.message for record in caplog.records)
+        main(["--host", "127.0.0.1"])
+    assert started == {"scope": "client", "app": "app", "host": "127.0.0.1"}
+    assert not any("OWNER_SCOPE=client" in r.message for r in caplog.records)
 
 
 def test_cli_header_loopback_without_token_stays_quiet(monkeypatch, caplog):
@@ -490,3 +545,99 @@ def test_graph_size_payload_counts_labels():
     assert payload["relation_count"] == 4
     assert payload["bytes"] == 100
     assert payload["nodes"] == {"Fact": 2, "Entity": 1}
+
+
+def _host_app(peer):
+    from starlette.applications import Starlette
+    from starlette.responses import PlainTextResponse
+    from starlette.routing import Route
+
+    from graph_memory_mcp.graph_memory.owner_scope import LoopbackPeerMiddleware
+
+    inner = Starlette(
+        routes=[
+            Route("/mcp", lambda r: PlainTextResponse("ok"), methods=["POST"]),
+            Route("/metrics", lambda r: PlainTextResponse("ok")),
+        ]
+    )
+    app = LoopbackPeerMiddleware(inner)
+
+    async def with_peer(scope, receive, send):
+        if scope["type"] == "http":
+            scope = dict(scope, client=(peer, 50123))
+        await app(scope, receive, send)
+
+    return with_peer
+
+
+async def _status(app, host, path="/mcp", method="POST"):
+    import httpx
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://srv"
+    ) as client:
+        response = await client.request(method, path, headers={"Host": host})
+        return response.status_code
+
+
+@pytest.mark.parametrize(
+    "host", ["127.0.0.1:8000", "localhost:8000", "[::1]:8000", "127.0.0.1"]
+)
+def test_loopback_host_from_lan_peer_is_rejected(host):
+    assert asyncio.run(_status(_host_app("192.168.68.20"), host)) == 421
+    assert asyncio.run(_status(_host_app("2001:db8::5"), host)) == 421
+
+
+@pytest.mark.parametrize("peer", ["127.0.0.1", "::1", "testclient"])
+def test_loopback_host_from_loopback_peer_passes(peer):
+    assert asyncio.run(_status(_host_app(peer), "127.0.0.1:8000")) == 200
+
+
+def test_loopback_peer_check_only_covers_mcp():
+    app = _host_app("192.168.68.20")
+    assert asyncio.run(_status(app, "127.0.0.1:8000", "/metrics", "GET")) == 200
+
+
+def test_loopback_peer_check_applies_where_mcp_is_open():
+    from graph_memory_mcp.graph_memory.owner_scope import needs_loopback_peer_check
+
+    assert needs_loopback_peer_check(scope="client", admin_token="")
+    assert needs_loopback_peer_check(scope="client", admin_token="secret")
+    assert not needs_loopback_peer_check(
+        scope="client", admin_token="", allow_insecure_client=True
+    )
+    assert needs_loopback_peer_check(scope="header", admin_token="")
+    assert not needs_loopback_peer_check(scope="header", admin_token="secret")
+    assert not needs_loopback_peer_check(
+        scope="header", admin_token="", allow_insecure_header=True
+    )
+    assert not needs_loopback_peer_check(scope="token", admin_token="secret")
+
+
+def test_client_mode_app_rejects_spoofed_loopback_host(memory_backend):
+    """GMMCP-18: Host 127.0.0.1 from a LAN peer does not reach /mcp."""
+    import httpx
+
+    from graph_memory_mcp.server import GraphMemoryMCP
+
+    cfg = memory_backend.config.model_copy(
+        update={"owner_scope": "client", "allow_insecure_client": False}
+    )
+    server = GraphMemoryMCP(cfg)
+    app = server.get_mcp_app()
+
+    async def statuses():
+        out = []
+        async with server.mcp.session_manager.run():
+            for peer in ("192.168.68.20", "127.0.0.1"):
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app, client=(peer, 50123)),
+                    base_url="http://127.0.0.1:8000",
+                ) as client:
+                    response = await client.post("/mcp", json={})
+                    out.append(response.status_code)
+        return out
+
+    lan, local = asyncio.run(statuses())
+    assert lan == 421
+    assert local != 421

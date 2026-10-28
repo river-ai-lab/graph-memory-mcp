@@ -2,10 +2,6 @@
 
 Agents: [memory_policies_for_LLM.md](./memory_policies_for_LLM.md). Ops: [admin.md](./admin.md).
 
-## Done
-
-- HTTP auth: `OWNER_SCOPE=token` (Bearer API key; `owner_id` must be one of the key's projects, empty uses the first) and `OWNER_SCOPE=header` (`X-Owner-Id`, `ADMIN_TOKEN` when the bind is not loopback)
-
 ## Next
 
 - **Search `as_of` timestamp**: Search by time range (currently only `get_node(as_of)` supported)
@@ -13,6 +9,7 @@ Agents: [memory_policies_for_LLM.md](./memory_policies_for_LLM.md). Ops: [admin.
 - Undirected `get_trace` — bidirectional BFS (path scan is costly on dense graphs)
 - Auto `search_type` by owner size (`pre_filter` vs `post_filter` ANN)
 - Re-embed script — before prod with stable data (model/prefix changes)
+- Client hooks that call the same write tools mid-session and at session end. End of session is a backstop; the chat can die before that hook runs.
 - Pub/sub cache invalidation across instances
 - HA — FalkorDB replica + Sentinel (backups already cover durability)
 
@@ -25,3 +22,4 @@ Agents: [memory_policies_for_LLM.md](./memory_policies_for_LLM.md). Ops: [admin.
 - Richer versioning (`change_reason`, `changed_by`); `as_of` for relations
 - Append-only access events (vs mutable `last_accessed_at`)
 - JSONL stream export
+- Graph analytics and data mining on one owner graph: communities, central nodes, frequent paths

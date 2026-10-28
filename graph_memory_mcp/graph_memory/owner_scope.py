@@ -20,6 +20,7 @@ context, and a synchronous handler's worker thread copies it again.
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -56,7 +57,8 @@ _SURFACE_AUTH: dict[str, dict[str, str]] = {
 
 
 class HeaderModeConfigError(RuntimeError):
-    """Header mode is reachable on the network without ADMIN_TOKEN."""
+    """An unauthenticated /mcp (client, or header without ADMIN_TOKEN) is
+    bound to a non-loopback address."""
 
 
 class ProjectDenied(Exception):
@@ -123,24 +125,51 @@ def authenticate(
     return AuthResult(status=401)
 
 
+def is_loopback_host(host: str) -> bool:
+    """True for ``localhost`` and loopback IPs (``127.0.0.0/8``, ``::1``)."""
+    value = str(host or "").strip().lower().strip("[]")
+    if value in _LOOPBACK_HOSTS:
+        return True
+    try:
+        return ipaddress.ip_address(value).is_loopback
+    except ValueError:
+        return False
+
+
 def validate_header_bind(
     *,
     scope: str,
     admin_token: str,
     host: str,
     allow_insecure: bool = False,
+    allow_insecure_client: bool = False,
 ) -> None:
-    """Refuse a non-loopback header bind when ADMIN_TOKEN is unset.
+    """Refuse an unauthenticated ``/mcp`` on a non-loopback bind.
 
-    Loopback (``127.0.0.1``, ``::1``, ``localhost``) without a token starts
-    quietly. Other modes return immediately. ``allow_insecure`` is
-    ``ALLOW_INSECURE_HEADER=1``: log the risk and continue.
+    ``header`` without ``ADMIN_TOKEN`` and ``client`` (``/mcp`` never checks a
+    credential there) refuse a non-loopback host. Loopback starts quietly.
+    ``token`` returns immediately. ``allow_insecure`` is
+    ``ALLOW_INSECURE_HEADER=1`` and ``allow_insecure_client`` is
+    ``ALLOW_INSECURE_CLIENT=1``: log the risk and continue.
     """
-    if str(scope or "client").strip().lower() != "header":
+    mode = str(scope or "client").strip().lower()
+    if mode not in ("client", "header"):
         return
+    if is_loopback_host(host):
+        return
+    if mode == "client":
+        message = (
+            f"OWNER_SCOPE=client is bound to {host}. /mcp has no authentication "
+            "in this mode: anyone on the network can read, write, and delete "
+            "any owner's memory. Bind 127.0.0.1 or use OWNER_SCOPE=token."
+        )
+        if allow_insecure_client:
+            logger.warning(
+                "%s ALLOW_INSECURE_CLIENT=1 is set; starting anyway.", message
+            )
+            return
+        raise HeaderModeConfigError(message)
     if str(admin_token or "").strip():
-        return
-    if str(host or "").strip().lower() in _LOOPBACK_HOSTS:
         return
     message = (
         f"OWNER_SCOPE=header is bound to {host} without ADMIN_TOKEN. "
@@ -151,6 +180,73 @@ def validate_header_bind(
         logger.warning("%s ALLOW_INSECURE_HEADER=1 is set; starting anyway.", message)
         return
     raise HeaderModeConfigError(message)
+
+
+def _is_remote_ip(peer: str) -> bool:
+    """True for a non-loopback IP. Unix sockets and test peers are not IPs."""
+    try:
+        return not ipaddress.ip_address(str(peer or "")).is_loopback
+    except ValueError:
+        return False
+
+
+def _host_name(host_header: str) -> str:
+    """Host header without the port: ``[::1]:8000`` -> ``::1``."""
+    value = host_header.strip()
+    if value.startswith("["):
+        return value[1:].split("]", 1)[0]
+    if value.count(":") == 1:
+        return value.rsplit(":", 1)[0]
+    return value
+
+
+class LoopbackPeerMiddleware:
+    """Reject a loopback ``Host`` on ``/mcp`` from a non-loopback peer (421).
+
+    The SDK Host allowlist only accepts loopback names, but the header is
+    client-controlled: a LAN client can send ``Host: 127.0.0.1``. Used where
+    ``/mcp`` has no credential. It is not an access-control boundary by
+    itself; authentication is (``OWNER_SCOPE=token``).
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http" or not str(scope.get("path", "")).startswith(
+            "/mcp"
+        ):
+            await self.app(scope, receive, send)
+            return
+        client = scope.get("client")
+        peer = client[0] if client else ""
+        host = ""
+        for key, value in scope.get("headers") or []:
+            if key == b"host":
+                host = value.decode("latin-1")
+                break
+        if _is_remote_ip(peer) and is_loopback_host(_host_name(host)):
+            from starlette.responses import Response
+
+            await Response("Invalid Host header", status_code=421)(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
+
+def needs_loopback_peer_check(
+    *,
+    scope: str,
+    admin_token: str,
+    allow_insecure_header: bool = False,
+    allow_insecure_client: bool = False,
+) -> bool:
+    """True when ``/mcp`` has no credential and no network opt-in is set."""
+    mode = str(scope or "client").strip().lower()
+    if mode == "client":
+        return not allow_insecure_client
+    if mode == "header":
+        return not str(admin_token or "").strip() and not allow_insecure_header
+    return False
 
 
 def bound_key() -> ApiKeyRecord | None:
