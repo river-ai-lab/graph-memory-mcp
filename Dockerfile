@@ -32,9 +32,10 @@ USER 10001:10001
 EXPOSE 8000
 
 ENTRYPOINT ["graph-memory-mcp"]
-# Listens on 0.0.0.0 so a published port works. OWNER_SCOPE=client (default) has
-# no /mcp authentication and refuses this bind: run with OWNER_SCOPE=token
-# (or --auth), or set ALLOW_INSECURE_CLIENT=1 and publish only on loopback
-# (-p 127.0.0.1:8000:8000). MCP transport security allows only Host and Origin
-# 127.0.0.1, localhost, and [::1]. See docs/configuration.md.
+# Binds 0.0.0.0 so a published port can reach the process. Client mode has no
+# /mcp authentication and refuses that bind. Pass -e ALLOW_INSECURE_CLIENT=1
+# and publish the host port on loopback (-p 127.0.0.1:8000:8000), or run
+# OWNER_SCOPE=token (--auth). The image does not set the opt-in. MCP transport
+# security allows only Host and Origin 127.0.0.1, localhost, and [::1].
+# See docs/configuration.md.
 CMD ["--host", "0.0.0.0", "--port", "8000", "--log-level", "INFO"]
