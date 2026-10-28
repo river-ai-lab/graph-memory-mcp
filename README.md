@@ -342,7 +342,7 @@ Token mode does not start without `ADMIN_TOKEN` and a readable keys file. `/admi
 
 Header mode belongs on `127.0.0.1`, with the gateway as the only client. The gateway sends `Authorization: Bearer $ADMIN_TOKEN` and `X-Owner-Id`. `/mcp` returns HTTP 401 when that token is set and the bearer is missing or wrong. Without `ADMIN_TOKEN`, the process starts on `127.0.0.1`, `::1`, or `localhost` only. Any other bind address exits. `ALLOW_INSECURE_HEADER=1` logs a warning and starts anyway.
 
-`client` mode has no `/mcp` authentication, so it starts on loopback only. A bind such as `0.0.0.0` exits unless `ALLOW_INSECURE_CLIENT=1` is set (it logs a warning). For network access use `OWNER_SCOPE=token`.
+`client` mode has no `/mcp` authentication, so it starts on loopback only. A bind such as `0.0.0.0` exits unless `ALLOW_INSECURE_CLIENT=1` is set (it logs a warning). For network access use `OWNER_SCOPE=token`. A local proxy may forward `Host` set to an IPv4 address of this machine, such as its Tailscale address. Other Host values are still rejected, including a spoofed loopback Host from a non-loopback peer.
 
 `/internal/graph-size` in `client` and `header` requires `ADMIN_TOKEN` plus `X-Owner-Id`. `token` requires the API key; `X-Owner-Id` must be one of the key's projects, or the first project is used. `/metrics` stays open in every mode: handler, cache, and job counters, plus totals summed across owners. It does not name an owner.
 
