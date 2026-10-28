@@ -2,6 +2,10 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+- `/mcp` accepts Host and Origin for IPv4 addresses on this machine, including a Tailscale address. No allowlist to configure. A loopback Host from a non-loopback peer is still HTTP 421, and any other Host is still rejected.
+
 ## [0.2.2] - 2026-10-28
 
 - Security: where `/mcp` has no credential (`client`, `header` without `ADMIN_TOKEN`), a loopback `Host` from a non-loopback peer gets HTTP 421 instead of passing the Host allowlist.

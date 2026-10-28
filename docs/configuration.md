@@ -20,7 +20,7 @@ Settings load from the environment and from `.env`. Defaults live in `graph_memo
 
 ### Host check
 
-`/mcp` accepts only `Host` and `Origin` `127.0.0.1`, `localhost`, and `[::1]` (DNS-rebinding protection). The `Host` header is set by the client, so this is not access control; authentication is (`OWNER_SCOPE=token`). Where `/mcp` has no credential (`client`, or `header` without `ADMIN_TOKEN`), a request with a loopback `Host` from a non-loopback TCP peer also gets HTTP 421. `ALLOW_INSECURE_CLIENT=1` / `ALLOW_INSECURE_HEADER=1` turn that check off, since the operator has accepted network access (a Docker published port arrives from the bridge address).
+`/mcp` accepts `Host` and `Origin` `127.0.0.1`, `localhost`, and `[::1]`, plus the IPv4 addresses configured on this machine. There is no list to set. Open the server by one of those addresses, including a Tailscale `100.x` address. A Host that is not one of them, such as a DNS name or an attacker name, is still rejected. The `Host` header is set by the client, so this is not access control; authentication is (`OWNER_SCOPE=token`). Where `/mcp` has no credential (`client`, or `header` without `ADMIN_TOKEN`), a request with a loopback `Host` from a non-loopback TCP peer also gets HTTP 421. `ALLOW_INSECURE_CLIENT=1` / `ALLOW_INSECURE_HEADER=1` turn that check off, since the operator has accepted network access (a Docker published port arrives from the bridge address).
 
 ### Header
 

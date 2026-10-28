@@ -13,13 +13,16 @@ from pathlib import Path
 from typing import Any, Callable
 
 from mcp.server.mcpserver import MCPServer
-from mcp.server.transport_security import TransportSecuritySettings
 
 from graph_memory_mcp import __version__
 from graph_memory_mcp.config import MCPServerConfig
 from graph_memory_mcp.graph_memory.api_keys import validate_token_mode
 from graph_memory_mcp.graph_memory.database import open_store
 from graph_memory_mcp.graph_memory.embedding_service import EmbeddingService
+from graph_memory_mcp.graph_memory.host_allowlist import (
+    build_transport_security,
+    machine_host_names,
+)
 from graph_memory_mcp.graph_memory.owner_scope import (
     LoopbackPeerMiddleware,
     OwnerHeaderMiddleware,
@@ -32,20 +35,6 @@ from graph_memory_mcp.jobs.scheduler import shutdown_scheduler, start_scheduler
 from graph_memory_mcp.resources.policy_generated import COMMON_RULES, TOOL_RULES
 
 logger = logging.getLogger(__name__)
-
-# DNS-rebinding allowlist for the /mcp session. The uvicorn bind address is
-# separate and does not change this list. Host is client-controlled, so this is
-# not access control: LoopbackPeerMiddleware also rejects a loopback Host from a
-# non-loopback peer where /mcp has no credential.
-_TRANSPORT_SECURITY = TransportSecuritySettings(
-    enable_dns_rebinding_protection=True,
-    allowed_hosts=["127.0.0.1:*", "localhost:*", "[::1]:*"],
-    allowed_origins=[
-        "http://127.0.0.1:*",
-        "http://localhost:*",
-        "http://[::1]:*",
-    ],
-)
 
 _AGENT_POLICIES_URI = "graph-memory://agent-policies"
 # Canonical copy lives in repo docs/ (clone + uv). MCP resource is optional;
@@ -213,10 +202,15 @@ class BaseGraphMemoryMCP:
 
     def get_mcp_app(self):
         """Get MCP app with /metrics, /admin/* and optional scheduler support."""
+        own_hosts = machine_host_names()
+        if own_hosts:
+            logger.info(
+                "MCP also accepts Host for this machine: %s", ", ".join(own_hosts)
+            )
         app = self.mcp.streamable_http_app(
             stateless_http=True,
             json_response=True,
-            transport_security=_TRANSPORT_SECURITY,
+            transport_security=build_transport_security(own_hosts),
         )
         if not getattr(app.state, "_owner_scope_wrapped", False):
             if self.server_config.owner_scope == "token":
