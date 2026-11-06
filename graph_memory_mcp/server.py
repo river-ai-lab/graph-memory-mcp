@@ -488,7 +488,7 @@ class GraphMemoryMCP(BaseGraphMemoryMCP):
                 "search_mode: embedding (default, as above), exact (phrase/substring; "
                 "quote phrases to require each), fuzzy (typo-tolerant keywords), "
                 "bm25 (keyword ranking), or hybrid (RRF of hybrid_modes, default "
-                "embedding+bm25). rerank=true reorders top hits with a local cross-encoder."
+                "embedding+bm25). rerank=true reorders top hits with a local cross-encoder (SEARCH_RERANK_STRATEGY: gated default, or replace/rrf/protect)."
             ),
         )
         def search(

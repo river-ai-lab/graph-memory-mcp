@@ -184,6 +184,21 @@ class MCPServerConfig(BaseSettings):
         validation_alias="SEARCH_RERANK_TOP_K",
         description="How many top results the cross-encoder reorders",
     )
+    search_rerank_strategy: str = Field(
+        default="gated",
+        validation_alias="SEARCH_RERANK_STRATEGY",
+        description="When reranking: gated (default) | replace | rrf | protect",
+    )
+    search_rerank_rrf_k: int = Field(
+        default=60,
+        validation_alias="SEARCH_RERANK_RRF_K",
+        description="RRF k for rrf/protect rerank strategies",
+    )
+    search_rerank_gate_margin: float = Field(
+        default=2.0,
+        validation_alias="SEARCH_RERANK_GATE_MARGIN",
+        description="Min CE top-1 vs top-2 logit gap to apply CE order (gated)",
+    )
     # Time-aware recall: score ×= (1-w) + w * 0.5^(age_days/half_life) and
     # ×= (1-w) + w * usage. Weights 0 disable the corresponding factor.
     recall_recency_weight: float = Field(

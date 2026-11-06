@@ -89,5 +89,68 @@ Metrics: MRR of first gold fact, R@5 = share of gold in top 5, rec@1k = share of
 - `hybrid(emb+bm25)` is close to embedding on S1 (equal or better at 10k on FalkorDB) and much better than BM25 on typos; adding fuzzy to the fusion makes typo MRR ~0.97-1.0 for a small S1 cost.
 - `exact` returns nothing for questions (they are not substrings of facts) and is meant for identifiers/quoted phrases; it is perfect on ident.
 - The ident probe is saturated: every mode gets MRR 1.0, so it does not separate modes here.
-- The reranker (ms-marco MiniLM, English) lifts S1 MRR to 1.0/0.988 but **hurts typo queries** (0.64→0.32 as noise grows) and adds ~200-250 ms (FalkorDB) per call; recall@budget and R@5 are unchanged because it only reorders top 30.
+- The reranker with pure CE order (`replace`; what these DB tables measured) lifts S1 MRR to 1.0/0.988 but **hurts typo queries** (0.64→0.32 as noise grows) and adds ~200-250 ms (FalkorDB) per call; recall@budget and R@5 are unchanged because it only reorders top 30.
 - Embedding latency on this box (CPU, e5-base) dominates; lexical scoring itself is <5 ms at 10k, the rest is shared post-processing queries.
+- See **Offline reranker strategies** below for `gated` / `rrf` / `protect` comparisons (no DB). Recommended opt-in strategy is `gated`; production defaults stay embedding + rerank off.
+
+## Offline reranker strategies (no graph DB)
+
+Label: **offline evaluation** — candidate retrieval uses the local embedding
+model and in-memory BM25 over fact texts only (core + 1000 noise + ident
+facts = 1116 passages). Not a FalkorDB/ArcadeDB run; latency is therefore
+not comparable to the tables above (no shared post-processing DB queries).
+
+Script: `rerank_offline.py`. Model: `Xenova/ms-marco-MiniLM-L-6-v2` (~90 MB
+ONNX, English). Cross-encoder reorders top 30. Held-out = odd Scenario 1
+question ids (20); tune/even ids used only for informal checks. Agent =
+8 paraphrases over core facts; ru = 4 Russian probes (`что известно про
+{Name}`) — secondary, English CE not expected to help.
+
+| system | S1 MRR | S1 R@5 | holdout MRR | typo MRR | agent MRR | ru MRR | lat ms |
+|---|---|---|---|---|---|---|---|
+| embedding | 0.988 | 0.767 | 0.975 | 1.0 | 1.0 | 0.296 | 59.2 |
+| embedding+replace | 1.0 | 0.767 | 1.0 | 0.438 | 1.0 | 0.150 | 189.4 |
+| embedding+rrf | 0.988 | 0.767 | 0.975 | 0.753 | 1.0 | 0.299 | 184.6 |
+| embedding+protect | 0.988 | 0.767 | 0.975 | 0.753 | 1.0 | 0.299 | 202.5 |
+| embedding+gated | 1.0 | 0.767 | 1.0 | 1.0 | 1.0 | 0.296 | 184.5 |
+| hybrid(emb+bm25) | 0.983 | 0.767 | 0.967 | 0.906 | 1.0 | 0.352 | 76.1 |
+| hybrid+replace | 1.0 | 0.767 | 1.0 | 0.453 | 1.0 | 0.161 | 233.7 |
+| hybrid+rrf | 0.988 | 0.767 | 0.975 | 0.728 | 1.0 | 0.335 | 233.6 |
+| hybrid+protect | 0.988 | 0.767 | 0.975 | 0.728 | 1.0 | 0.335 | 232.6 |
+| hybrid+gated | 1.0 | 0.767 | 1.0 | 0.906 | 1.0 | 0.352 | 199.4 |
+
+### Strategy reading
+
+- **Primary criterion** = ordinary / agent-generated queries (S1 + holdout +
+  agent). Typos are secondary.
+- `replace` (pure CE) lifts S1/holdout MRR to 1.0 but collapses typo MRR
+  (~0.44), matching the earlier DB finding.
+- `rrf` / `protect` soften the typo hit but do **not** improve S1 over the
+  first-stage baseline on this set.
+- `gated` (default when reranking): apply CE order only when top-1 vs top-2
+  CE logits differ by ≥ `SEARCH_RERANK_GATE_MARGIN` (2.0); else keep the
+  first-stage order. On embedding candidates it matches `replace` on S1
+  (1.0) while keeping typo MRR 1.0. On hybrid candidates S1 reaches 1.0 and
+  typo stays at the hybrid baseline (0.906).
+- R@5 is unchanged for all strategies (reorder within top 30).
+- Russian probes stay weak (~0.3): the CE is English MS MARCO. Practical
+  multilingual CE ONNX weights (bge-reranker-base / v2-m3) are hundreds of
+  MB to >1 GB and were **not** downloaded. Prefer the multilingual e5
+  embedding first-stage for RU/EN; gated does not make RU worse than the
+  baseline.
+- Margin 2.0 was selected on this corpus (also checked on first/second half
+  S1 splits and weighted-RRF/blend sweeps). Treat as a starting point, not
+  a guarantee on other workloads.
+- **Defaults unchanged for production path:** `SEARCH_MODE=embedding`,
+  `SEARCH_RERANKER=false`. When opting into rerank, `SEARCH_RERANK_STRATEGY`
+  defaults to `gated`. Confirm on a live store when Docker is available;
+  previous DB tables used pure CE (`replace` behaviour).
+
+### Model / size tradeoffs
+
+| option | size | notes |
+|---|---|---|
+| Xenova/ms-marco-MiniLM-L-6-v2 (kept) | ~90 MB fp32 ONNX | English; used above |
+| Xenova/ms-marco-MiniLM-L-12-v2 | ~134 MB | not measured; larger latency |
+| Xenova/bge-reranker-base | ~1.1 GB fp32 | skipped (too large) |
+| onnx-community/bge-reranker-v2-m3 | ~0.6–1.1 GB quantized/fp | skipped (too large) |

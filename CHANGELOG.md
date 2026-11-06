@@ -2,6 +2,10 @@
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+- Search: optional ONNX cross-encoder rerank strategies (`gated` default when enabled, also `replace` / `rrf` / `protect`). Reranker remains off by default; `SEARCH_MODE` default stays `embedding`. See `tests/benchmarks/search_modes/REPORT.md`.
+
 ## [0.2.2] - 2026-10-28
 
 - Security: where `/mcp` has no credential (`client`, `header` without `ADMIN_TOKEN`), a loopback `Host` from a non-loopback peer gets HTTP 421 instead of passing the Host allowlist.

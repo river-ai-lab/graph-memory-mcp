@@ -1,7 +1,7 @@
 """
 Pytest configuration.
 
-FalkorDB is required except for tests marked ``arcade`` (those need ArcadeDB).
+FalkorDB is required except for tests marked ``arcade`` (ArcadeDB) or ``nodb`` (pure unit).
 ``memory_backend`` runs a test once on each store.
 """
 
@@ -38,6 +38,8 @@ _falkor_up: bool | None = None
 def require_falkordb(request: pytest.FixtureRequest) -> None:
     """FalkorDB is required for tests that are not marked arcade."""
     if request.node.get_closest_marker("arcade"):
+        return
+    if request.node.get_closest_marker("nodb"):
         return
     global _falkor_up
     if _falkor_up is None:

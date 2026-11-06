@@ -2,7 +2,8 @@
 """Search-mode benchmark on Scenario 1 data (no chat LLM).
 
 Compares search_mode = embedding | exact | fuzzy | bm25 | hybrid, with and
-without the cross-encoder reranker, on the Scenario 1 structural questions
+with optional cross-encoder strategies (see SEARCH_RERANK_STRATEGY / rerank_offline.py),
+on the Scenario 1 structural questions
 plus two probe sets added here:
 
 * typo: core facts queried with misspelled names (one transposition per name);

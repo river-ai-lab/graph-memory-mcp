@@ -43,18 +43,21 @@ def _ids(hits):
     return [row[0] for row, _ in hits]
 
 
+@pytest.mark.nodb
 def test_bm25_ranks_keyword_match_first():
     idx = LexicalIndex.build(ROWS)
     assert _ids(idx.search("billing postgresql", "bm25", 10))[0] == "b"
     assert idx.search("nothing matches here", "bm25", 10) == []
 
 
+@pytest.mark.nodb
 def test_fuzzy_tolerates_typos_bm25_does_not():
     idx = LexicalIndex.build(ROWS)
     assert idx.search("kubernetis autoscaller", "bm25", 10) == []
     assert _ids(idx.search("kubernetis autoscaller", "fuzzy", 10))[0] == "c"
 
 
+@pytest.mark.nodb
 def test_exact_requires_phrase():
     idx = LexicalIndex.build(ROWS)
     assert _ids(idx.search("dark roast", "exact", 10)) == ["d"]
@@ -62,6 +65,7 @@ def test_exact_requires_phrase():
     assert _ids(idx.search('"gpu-7" "deploy job"', "exact", 10)) == ["a"]
 
 
+@pytest.mark.nodb
 def test_mode_parsing_and_rrf():
     assert normalize_search_mode(None) == "embedding"
     assert normalize_search_mode("vector") == "embedding"
@@ -128,6 +132,7 @@ def test_search_modes_on_store(memory_backend):
         db.delete_owner_graph(owner)
 
 
+@pytest.mark.nodb
 def test_reranker_orders_relevant_first():
     """Cross-encoder puts the on-topic text first (skips if the model is unavailable)."""
     from graph_memory_mcp.graph_memory import reranker
@@ -141,7 +146,82 @@ def test_reranker_orders_relevant_first():
         {"node_id": "b", "text": "Postgres was upgraded to version 16 in March."},
     ]
     out = reranker.rerank(
-        "which postgres version do we run", results, model_name=None, top_k=10
+        "which postgres version do we run",
+        results,
+        model_name=None,
+        top_k=10,
+        strategy="replace",
     )
     assert out[0]["node_id"] == "b"
     assert "rerank_score" in out[0]
+
+
+@pytest.mark.nodb
+def test_rerank_strategies_without_model():
+    """RRF/protect fuse first-stage order with CE scores; no ONNX load."""
+    from graph_memory_mcp.graph_memory.reranker import (
+        apply_strategy,
+        normalize_rerank_strategy,
+        rerank,
+    )
+
+    assert normalize_rerank_strategy(None) == "gated"
+    assert normalize_rerank_strategy("replace") == "replace"
+    with pytest.raises(ValueError):
+        normalize_rerank_strategy("magic")
+
+    # First-stage order prefers a; CE prefers b.
+    head = [
+        {"node_id": "a", "text": "Ticket OPS-48200 was closed after a cache fix."},
+        {"node_id": "b", "text": "The cafeteria serves lunch at noon."},
+        {"node_id": "c", "text": "Unrelated note about weather."},
+    ]
+    # CE wants b first, then c, then a (would demote the ticket).
+    scores = [-5.0, 9.0, 1.0]
+    replaced = apply_strategy("OPS-48200 cache", head, scores, strategy="replace")
+    assert [r["node_id"] for r in replaced] == ["b", "c", "a"]
+
+    # Clear CE margin (>= 2.0): gated follows CE.
+    gated_clear = apply_strategy(
+        "OPS-48200 cache", head, scores, strategy="gated", gate_margin=2.0
+    )
+    assert [r["node_id"] for r in gated_clear] == ["b", "c", "a"]
+    assert gated_clear[0]["rerank_gated"] is True
+
+    # Flat CE scores: gated keeps first-stage order.
+    flat = [0.1, 0.2, 0.15]
+    gated_flat = apply_strategy(
+        "OPS-48200 cache", head, flat, strategy="gated", gate_margin=2.0
+    )
+    assert [r["node_id"] for r in gated_flat] == ["a", "b", "c"]
+    assert gated_flat[0]["rerank_gated"] is False
+
+    rrfd = apply_strategy("OPS-48200 cache", head, scores, strategy="rrf")
+    # a keeps first-stage credit so it should not fall to last.
+    assert rrfd[0]["node_id"] in ("a", "b")
+    assert "rerank_fuse" in rrfd[0]
+
+    protected = apply_strategy("OPS-48200 cache", head, scores, strategy="protect")
+    assert protected[0]["node_id"] == "a"
+
+    # Public API accepts injected scores (unit-test path).
+    out = rerank(
+        "OPS-48200 cache",
+        head,
+        model_name=None,
+        top_k=10,
+        strategy="protect",
+        scores=scores,
+    )
+    assert out[0]["node_id"] == "a"
+    assert out[0]["rerank_score"] == -5.0
+
+
+@pytest.mark.nodb
+def test_rerank_strategy_config_default():
+    from graph_memory_mcp.config import MCPServerConfig
+
+    cfg = MCPServerConfig()
+    assert cfg.search_reranker_enabled is False
+    assert cfg.search_rerank_strategy == "gated"
+    assert cfg.default_search_mode == "embedding"

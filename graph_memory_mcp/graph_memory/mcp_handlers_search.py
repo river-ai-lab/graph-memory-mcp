@@ -20,6 +20,7 @@ from graph_memory_mcp.graph_memory.owner_scoped_search import (
     build_metadata_filter_clauses,
     normalize_search_type,
 )
+from graph_memory_mcp.graph_memory.reranker import normalize_rerank_strategy
 from graph_memory_mcp.graph_memory.search_rank import rerank_results
 from graph_memory_mcp.graph_memory.utils import (
     ensure_text,
@@ -346,6 +347,7 @@ def search(
     search_mode: Optional[str] = None,
     hybrid_modes: Optional[List[str]] = None,
     rerank: Optional[bool] = None,
+    rerank_strategy: Optional[str] = None,
 ) -> Dict:
     """Search nodes. search_mode: embedding (default) | exact | fuzzy | bm25 | hybrid."""
     owner_id = normalize_owner_id(owner_id)
@@ -359,6 +361,15 @@ def search(
         fused_modes = normalize_hybrid_modes(hybrid_modes) if mode == "hybrid" else ()
         use_reranker = (
             config.search_reranker_enabled if rerank is None else bool(rerank)
+        )
+        resolved_strategy = (
+            normalize_rerank_strategy(
+                rerank_strategy
+                if rerank_strategy is not None
+                else config.search_rerank_strategy
+            )
+            if use_reranker
+            else None
         )
         # Validate filter keys early (raises ValueError → validation error).
         build_metadata_filter_clauses(metadata_filter)
@@ -379,6 +390,9 @@ def search(
         search_mode=mode,
         hybrid_modes=list(fused_modes),
         rerank=use_reranker,
+        rerank_strategy=resolved_strategy,
+        rerank_rrf_k=config.search_rerank_rrf_k if use_reranker else None,
+        rerank_gate_margin=(config.search_rerank_gate_margin if use_reranker else None),
     )
 
     def _decorate(payload: Dict) -> Dict:
@@ -467,6 +481,9 @@ def search(
             results,
             model_name=config.search_reranker_model,
             top_k=max(limit, config.search_rerank_top_k),
+            strategy=resolved_strategy,
+            rrf_k=config.search_rerank_rrf_k,
+            gate_margin=config.search_rerank_gate_margin,
         )
     results = results[:limit]
 
