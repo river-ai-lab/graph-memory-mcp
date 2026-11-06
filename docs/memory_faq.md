@@ -53,6 +53,16 @@ Each `owner_id` is its own ArcadeDB database, or its own FalkorDB graph when `GR
 
 `active` (default search, and only facts with no TTL) · `outdated` (soft-delete Fact) · `archived` (TTL expiry or stale job). `include_ttl=true` adds still-living temporary facts. `include_outdated` / `status` show non-active.
 
+## History / “what changed?”
+
+Default reads return current durable facts. There is no `what_changed(since=…)` tool yet. Ask for history explicitly:
+
+- `include_outdated=true` on `search` / `get_context` / `recall_context` — include superseded facts
+- `get_trace` (and `FOLLOWS_FROM` edges the agent wrote) — replacement path between two known ids
+- `get_node_change_history(node_id)` / `get_node(node_id, as_of=…)` — per-node snapshots when writes used `versioning=true` (or `VERSIONING_DEFAULT`)
+
+`search(as_of=…)` is not implemented. Completeness still depends on what agents wrote and whether they marked outdated / linked replacements.
+
 ## Agent vs Explorer
 
 Agents → MCP tools. Explorer → human read-only GUI over MCP. The page starts with **Open a memory** (a memory name and **Load**), then **Ask a question**. **More tools** covers open by ID, a path, similar wording, and how far to look. The toolbar is Fit, Arrange, Physics, zoom, text preview, Names, and Details. The legend shows facts, entities, outdated items, contradicts, follows-from, and related. Details lead with the text, status, and validity; timestamps, the id, and raw fields are under **More about this item**. An empty name shows "Enter a memory name, then click Load." and does not open `default`. Against `graph-memory-mcp --auth`, start Explorer with `--auth` and `GRAPH_MEMORY_API_KEY` (or `--token`). The memory name shows the key's first project and cannot be edited. Map labels default to **On hover**; **Always** is one short line and hides when the map is zoomed out. The choice is `localStorage` key `gm_node_preview`.

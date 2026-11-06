@@ -7,9 +7,9 @@
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
 </p>
 
-**Graph memory for teams and their agents that doesn't turn into a dump.**
+**Agent-friendly memory tools. Memory that outlives a chat session and is not tied to one model.**
 
-Self-hosted MCP server for agent developers, teams running agents, and heavy agent users. Agents decide what facts to write; the server keeps memory orderly—deduplicates on insert, marks outdated facts, surfaces contradictions, and enforces physical per-owner isolation. Your data stays with you. No LLM calls on the server, no external APIs. Embeddings computed locally.
+Self-hosted MCP server for agent developers, teams running agents, and heavy agent users. You get tools shaped for agent work—warm up, search, write a fact, supersede a decision, walk connections—not a database admin surface. Agents decide what to write; the server keeps memory orderly (dedup on insert, outdated facts, contradictions the agent marked, physical per-owner isolation). Your data stays with you. No LLM calls on the server. Embeddings run locally.
 
 <!-- Demo GIF: assets/demo/demo.gif (readme scenario). Seed first: assets/demo/seed.py -->
 
@@ -17,16 +17,112 @@ Self-hosted MCP server for agent developers, teams running agents, and heavy age
   <img src="assets/demo/demo.gif" alt="Search the release deadline, see both dates and the CONTRADICTS edge the agent marked, then the snapshot of the superseded beta" width="100%">
 </p>
 
-The GIF is a recording of the demo script running against a real server. Run it yourself with `uv run graph-memory-mcp --host 127.0.0.1 --port 8000`, then `uv run python assets/demo/seed.py` and `uv run python assets/demo/generate_demo.py --scenario readme`, and read [assets/demo/seed.py](assets/demo/seed.py) and [assets/demo/generate_demo.py](assets/demo/generate_demo.py) to see exactly what happens.
+The GIF above is a live recording of the `readme` scenario (seeded owner, then search / include_outdated / `get_node_change_history`). The write-cycle workflow below is the same tools; run it with `uv run python assets/demo/generate_demo.py --scenario sparse`. Other recordings: [docs/demos.md](docs/demos.md).
 
-Other recordings: [docs/demos.md](docs/demos.md).
+```bash
+uv run graph-memory-mcp --host 127.0.0.1 --port 8000
+uv run python assets/demo/seed.py
+uv run python assets/demo/generate_demo.py --scenario readme
+# full record → recall → replace → hide outdated → history:
+uv run python assets/demo/generate_demo.py --scenario sparse
+```
 
 ## Why Graph Memory MCP
 
-- **Traversable graph**: Agents read edges (`get_context`, `get_trace`) to walk connections between facts—decisions link to affected services, new facts `FOLLOWS_FROM` old ones
-- **Explicit outdating**: `mark_outdated` hides superseded facts; `CONTRADICTS` edges surface conflicts in `contradiction_pairs`; versioning tracks changes over time
-- **Write-time deduplication**: Near-duplicates refused at insert using embeddings only (threshold 0.92), no LLM call, deterministic
-- **Physical isolation**: Each `owner_id` gets its own FalkorDB graph or ArcadeDB database—no query-time filtering risks
+- **Tools for agent tasks**: `get_brief` to warm up, `search` / `recall_context` to recall, `create_node` to record, `mark_outdated` to supersede, `get_context` / `get_trace` to walk links—named for what the agent is doing
+- **Memory independent of the chat**: facts live on the server under an `owner_id`, so a later session, another client, or another model can recall what an earlier agent wrote
+- **Current facts win**: `mark_outdated` hides superseded facts from default search; history is available when the agent asks for it
+- **Write-time hygiene without a server LLM**: near-duplicates refused at insert (embeddings, threshold 0.92); physical isolation per `owner_id` (FalkorDB graph or ArcadeDB database)
+
+Completeness depends on agent discipline: the server does not extract facts from chat logs. What was never written cannot be recalled.
+
+## The workflow
+
+Same tools, one owner. Steps 2+ are what a later session (or another agent) does.
+
+### 1. Record a decision
+
+```python
+create_node(
+    text="API gateway uses Component X for routing.",
+    metadata={"project": "api", "created_by": "alice"},
+    owner_id="team_backend",
+)
+# → {"node": {"node_id": "a1b2c3...", "text": "...", "status": "active"}}
+
+create_relation(
+    from_id="a1b2c3...",
+    to_id="d4e5f6...",  # API Gateway Service
+    relation_type="RELATED_TO",
+    owner_id="team_backend",
+)
+```
+
+### 2. Recall in another session
+
+```python
+get_brief(owner_id="team_backend")
+search(query="API gateway component", owner_id="team_backend", compact=True)
+# → current decision (Component X), while it is still active
+```
+
+### 3. Replace the decision
+
+```python
+new = create_node(
+    text="API gateway migrated to Component Y (Oct 2026).",
+    metadata={"project": "api", "created_by": "bob"},
+    owner_id="team_backend",
+)
+new_id = new["node"]["node_id"]
+
+mark_outdated(
+    fact_id="a1b2c3...",
+    reason="Migrated to Component Y",
+    owner_id="team_backend",
+)
+create_relation(
+    from_id=new_id,
+    to_id="a1b2c3...",
+    relation_type="FOLLOWS_FROM",
+    owner_id="team_backend",
+)
+```
+
+### 4. Default search hides the old fact
+
+```python
+search(query="API gateway component", owner_id="team_backend")
+# → Component Y only. Component X is omitted unless include_outdated=true
+```
+
+### 5. History when asked
+
+There is no single `what_changed(since=…)` tool yet. Ask for history explicitly with the tools that exist:
+
+| Need | Call |
+|------|------|
+| Include superseded facts in search / context | `include_outdated=true` on `search`, `get_context`, or `recall_context` |
+| Path from the new decision to the old one | `get_trace(from_id=new_id, to_id=old_id)` (often via `FOLLOWS_FROM`) |
+| Snapshots of one node over time | `get_node_change_history(node_id)` and `get_node(node_id, as_of=…)` when writes used `versioning=true` (or `VERSIONING_DEFAULT`) |
+
+`search(as_of=…)` is not implemented; see [Limitations](#limitations) and [roadmap](docs/roadmap.md).
+
+**Contradictions** are agent-marked: create a `CONTRADICTS` edge; `search` returns those hits in `contradiction_pairs`. The server does not infer contradictions.
+
+**Relation allowlist** (default 13, see [`relation_policy.py`](graph_memory_mcp/graph_memory/relation_policy.py)): `RELATED_TO`, `MENTIONS`, `SUMMARIZES`, `FOLLOWS_FROM`, `CONTRADICTS`, `EXTRACTED_FROM`, `SIMILAR_TO`, `NEXT_STEP`, `EXPOSES`, `CROSS_REF`, `RUNS_ON`, `USES`, `SERVED_BY`. Default mode: warn on unlisted types. `auto_link` writes `MENTIONS`.
+
+## How agents should use this
+
+- **Start every session** with `get_brief(owner_id)` → `search(query, compact=true)` for the task
+- **Write one declarative fact per node**; no chat logs, no scratchpad, no secrets
+- **Search before creating**; if `memory_duplicate` or `possible_duplicates` returned, do not write a third paraphrase
+- **Fact became wrong** → `mark_outdated(fact_id, reason, owner_id=…)` + `create_node(new_text)`, not a silent overwrite
+- **After meaningful work** (GROW): Ground what changed → Record it → Orient (tags/relations) → Write with `metadata.project` and `created_by`
+- **Temporary notes** get `ttl_days` (14–30); durable decisions have no TTL
+- **Link facts** with `create_relation` using the allowlist above
+
+**Full policies**: [`docs/memory_policies_for_LLM.md`](docs/memory_policies_for_LLM.md) · [`docs/memory_policy_cheatsheet.md`](docs/memory_policy_cheatsheet.md) · operator constants in [`docs/AGENTS_example.md`](docs/AGENTS_example.md).
 
 ## Quickstart
 
@@ -39,152 +135,38 @@ claude mcp add --transport http graph-memory-mcp http://127.0.0.1:8000/mcp
 
 See [full setup instructions](#setup) for Cursor and Claude Desktop.
 
-**Learn more**: [Comparison with other systems](docs/comparison.md) · [FAQ](docs/memory_faq.md) · [Limitations](#limitations) · [Agent policy cheatsheet](docs/memory_policy_cheatsheet.md)
-
----
-
-## How it works
-
-Agent memory becomes noise over time: duplicate facts accumulate, contradictions are served as current truth, stale decisions look fresh, and context grows until retrieval becomes a dump. Every session starts from scratch, and teams end up with unstructured notes nobody trusts.
-
-**Design principle**: The agent using the memory already knows what to write and how to structure it. The server does not run its own LLM to extract or rewrite facts; it enforces memory hygiene (dedup on write, outdated facts, contradictions, versions, isolation, token budget). Benefits: predictable, cheap, no hidden model calls, no double extraction.
-
-## Before / After: Why a graph
-
-A graph lets agents traverse connections, supersede decisions, and surface contradictions.
-
-### Before: Decision made
-
-```python
-# Alice decides to use Component X for the API gateway
-create_node(
-    text="API gateway uses Component X for routing.",
-    metadata={"project": "api", "created_by": "alice"},
-    owner_id="team_backend",
-)
-# → {"node": {"node_id": "a1b2c3...", "text": "API gateway uses Component X for routing.", "status": "active"}}
-
-# Link decision to affected service
-create_relation(
-    from_id="a1b2c3...",
-    to_id="d4e5f6...",  # Service node for API gateway
-    relation_type="RELATED_TO",  # Or USES: service USES this decision
-    owner_id="team_backend",
-)
-```
-
-### Traverse connections
-
-```python
-# Get context: what decisions affect the API gateway?
-get_context(node_id="d4e5f6...", owner_id="team_backend", depth=1)
-# → Returns: API gateway node + connected decision + relation path
-
-# Or: recall with context expansion
-recall_context(
-    query="API gateway decisions", owner_id="team_backend", depth=1, compact=True
-)
-# → Returns snippets + paths showing decision→service links
-```
-
-### After: Decision superseded
-
-```python
-# Bob changes to Component Y
-new_decision = create_node(
-    text="API gateway migrated to Component Y (Oct 2026).",
-    metadata={"project": "api", "created_by": "bob"},
-    owner_id="team_backend",
-)
-new_id = new_decision["node"]["node_id"]  # Extract node_id from response
-
-# Mark old decision outdated
-mark_outdated(
-    fact_id="a1b2c3...", reason="Migrated to Component Y", owner_id="team_backend"
-)
-
-# Link new → old (new follows from the context of replacing old)
-create_relation(
-    from_id=new_id,
-    to_id="a1b2c3...",
-    relation_type="FOLLOWS_FROM",  # New decision follows from old context
-    owner_id="team_backend",
-)
-```
-
-**Result**: `search("API gateway", owner_id="team_backend")` now returns Component Y decision. Old decision excluded by default; `include_outdated=true` retrieves history. The FOLLOWS_FROM edge preserves the replacement context.
-
-**Note**: Custom relation types (e.g., `DEPENDS_ON`, `IMPLEMENTS`) can be added via `RELATION_ALLOWED_TYPES` in `.env`. Default allowlist (13, see [`relation_policy.py`](graph_memory_mcp/graph_memory/relation_policy.py)): `RELATED_TO`, `MENTIONS`, `SUMMARIZES`, `FOLLOWS_FROM`, `CONTRADICTS`, `EXTRACTED_FROM`, `SIMILAR_TO`, `NEXT_STEP`, `EXPOSES`, `CROSS_REF`, `RUNS_ON`, `USES`, `SERVED_BY`. Default mode: warn on unlisted types. `auto_link` writes `MENTIONS` (`AUTO_LINK_RELATION`), not a type named `AUTO_LINK`.
-
-### Contradictions surfaced
-
-```python
-# Two conflicting facts stored
-create_node(text="API rate limit is 1000 req/min.", ...)  # id: x1
-create_node(text="API rate limit is 500 req/min.", ...)   # id: x2
-
-create_relation(from_id="x1", to_id="x2", relation_type="CONTRADICTS", ...)
-
-# Search returns both + flags the conflict
-search(query="API rate limit", owner_id="team_backend")
-# → {
-#     "results": [...],
-#     "contradiction_pairs": [
-#         {"from_id": "x1", "to_id": "x2", "relation_type": "CONTRADICTS"}
-#     ]
-# }
-```
-
-## How agents should use this
-
-- **Start every session** with `get_brief(owner_id)` (project anchor, recent facts, contradictions, stale count) → `search(query, compact=true)` for the task
-- **Write one declarative fact per node**; no chat logs, no scratchpad, no secrets
-- **Search before creating**; if `memory_duplicate` or `possible_duplicates` returned, do not write a third paraphrase
-- **Fact became wrong** → `mark_outdated(fact_id, reason, owner_id="team_backend")` + `create_node(new_text)`, not `update_node`
-- **After meaningful work** (GROW): Ground what changed → Record it → Orient (if recurring, add tags/relations) → Write with `metadata.project` and `created_by`
-- **Temporary notes** get `ttl_days` (14-30); durable decisions have no TTL
-- **Link facts** with `create_relation` using the default allowlist: `RELATED_TO`, `MENTIONS`, `SUMMARIZES`, `FOLLOWS_FROM`, `CONTRADICTS`, `EXTRACTED_FROM`, `SIMILAR_TO`, `NEXT_STEP`, `EXPOSES`, `CROSS_REF`, `RUNS_ON`, `USES`, `SERVED_BY` (see [`relation_policy.py`](graph_memory_mcp/graph_memory/relation_policy.py); default mode: warn). `auto_link` writes `MENTIONS`
-
-**Full policies**: Load [`docs/memory_policies_for_LLM.md`](docs/memory_policies_for_LLM.md) or [`docs/memory_policy_cheatsheet.md`](docs/memory_policy_cheatsheet.md) in your agent's rules or context at session start. Put these operator constants in your own AGENTS.md ([`docs/AGENTS_example.md`](docs/AGENTS_example.md)).
+**Learn more**: [Comparison](docs/comparison.md) · [FAQ](docs/memory_faq.md) · [Limitations](#limitations) · [Agent policy cheatsheet](docs/memory_policy_cheatsheet.md)
 
 ## Use cases
 
 ### Team architecture decisions
 
-**Before**: Architecture decisions live in Slack threads, meeting notes, and stale wiki pages. Finding "why did we choose Component X?" requires asking the team or searching multiple tools.
-
-**With Graph Memory MCP**: When Alice documents "API gateway uses Component X" in Claude Desktop, the decision is stored with `create_node`. Three months later, Bob migrates to Component Y and marks the old fact outdated with `mark_outdated`, linking the new decision `FOLLOWS_FROM` the old. Any agent querying "what gateway component do we use?" gets only the current fact. `get_trace` walks back through the graph to show the full decision history.
+Alice stores “API gateway uses Component X.” Later Bob migrates to Component Y, calls `mark_outdated`, and links the new fact `FOLLOWS_FROM` the old. Any agent on that `owner_id` gets only the current fact by default. `include_outdated` or `get_trace` recovers the replacement story.
 
 ### Coding agent across sessions
 
-**Before**: Cursor or Claude Code agents rediscover the same information session after session—re-reading config files, re-asking "what port does staging use?"—because memory resets with each new chat.
-
-**With Graph Memory MCP**: When the agent finds "staging database uses port 5433" in `config/staging.yaml`, it writes back with `create_node(text="The staging database uses port 5433.", metadata={"source": "config/staging.yaml"})` (the write-back rule in the [cheatsheet](docs/memory_policy_cheatsheet.md)). Next session, `search("staging database port")` retrieves it. No file re-reads, no extraction cost.
+The agent finds “staging database uses port 5433” and writes it with `create_node`. Next session (new chat, same owner) `search("staging database port")` retrieves it—memory is not the chat transcript.
 
 ### Multiple agents sharing memory
 
-**Before**: Three agents each encounter "retry policy: 3 retries" at different times, storing near-duplicate facts. Later, one agent finds "retry policy: 5 retries"—now two contradictory decisions coexist with no signal that they conflict.
-
-**With Graph Memory MCP**: Write-time deduplication (embeddings, threshold 0.92) refuses the second and third paraphrase of "retry policy: 3 retries." When an agent writes "retry policy: 5 retries," it explicitly creates a `CONTRADICTS` edge. Any agent searching "retry policy" sees `contradiction_pairs` in results and can surface the conflict to the team.
+Write-time deduplication refuses near-paraphrases of the same fact. When two real decisions conflict, the agent creates a `CONTRADICTS` edge; search surfaces `contradiction_pairs`.
 
 ### Separate clients and projects
 
-**Before**: All memory is mixed in one index or database, requiring query-time filters (`user_id`, `project_id`) that risk leaks if filters are forgotten or misconfigured.
-
-**With Graph Memory MCP**: Claude Desktop connects with `owner_id=team_backend`, Cursor with `owner_id=team_frontend`. Each owner gets a physically separate FalkorDB graph or ArcadeDB database—no shared tables, no query-time filtering. Self-hosted, so data stays on your infrastructure.
+Each `owner_id` is a separate FalkorDB graph or ArcadeDB database—no shared tables, no query-time owner filter. Self-hosted: data stays on your infrastructure.
 
 ## When something else fits better
 
-See [docs/comparison.md](docs/comparison.md) for detailed comparisons with Mem0, Graphiti, Zep, Letta, Cognee, and other memory systems.
+See [docs/comparison.md](docs/comparison.md) for Mem0, Graphiti, Zep, Letta, Cognee, and others.
 
 ## Limitations
 
-- **No fact extraction on the server**: The agent decides what to write; raw chat logs are not auto-summarized (by design).
-- **`search` has no `as_of` parameter yet**: Only `get_node` supports temporal queries; `search(as_of)` is planned in the roadmap.
+- **No fact extraction on the server**: The agent decides what to write; raw chat logs are not auto-summarized (by design). Recall is only as complete as what agents wrote.
+- **No `what_changed(since=…)` tool yet**: History is `include_outdated`, `get_trace` / `FOLLOWS_FROM`, and per-node versioning (`get_node_change_history`, `get_node(as_of)`). `search(as_of)` is planned in the roadmap.
 - **Requires a running graph database**: ArcadeDB (default) or FalkorDB via Docker.
 - **First model download is large**: the default fp32 ONNX weights for `intfloat/multilingual-e5-base` are about 1.1 GB. Quantized weights are not used. `EMBEDDING_BACKEND=torch` needs `uv sync --extra torch`.
 - **Deduplication is similarity-based**: Near-duplicates are refused at insert using embeddings (threshold 0.92); may miss paraphrases below threshold or block distinct-but-similar facts.
-- **Contradictions are not auto-detected**: The agent must create `CONTRADICTS` edges explicitly; they are surfaced in search results but not inferred semantically by the server.
+- **Contradictions are not auto-detected**: The agent must create `CONTRADICTS` edges explicitly; they are surfaced in search results but not inferred by the server.
 - **Owner access is `OWNER_SCOPE`**: `client` (default) uses the tool argument `owner_id`. `header` ignores it and reads `X-Owner-Id` (loopback bind; the gateway sends `Authorization: Bearer $ADMIN_TOKEN` when that token is set). `token` requires a Bearer API key; `owner_id` must be one of the key's projects, and an empty value uses the first project. There is no multi-tenant admin UI.
 
 
@@ -273,18 +255,19 @@ uv run python examples/http_client_usage.py
 
 With `mcp>=2.3` the Python client is `mcp.client.streamable_http.streamable_http_client` (the old `streamablehttp_client` name is gone). Pass headers such as `Authorization` through an `httpx.AsyncClient`: `streamable_http_client(url, http_client=httpx.AsyncClient(headers=...))`.
 
-## Features
+## Agent tools (by task)
 
-- **`create_node`** / **`upsert_node`** with deduplication (embeddings-based refusal at threshold 0.92, no LLM call)
-- **`search`** with hybrid ranking (cosine + identifier match + recency), `compact=true` for token-budgeted snippets
-- **`get_brief`** for task warmup (project anchor, recent durable facts, open contradictions, stale count)
-- **`mark_outdated`** / **`CONTRADICTS`** edges / **fact versioning** with optional snapshots
-- **`get_context`** (subgraph walk from a node) / **`get_trace`** (paths between two nodes) / **`recall_context`** (search + expand in one call)
-- **Entity and triplet graph** (`create_triplet`, `search_triplets`)
-- **TTL facts** that stay out of default search until `include_ttl=true`
-- **Auto-linking** (opt-in `auto_link=true` adds `MENTIONS` to similar Entity nodes)
-- **Background jobs** (deduplication, archival) when `JOBS_ENABLED=true`
-- **Backed by ArcadeDB** (default) or **FalkorDB** (set `GRAPH_BACKEND=falkordb`). Same MCP tools, same behavior.
+| Task | Tools |
+|------|--------|
+| Warm up / project state | `get_brief` |
+| Recall for the task | `search` (`compact=true`), `recall_context` |
+| Record a fact | `create_node` / `upsert_node` (near-duplicates refused at 0.92) |
+| Supersede a fact | `mark_outdated` + `create_node`; optional `FOLLOWS_FROM` |
+| Walk connections | `get_context`, `get_trace` |
+| History on request | `include_outdated=true`; `get_node_change_history` / `get_node(as_of)` when versioning was used |
+| Mark a conflict | `create_relation(..., CONTRADICTS)` → `contradiction_pairs` on search |
+
+Also: entity/triplet helpers (`create_triplet`, `search_triplets`), TTL facts (hidden until `include_ttl=true`), opt-in `auto_link`, background jobs when `JOBS_ENABLED=true`. ArcadeDB (default) or FalkorDB (`GRAPH_BACKEND=falkordb`) — same tools.
 
 ## Documentation
 
@@ -519,7 +502,7 @@ uv run pre-commit install   # optional git hooks
 
 These features are tested and in active use:
 
-- Core memory operations (`create_node`, `search`, `mark_outdated`, relations, `get_context`, `get_brief`)
+- Core agent workflow (`create_node`, `search`, `mark_outdated`, relations, `get_context`, `get_brief`; history via `include_outdated` / versioning tools)
 - Physical per-owner isolation (ArcadeDB databases, FalkorDB graphs)
 - Write-time deduplication (embeddings, threshold 0.92)
 - Vector search with hybrid ranking (cosine + identifier match + recency)

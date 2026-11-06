@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Seed the README demo owner with real MCP tool calls.
 
+This seed is the write half of the short README GIF. For the full
+record → recall → replace → history narrative, run ``generate_demo.py
+--scenario sparse`` instead.
+
 The script talks to a running server at ``GRAPH_MEMORY_URL`` (default
 ``http://127.0.0.1:8000/mcp``). It deletes owner ``readme_demo`` first, then
 writes facts only through ``create_node``, ``update_node``, and

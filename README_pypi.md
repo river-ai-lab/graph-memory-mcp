@@ -1,6 +1,6 @@
 # Graph Memory MCP
 
-Self-hosted MCP server for graph-based long-term memory (FalkorDB or ArcadeDB). Agents decide what to write. The server deduplicates on insert, marks outdated facts, surfaces contradictions, and gives each `owner_id` its own graph or database. Embeddings run locally. The server makes no LLM calls.
+Self-hosted MCP server with agent-friendly memory tools (FalkorDB or ArcadeDB). Memory outlives a chat session and is not tied to one model. Agents decide what to write; the server deduplicates on insert, hides outdated facts from default search, surfaces agent-marked contradictions, and gives each `owner_id` its own graph or database. Embeddings run locally. The server makes no LLM calls.
 
 ## Install
 

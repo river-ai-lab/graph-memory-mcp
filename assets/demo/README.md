@@ -2,6 +2,8 @@
 
 These GIFs are recorded from a real MCP client session against a live Graph Memory MCP server. Each one starts at a shell prompt, types `uv run python assets/demo/generate_demo.py --scenario <name>`, and runs that command. The client connects to `http://127.0.0.1:8000/mcp`, prints the server name and version from `initialize`, prints the tool count from `list_tools`, then shows every tool call as `→ name {arguments}` and a trimmed excerpt of the JSON response as `← {...}`. Arguments omit `owner_id`. Ids in the excerpt are prefixes of the ids the server returned. Similarity scores are the live scores, rounded to three decimals.
 
+The `sparse` scenario is the full record → recall → replace → hide outdated → history workflow. The README GIF (`demo.gif`) remains the shorter `readme` take until re-recorded.
+
 The server process is already listening. The GIF notes `uv run graph-memory-mcp --host 127.0.0.1 --port 8000` instead of typing a server command that does not run.
 
 `record.sh` starts ArcadeDB, starts the server, and records every scenario with asciinema and agg (monokai, JetBrains Mono). `session.sh` is the prompt the recorder types.
@@ -48,13 +50,19 @@ uv run python assets/demo/generate_demo.py --scenario sparse
 2. Search `beta ships` with `include_outdated=true`. October 20 is active. October 1 is outdated, which a default search hides. `valid_from` and `valid_until` are metadata the agent stored.
 3. `get_node_change_history` on the outdated beta. The snapshot is the previous active fact, stored because `update_node` set `versioning=true`.
 
-### sparse
+### sparse — end-to-end workflow (recommended narrative)
 
-1. Save the decision: API gateway uses Component X
+Same MCP `owner_id` across steps stands in for a later session or another client/model. Memory lives on the server, not in the chat transcript.
+
+1. Session A — record: API gateway uses Component X
 2. Link decision → RELATED_TO → API Gateway Service
-3. Save Component Y and mark Component X outdated
-4. Search returns the current decision
-5. Near-duplicate of Component Y is refused
+3. Session B — recall: search finds Component X
+4. Replace: Component Y, `mark_outdated` on X, `FOLLOWS_FROM`
+5. Default search returns only Component Y
+6. History on request: `include_outdated=true` returns outdated X
+7. Near-duplicate of Component Y is refused
+
+This is the write-cycle story the README describes. The committed `demo.gif` is still the shorter `readme` take until you re-record with `./assets/demo/record.sh`.
 
 ### dense — `demo_dense.gif`
 

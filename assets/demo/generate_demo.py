@@ -18,8 +18,9 @@ readme
     agent created), search the beta with outdated facts included, then read
     the version snapshot.
 sparse
-    Save a decision, link it to a service, migrate and mark the old fact
-    outdated, search returns the current decision, near-duplicate refused.
+    End-to-end workflow: record a decision, recall it as a later session,
+    replace with mark_outdated + FOLLOWS_FROM, default search hides the old
+    fact, include_outdated returns history, near-duplicate refused.
 dense
     Full 13-step take (write-back, traversal, outdating, contradictions, dedup).
 seed
@@ -711,7 +712,10 @@ async def scenario_retrieval(tools: Tools) -> None:
 
 async def scenario_dense(tools: Tools) -> None:
     configure_pace(0.42, 0.14, 1.2)
-    begin("Graph Memory MCP")
+    begin(
+        "Graph Memory MCP",
+        "Agent tools across one owner: record, recall, replace, hide outdated.",
+    )
     say("Scenario: Team decides API gateway component", PAUSE_BEAT)
     reset_owner()
 
@@ -1122,25 +1126,46 @@ async def scenario_readme(tools: Tools) -> None:
 
 
 async def scenario_sparse_run(tools: Tools) -> None:
-    configure_pace(1.4, 0.95, 1.5)
-    begin("Graph Memory MCP")
+    """End-to-end agent workflow on real tools.
+
+    Same MCP owner across steps stands in for a later session or another
+    client/model: memory lives on the server, not in the chat transcript.
+    """
+    configure_pace(1.15, 0.75, 1.35)
+    begin(
+        "Decision across sessions",
+        "Tools for the agent. Memory outlives the chat.",
+    )
     reset_owner()
 
-    step(1, "Save the decision")
+    step(1, "Session A — record the decision")
     old_id = await create_fact(tools, TEXT_X, created_by="alice")
-    say(f"    {GREEN}✓{RST}  saved", PAUSE_BEAT * 0.35)
+    say(f"    {GREEN}✓{RST}  saved", PAUSE_BEAT * 0.3)
 
     step(2, "Link it to the service")
     service_id = await create_service(tools)
     await link(tools, old_id, service_id, "RELATED_TO")
-    say(f"    decision  {CYAN}→ RELATED_TO →{RST}  service", PAUSE_BEAT * 0.35)
+    say(f"    decision  {CYAN}→ RELATED_TO →{RST}  service", PAUSE_BEAT * 0.3)
 
-    step(3, "Migrate and mark the old one outdated")
-    await create_fact(tools, TEXT_Y, created_by="bob")
+    step(3, "Session B — recall (new chat, same owner)")
+    recalled = await search(
+        tools,
+        QUERY_GATEWAY,
+        limit=5,
+        node_types=["Fact"],
+    )
+    recalled_rows = result_rows(recalled)
+    if not any(TEXT_X in text for text in texts_of(recalled_rows)):
+        fail(f"sparse recall: Component X missing from {texts_of(recalled_rows)}")
+    say(f"    {GREEN}✓{RST}  found the earlier decision", PAUSE_BEAT * 0.3)
+
+    step(4, "Replace — new fact, mark_outdated, FOLLOWS_FROM")
+    new_id = await create_fact(tools, TEXT_Y, created_by="bob")
     await mark_old(tools, old_id)
-    say(f"    {YELLOW}outdated{RST}  Component X", PAUSE_BEAT * 0.35)
+    await link(tools, new_id, old_id, "FOLLOWS_FROM")
+    say(f"    {YELLOW}outdated{RST}  Component X", PAUSE_BEAT * 0.3)
 
-    step(4, "Search returns only the current decision")
+    step(5, "Default search — outdated stays out")
     found = await search(
         tools,
         QUERY_GATEWAY,
@@ -1149,9 +1174,30 @@ async def scenario_sparse_run(tools: Tools) -> None:
     )
     rows = result_rows(found)
     require_current_only(rows, what="sparse search")
-    say(f"    {GREEN}✓{RST}  current decision", PAUSE_BEAT * 0.35)
+    say(f"    {GREEN}✓{RST}  current decision only", PAUSE_BEAT * 0.3)
 
-    step(5, "Near-duplicate refused")
+    step(6, "History on request — include_outdated")
+    history = await search(
+        tools,
+        "Component X for routing",
+        limit=3,
+        include_outdated=True,
+        node_types=["Fact"],
+    )
+    history_rows = result_rows(history)
+    outdated = [
+        row
+        for row in history_rows
+        if "Component X" in row_text(row) and row.get("status") == "outdated"
+    ]
+    if not outdated:
+        fail(
+            "sparse history: Component X not returned as outdated "
+            f"({texts_of(history_rows)})"
+        )
+    say(f"    {GREEN}✓{RST}  outdated fact visible when asked", PAUSE_BEAT * 0.3)
+
+    step(7, "Near-duplicate refused")
     duplicate = await tools.call(
         "create_node",
         {

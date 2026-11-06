@@ -23,6 +23,7 @@ Details and sources for each cell are in the sections below.
 
 ## Where Graph Memory is stronger
 
+- **Agent-friendly tools, session-independent memory**: tools are named for agent tasks (`get_brief`, `search`, `create_node`, `mark_outdated`, `get_context` / `get_trace`). Facts live under an `owner_id` on the server, so a later session or another client/model can recall them. Completeness still depends on what agents write.
 - **Traversable graph in open source**: agents read edges with `get_context` and `get_trace`. Mem0 OSS has no graph (removed in v3). Mem0 Platform has a built-in graph used for ranking, but the `relations` field is not returned. File-based memories (tigerless) have no graph; agentmemory uses its graph only for ranking.
 - **Current facts win**: `mark_outdated` hides superseded facts from default search. `get_node(as_of)` supports time-point queries when versioning is enabled. Search by time range (`as_of` for `search`) is not yet implemented. Mem0 keeps old and new facts and ranks the newer one higher, so contradictions accumulate. Vector-only systems have no outdated marking.
 - **Contradictions surfaced**: `CONTRADICTS` edges appear in `contradiction_pairs` on search results. Other systems do not explicitly track contradictions as a relationship type (Graphiti tracks validity windows, not contradictions).
@@ -195,6 +196,7 @@ MCP server backed by Neo4j. Entity, relation, observation, and search tools. Req
 - **No bi-temporal edges** — use `mark_outdated` and `CONTRADICTS`, not `valid_at` / `invalid_at` time windows
 - **No managed service** — self-hosted only
 - **No LLM-based extraction pipeline** — agents write the text that is stored
+- **No `what_changed(since=…)` tool** — use `include_outdated`, `get_trace` / `FOLLOWS_FROM`, and per-node versioning; `search(as_of)` is not implemented
 
 ## Sources and access dates
 

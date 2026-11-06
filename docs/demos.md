@@ -1,6 +1,6 @@
 # Other demos
 
-Start the server with `uv run graph-memory-mcp --host 127.0.0.1 --port 8000`. The three clips use owner `demo_team` after `uv run python assets/demo/generate_demo.py --scenario seed` ([generate_demo.py](../assets/demo/generate_demo.py)). The README GIF is separate.
+Start the server with `uv run graph-memory-mcp --host 127.0.0.1 --port 8000`. The three clips use owner `demo_team` after `uv run python assets/demo/generate_demo.py --scenario seed` ([generate_demo.py](../assets/demo/generate_demo.py)). The README GIF is the shorter `readme` take; for the full write-cycle narrative run `--scenario sparse` (record → recall in a later session → replace → default search hides outdated → history via `include_outdated`).
 
 <table>
   <tr>

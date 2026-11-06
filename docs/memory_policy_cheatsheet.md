@@ -33,6 +33,9 @@ Generated from [`memory_policies_for_LLM.md`](./memory_policies_for_LLM.md); edi
 | Path between two known IDs | `get_trace(from_id, to_id)` (directed; retry `directed=false`) |
 | Quick one-call recall | `recall_context(query, depth=1, compact=true)` |
 | Store a fact | `create_node(text, owner_id, metadata)`; temporary → also `ttl_days` |
+| Fact became wrong | `mark_outdated` + `create_node`; optional `FOLLOWS_FROM` |
+| Include superseded facts | `include_outdated=true` on search/context |
+| Node version snapshots | `get_node_change_history` / `get_node(as_of=…)` when versioning was used |
 | Sync from an external system | `upsert_node(text, source={"ref": <stable key>})` |
 | Document/conversation → knowledge | extract → `ingest_knowledge(document={"ref": ...}, facts=[{text, ref?, ...}, ...], triplets=[...])` — prefer `facts[].ref`; re-ingest updates in place |
 | Link nodes | `create_relation(from_id, to_id, relation_type)` — default allowlist: `RELATED_TO`, `MENTIONS`, `SUMMARIZES`, `FOLLOWS_FROM`, `CONTRADICTS`, `EXTRACTED_FROM`, `SIMILAR_TO`, `NEXT_STEP`, `EXPOSES`, `CROSS_REF`, `RUNS_ON`, `USES`, `SERVED_BY` |
