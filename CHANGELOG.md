@@ -4,6 +4,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+- Search: `SEARCH_RERANK_TOP_K` default 10 (was 30) and no longer grows with `limit`; only affects searches with rerank enabled.
 - Search: rerank options `SEARCH_RERANKER_THREADS` and `SEARCH_RERANK_SKIP_SIM_GAP` (off by default).
 - Search: optional ONNX cross-encoder rerank strategies (`gated` default when enabled, also `replace` / `rrf` / `protect`). Reranker remains off by default; `SEARCH_MODE` default stays `embedding`. See `tests/benchmarks/search_modes/REPORT.md`.
 

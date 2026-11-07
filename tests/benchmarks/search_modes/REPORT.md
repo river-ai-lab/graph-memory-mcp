@@ -208,7 +208,7 @@ is almost always already in the embedding top 5, which favours small K.
 ### Recommendation
 
 - New options, defaults unchanged: `SEARCH_RERANKER_THREADS=2`,
-  `SEARCH_RERANK_SKIP_SIM_GAP=0` (off). `SEARCH_RERANK_TOP_K` stays 30.
+  `SEARCH_RERANK_SKIP_SIM_GAP=0` (off). `SEARCH_RERANK_TOP_K` stayed 30 at that point (changed to 10 below).
 - If rerank is enabled, try `SEARCH_RERANK_TOP_K=10` (~27% lower median here, no
   quality loss measured). `SEARCH_RERANK_SKIP_SIM_GAP=0.02` cut the median by
   another ~16%, but it is a heuristic tuned on this corpus; enable it only after
@@ -216,3 +216,23 @@ is almost always already in the embedding top 5, which favours small K.
 - Smaller pools reorder only the head; the remaining candidates keep their order
   and are never dropped (unit tested). Skip applies only when results carry
   embedding `similarity` (embedding mode; hybrid/lexical never skip).
+
+## Selected rerank config: top 10 (offline, no graph DB)
+
+Chosen after the speed experiments: when rerank is enabled, defaults are
+`SEARCH_RERANK_TOP_K=10`, `SEARCH_RERANK_STRATEGY=gated`, `SEARCH_RERANKER_THREADS=2`,
+`SEARCH_RERANK_SKIP_SIM_GAP=0`. Global defaults unchanged: `SEARCH_RERANKER=false`,
+`SEARCH_MODE=embedding`. The rerank pool no longer grows with `limit`
+(previously `max(limit, top_k)`); results beyond the first 10 keep first-stage order.
+
+Script `rerank_top10.py`; same corpus as above (1131 facts); embedding top 100;
+2 warm passes × 88 queries = 176 timed calls; box load average ~14 on 8 vCPU.
+
+| config | S1 MRR / R@5 | holdout MRR / R@5 | typo MRR | ident MRR | median ms | p95 ms | tail preserved |
+|---|---|---|---|---|---|---|---|
+| rerank off | 0.988 / 0.767 | 0.975 / 0.767 | 1.0 | 1.0 | 32.0 | 60.0 | n/a |
+| gated top 10 | 1.0 / 0.767 | 1.0 / 0.767 | 1.0 | 1.0 | 114.4 | 150.6 | yes |
+| gated top 30 | 1.0 / 0.767 | 1.0 / 0.767 | 1.0 | 1.0 | 143.9 | 174.8 | yes |
+
+Top 10 matched top 30 quality on this (saturated, synthetic) set at ~20% lower
+median latency. Not yet verified on FalkorDB/ArcadeDB (Docker unavailable).

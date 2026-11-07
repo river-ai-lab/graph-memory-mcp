@@ -480,7 +480,7 @@ def search(
             query,
             results,
             model_name=config.search_reranker_model,
-            top_k=max(limit, config.search_rerank_top_k),
+            top_k=max(1, config.search_rerank_top_k),
             strategy=resolved_strategy,
             rrf_k=config.search_rerank_rrf_k,
             gate_margin=config.search_rerank_gate_margin,

@@ -180,7 +180,7 @@ class MCPServerConfig(BaseSettings):
         validation_alias="SEARCH_RERANKER_MODEL",
     )
     search_rerank_top_k: int = Field(
-        default=30,
+        default=10,
         validation_alias="SEARCH_RERANK_TOP_K",
         description="How many top results the cross-encoder reorders",
     )

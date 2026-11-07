@@ -257,4 +257,18 @@ def test_rerank_speed_config_defaults():
     cfg = MCPServerConfig()
     assert cfg.search_reranker_threads == 2
     assert cfg.search_rerank_skip_sim_gap == 0.0
-    assert cfg.search_rerank_top_k == 30
+    assert cfg.search_rerank_top_k == 10
+
+
+@pytest.mark.nodb
+def test_rerank_top10_keeps_tail_with_large_limit():
+    """With 25 candidates and top_k=10, only the head is reordered."""
+    from graph_memory_mcp.graph_memory.reranker import rerank
+
+    rows = [{"node_id": f"n{i:02d}", "text": f"t{i}"} for i in range(25)]
+    scores = [float(i) for i in range(10)]  # CE prefers the 10th head item
+    out = rerank("q", rows, model_name=None, top_k=10, strategy="gated", scores=scores)
+    assert len(out) == 25
+    assert sorted(r["node_id"] for r in out[:10]) == [f"n{i:02d}" for i in range(10)]
+    assert [r["node_id"] for r in out[10:]] == [f"n{i:02d}" for i in range(10, 25)]
+    assert all("rerank_score" not in r for r in out[10:])
