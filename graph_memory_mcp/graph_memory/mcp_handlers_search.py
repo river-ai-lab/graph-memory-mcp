@@ -484,6 +484,8 @@ def search(
             strategy=resolved_strategy,
             rrf_k=config.search_rerank_rrf_k,
             gate_margin=config.search_rerank_gate_margin,
+            threads=config.search_reranker_threads,
+            skip_sim_gap=config.search_rerank_skip_sim_gap,
         )
     results = results[:limit]
 

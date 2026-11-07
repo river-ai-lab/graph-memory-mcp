@@ -194,6 +194,16 @@ class MCPServerConfig(BaseSettings):
         validation_alias="SEARCH_RERANK_RRF_K",
         description="RRF k for rrf/protect rerank strategies",
     )
+    search_reranker_threads: int = Field(
+        default=2,
+        validation_alias="SEARCH_RERANKER_THREADS",
+        description="ONNX intra-op threads for the cross-encoder",
+    )
+    search_rerank_skip_sim_gap: float = Field(
+        default=0.0,
+        validation_alias="SEARCH_RERANK_SKIP_SIM_GAP",
+        description="Skip CE when embedding top-1 minus top-2 similarity >= this; 0 off",
+    )
     search_rerank_gate_margin: float = Field(
         default=2.0,
         validation_alias="SEARCH_RERANK_GATE_MARGIN",

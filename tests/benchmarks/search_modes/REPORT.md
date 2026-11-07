@@ -154,3 +154,65 @@ question ids (20); tune/even ids used only for informal checks. Agent =
 | Xenova/ms-marco-MiniLM-L-12-v2 | ~134 MB | not measured; larger latency |
 | Xenova/bge-reranker-base | ~1.1 GB fp32 | skipped (too large) |
 | onnx-community/bge-reranker-v2-m3 | ~0.6–1.1 GB quantized/fp | skipped (too large) |
+
+## Rerank speed experiments (offline, no graph DB)
+
+Box: 8 vCPU, CPU only, shared with other agents (load average 7–17 during the
+latency run, so absolute numbers are noisy). Model `Xenova/ms-marco-MiniLM-L-6-v2`
+ONNX fp32; embedding `intfloat/multilingual-e5-base`. Corpus: 107 core + 24
+ident + 1000 noise facts. Not comparable to the DB tables above.
+Scripts: `rerank_profile.py`, `rerank_sweep.py`, `rerank_latency.py`.
+
+Note: `gated` decides *after* CE scoring, so it does not save inference. Savings
+come from a smaller pool (`SEARCH_RERANK_TOP_K`) or the new pre-inference skip.
+
+### CE-only cost (40 S1 queries × 3, warm, median / p95 ms)
+
+Cold model load ~1.0 s, first inference ~93 ms. Query+fact pairs are ~31
+tokens, so `_MAX_LEN=256` truncation is not a cost factor (no change made).
+
+| pool K | 2 threads | 4 threads | 8 threads |
+|---|---|---|---|
+| 5 | 10.3 / 13.0 | 6.7 / 8.4 | 6.0 / 11.3 |
+| 10 | 17.2 / 23.6 | 11.7 / 13.7 | 10.1 / 16.6 |
+| 20 | 31.3 / 40.7 | 19.1 / 25.9 | 17.3 / 27.9 |
+| 30 | 51.4 / 66.6 | 29.5 / 35.2 | 23.7 / 33.9 |
+
+### End-to-end (query embedding + top-100 + rerank; 40 queries × 3 warm, n=120)
+
+| config | median ms | p95 ms |
+|---|---|---|
+| rerank off | 56.1 | 96.0 |
+| gated K=30, 2 threads (previous) | 153.2 | 185.9 |
+| gated K=10, 2 threads | 112.1 | 157.1 |
+| gated K=10, 4 threads | 124.8 | 161.2 |
+| gated K=10, 2 threads, skip gap 0.02 | 94.1 | 148.0 |
+| gated K=10, 4 threads, skip gap 0.02 | 110.2 | 164.7 |
+
+Under the concurrent load, 4 threads were not faster end to end even though
+CE-only timing was; default stays 2 (`SEARCH_RERANKER_THREADS`).
+
+### Quality (MRR; embedding first stage, gated margin 2.0)
+
+Sets: S1 40, holdout 20 (odd ids), agent 12, typo 16, ident 12, ru 8.
+Baseline (no rerank): S1 0.988, holdout 0.975, agent 1.0, typo 1.0, ident 1.0, ru 0.597.
+Every K in {5,10,20,30} and skip gap in {off, 0.02, 0.04}: S1 1.0, holdout 1.0,
+agent 1.0, typo 1.0, ident 1.0, ru 0.597. Skip 0.02 avoided CE on 58/108 queries,
+0.04 on 15/108.
+
+**Limitation:** this set is saturated, so it cannot separate K=10 from K=30 or show
+the risk of skipping. Distractors are template facts with shared names/teams
+(the hardest available here); there are no real-world agent queries. The gold fact
+is almost always already in the embedding top 5, which favours small K.
+
+### Recommendation
+
+- New options, defaults unchanged: `SEARCH_RERANKER_THREADS=2`,
+  `SEARCH_RERANK_SKIP_SIM_GAP=0` (off). `SEARCH_RERANK_TOP_K` stays 30.
+- If rerank is enabled, try `SEARCH_RERANK_TOP_K=10` (~27% lower median here, no
+  quality loss measured). `SEARCH_RERANK_SKIP_SIM_GAP=0.02` cut the median by
+  another ~16%, but it is a heuristic tuned on this corpus; enable it only after
+  a check on real data.
+- Smaller pools reorder only the head; the remaining candidates keep their order
+  and are never dropped (unit tested). Skip applies only when results carry
+  embedding `similarity` (embedding mode; hybrid/lexical never skip).

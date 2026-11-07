@@ -225,3 +225,36 @@ def test_rerank_strategy_config_default():
     assert cfg.search_reranker_enabled is False
     assert cfg.search_rerank_strategy == "gated"
     assert cfg.default_search_mode == "embedding"
+
+
+@pytest.mark.nodb
+def test_rerank_skip_and_small_pool_keep_tail():
+    from graph_memory_mcp.graph_memory.reranker import rerank, should_skip
+
+    rows = [
+        {"node_id": n, "text": n, "similarity": s}
+        for n, s in [("a", 0.90), ("b", 0.80), ("c", 0.79), ("d", 0.70)]
+    ]
+    assert should_skip(rows, 0.05)
+    assert not should_skip(rows, 0.0)
+    assert not should_skip([{"node_id": "x"}, {"node_id": "y"}], 0.05)
+    # Skip returns the same list without loading the model.
+    assert (
+        rerank("q", rows, model_name="no/such-model", top_k=2, skip_sim_gap=0.05)
+        is rows
+    )
+    # Small pool reorders only the head; tail kept in order, nothing dropped.
+    out = rerank(
+        "q", rows, model_name=None, top_k=2, strategy="replace", scores=[0.0, 5.0]
+    )
+    assert [r["node_id"] for r in out] == ["b", "a", "c", "d"]
+
+
+@pytest.mark.nodb
+def test_rerank_speed_config_defaults():
+    from graph_memory_mcp.config import MCPServerConfig
+
+    cfg = MCPServerConfig()
+    assert cfg.search_reranker_threads == 2
+    assert cfg.search_rerank_skip_sim_gap == 0.0
+    assert cfg.search_rerank_top_k == 30

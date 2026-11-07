@@ -73,14 +73,14 @@ def normalize_rerank_strategy(value: Optional[str]) -> str:
 
 
 class CrossEncoderReranker:
-    def __init__(self, model_name: str):
+    def __init__(self, model_name: str, threads: int = 2):
         ort = _import_onnxruntime()
         self.model_name = model_name
         self._tokenizer = _load_tokenizer(model_name)
         self._tokenizer.enable_truncation(_MAX_LEN)
         path = _download_required(model_name, "onnx/model.onnx")
         opts = ort.SessionOptions()
-        opts.intra_op_num_threads = 2
+        opts.intra_op_num_threads = max(1, int(threads))
         self._session = ort.InferenceSession(
             path, sess_options=opts, providers=["CPUExecutionProvider"]
         )
@@ -110,14 +110,29 @@ class CrossEncoderReranker:
         return np.asarray(out, dtype=np.float32)
 
 
-def load_reranker(model_name: str | None) -> CrossEncoderReranker:
+def load_reranker(model_name: str | None, threads: int = 2) -> CrossEncoderReranker:
     name = model_name or DEFAULT_RERANKER_MODEL
+    key = f"{name}#{int(threads)}"
     with _LOCK:
-        hit = _LOADED.get(name)
+        hit = _LOADED.get(key)
         if hit is None:
-            hit = CrossEncoderReranker(name)
-            _LOADED[name] = hit
+            hit = CrossEncoderReranker(name, threads=threads)
+            _LOADED[key] = hit
         return hit
+
+
+def should_skip(results: Sequence[Dict], skip_sim_gap: float) -> bool:
+    """Pre-inference bypass: top embedding hit clearly ahead of the second.
+
+    Uses ``similarity`` (embedding mode only). 0 disables. Skipping keeps the
+    first-stage order unchanged, so results and their count are unaffected.
+    """
+    if skip_sim_gap <= 0 or len(results) < 2:
+        return False
+    a, b = results[0].get("similarity"), results[1].get("similarity")
+    if a is None or b is None:
+        return False
+    return float(a) - float(b) >= float(skip_sim_gap)
 
 
 def _protected_ids(query: str, results: Sequence[Dict]) -> List[str]:
@@ -204,17 +219,19 @@ def rerank(
     rrf_k: int = DEFAULT_RRF_K,
     gate_margin: float = DEFAULT_GATE_MARGIN,
     scores: Optional[Sequence[float]] = None,
+    threads: int = 2,
+    skip_sim_gap: float = 0.0,
 ) -> List[Dict]:
     """Reorder the first ``top_k`` results; keep the tail unchanged.
 
     ``scores`` is optional: pass precomputed CE logits in unit tests to avoid
     loading the ONNX model.
     """
-    if not results:
+    if not results or should_skip(results, skip_sim_gap):
         return results
     head, tail = results[:top_k], results[top_k:]
     if scores is None:
-        ce_scores = load_reranker(model_name).score(
+        ce_scores = load_reranker(model_name, threads).score(
             query, [r.get("text") or "" for r in head]
         )
     else:
